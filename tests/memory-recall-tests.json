@@ -1,0 +1,77 @@
+[
+  {
+    "question": "当前 super-memory-brain 版本是多少？",
+    "sources": ["CURRENT_BASELINE.md", "manifest.json"],
+    "mustContain": ["0.5.41", "CURRENT_BASELINE.md"]
+  },
+  {
+    "question": "隐私记忆怎么写？",
+    "sources": ["memory-policy.json", "scripts/write-memory.ps1"],
+    "mustContain": ["-ConfirmPrivate", "[PRIVACY]"]
+  },
+  {
+    "question": "分享给别人前怎么避免带私人记忆？",
+    "sources": ["scripts/prepare-share.ps1", "README.md"],
+    "mustContain": ["prepare-share.ps1", "sandglass.txt"]
+  },
+  {
+    "question": "当前状态应该先查哪里？",
+    "sources": ["CURRENT_BASELINE.md", "super-memory-brain/SKILL.md"],
+    "mustContain": ["super-brain-state.json", "CURRENT_BASELINE.md", "manifest.json", "CHANGELOG.md"]
+  },
+  {
+    "question": "分层记忆有哪些层？",
+    "sources": ["memory-policy.json", "scripts/write-memory.ps1"],
+    "mustContain": ["profile", "project", "decision", "task", "session"]
+  },
+  {
+    "question": "Hybrid Recall 如何输出评分？",
+    "sources": ["memory-policy.json", "scripts/recall-search.ps1", "README.md"],
+    "mustContain": ["hybrid", "sourceType", "confidence", "tokenEstimate"]
+  },
+  {
+    "question": "ADR 决策怎么审计？",
+    "sources": ["memory-policy.json", "scripts/write-decision.ps1", "scripts/decision-audit.ps1"],
+    "mustContain": ["[ADR]", "has_status", "adrSchemaIssueCount"]
+  },
+  {
+    "question": "Memory Eval Harness 怎么跑？",
+    "sources": ["scripts/memory-eval.ps1", "scripts/memory-eval-report.ps1", "tests/memory-eval-tests.json", "README.md"],
+    "mustContain": ["memory-eval.ps1", "last-memory-eval.json", "passRate"]
+  },
+  {
+    "question": "检索默认 top_k 和 max_tokens 哪里配置？",
+    "sources": ["memory-policy.json", "scripts/recall-search.ps1"],
+    "mustContain": ["top_k", "max_tokens", "TopK", "MaxTokens"]
+  },
+  {
+    "question": "摘要优先检索怎么启用？",
+    "sources": ["memory-policy.json", "scripts/recall-search.ps1"],
+    "mustContain": ["summaryFirst", "[SUMMARY]"]
+  },
+  {
+    "question": "负反馈如何处理？",
+    "sources": ["memory-policy.json", "scripts/write-memory.ps1"],
+    "mustContain": ["negativePatterns", "[NEGATIVE_FEEDBACK]"]
+  },
+  {
+    "question": "安装 UI 做了哪些交互优化？",
+    "sources": ["README.md", "scripts/install-ui.ps1"],
+    "mustContain": ["防止重复点击", "Set-UiBusy", "Invoke-ShareReleaseInlineFromUi"]
+  },
+  {
+    "question": "经验目录如何辅助相似问题？",
+    "sources": ["memory/workspace/experience-index.md", "scripts/write-experience.ps1", "scripts/recall-search.ps1", "manifest.json"],
+    "mustContain": ["Experience Index", "write-experience.ps1", "experience-index.md"]
+  },
+  {
+    "question": "如果我问你还记得我是什么样的人、我的偏好和经历吗，应该优先召回什么？",
+    "sources": ["memory-policy.json", "scripts/recall-search.ps1", "scripts/write-memory.ps1", "README.md"],
+    "mustContain": ["profileIntentTriggers", "Get-PersonaSnippets", "我的偏好", "我的性格", "我的经历", "recencyScore"]
+  },
+  {
+    "question": "长任务开始前和完成后，断点状态应该怎么处理？",
+    "sources": ["memory-policy.json", "scripts/checkpoint-writer.ps1", "scripts/auto-continuation.ps1", "scripts/completion-guard.ps1"],
+    "mustContain": ["checkpointLifecycle", "active-checkpoint.json", "Start", "Complete", "currentStep", "nextAction"]
+  }
+]

@@ -1,0 +1,1159 @@
+{
+    "name":  "super-memory-brain-package",
+    "version":  "0.5.41",
+    "description":  "Focused native Windows skill injector with BAT/VBS entrypoints, global ZCode/Codex shared-memory injection, custom agent skill directory injection, preview-first install-backup cleanup, Hybrid Recall, ADR decision records, Memory Eval Harness, structured local memory, package-root and memory-root hot-load markers, scoped memory roots, verification, share privacy guards, silent START response discipline, Commander review gates, team memory retrieval, roadmap management, recall regression checks, task state reporting, privacy sentinel checks, completion guard, maintenance tools, strict task verification parameter binding, smoke-test policy restoration, regression guards for completion-state isolation, dispatch learning, trigger simulation, intent routing, smart next actions, health summaries, agent scorecards, task retrospectives, release readiness checks, a unified brain command, and safe version bump previews, and a read-only optimization advisor.",
+    "entrySkill":  "super-memory-brain",
+    "modules":  [
+                    "skill-orchestrator",
+                    "plusunm-g1",
+                    "nexsandglass-dedicated-memory"
+                ],
+    "vendor":  [
+                   "NexSandglass-Agent-DedicatedMemory"
+               ],
+    "runtimeFiles":  [
+                         "sandglass_paths.py",
+                         "sandglass_vault.py",
+                         "sandglass_sqlite.py",
+                         "sandglass_log.py",
+                         "sandglass.py",
+                         "sandglass_think.py",
+                         "sandglass_archive.py",
+                         "sandglass_mcp.py",
+                         "nexsandglass.py",
+                         "nightwatch.py",
+                         "pulse.py",
+                         "heartbeat.py",
+                         "persona_l3.py",
+                         "offset_l3.py",
+                         "emotion_l3.py",
+                         "scene_l3.py",
+                         "weave_l3.py",
+                         "weavethread.py",
+                         "l3_tasks.py",
+                         "l3_persona_verify.py",
+                         "l3_search_core.py",
+                         "l3_persona.py",
+                         "discipline.py",
+                         "offset_signals.py",
+                         "decision_particles.py",
+                         "emotion_vocab.py",
+                         "shadow_sand.py",
+                         "search_router.py",
+                         "l0_buffer.py",
+                         "soul_diff.py",
+                         "plugin.py",
+                         "migrate_v2_4.py",
+                         "metrics.py"
+                     ],
+    "memoryRoot":  "memory/shared",
+    "structuredMemory":  [
+                             "CURRENT_BASELINE.md",
+                             "BASELINE_HISTORY.md",
+                             "memory/graph.jsonl",
+                             "memory/workspace/session-notes.md",
+                             "tests/memory-recall-tests.json",
+                             "tests/memory-eval-tests.json"
+                         ],
+    "scripts":  [
+                    "install.ps1",
+                    "install.bat",
+                    "install-ui.ps1",
+                    "install-ui.vbs",
+                    "check-install-ui-paths.ps1",
+                    "health-check.ps1",
+                    "status.ps1",
+                    "doctor.ps1",
+                    "maintain.ps1",
+                    "summary.ps1",
+                    "script-tiers.ps1",
+                    "memory-health.ps1",
+                    "backup.ps1",
+                    "backup-retention.ps1",
+                    "migrate.ps1",
+                    "compact.ps1",
+                    "compact-report.ps1",
+                    "compact-apply.ps1",
+                    "write-memory.ps1",
+                    "write-experience.ps1",
+                    "audit-memory.ps1",
+                    "baseline-update.ps1",
+                    "prepare-share.ps1",
+                    "verify-package.ps1",
+                    "auto-check.ps1",
+                    "startup-check.ps1",
+                    "update-state.ps1",
+                    "state.ps1",
+                    "recall-search.ps1",
+                    "recall-recent.ps1",
+                    "session-restore.ps1",
+                    "learn-memory.ps1",
+                    "profile-card.ps1",
+                    "skill-sync-check.ps1",
+                    "memory-mode.ps1",
+                    "install-agent.ps1",
+                    "hot-refresh-skills.ps1",
+                    "install-menu.ps1",
+                    "cleanup-legacy-memory.ps1",
+                    "cleanup-install-backups.ps1",
+                    "repair-hook.ps1",
+                    "migrate-memory-layout.ps1",
+                    "encoding-check.ps1",
+                    "graph-normalize.ps1",
+                    "write-decision.ps1",
+                    "decision-search.ps1",
+                    "decision-audit.ps1",
+                    "bootstrap.ps1",
+                    "release-private.ps1",
+                    "release-share.ps1",
+                    "verify-share.ps1",
+                    "release.ps1",
+                    "graph-add.ps1",
+                    "graph-search.ps1",
+                    "extract-facts.ps1",
+                    "test-recall.ps1",
+                    "memory-eval.ps1",
+                    "memory-eval-report.ps1",
+                    "tag-legacy-memory.ps1",
+                    "ci.ps1",
+                    "lint.ps1",
+                    "test-pester.ps1",
+                    "task-verification.ps1",
+                    "roadmap-manager.ps1",
+                    "memory-regression-checker.ps1",
+                    "task-state-reporter.ps1",
+                    "privacy-sentinel.ps1",
+                    "completion-guard.ps1",
+                    "checkpoint-writer.ps1",
+                    "super-brain-dashboard.ps1",
+                    "auto-continuation.ps1",
+                    "status-snapshot-writer.ps1",
+                    "privacy-hit-locator.ps1",
+                    "memory-quality-fixer.ps1",
+                    "optimize-advisor.ps1",
+                    "lesson-replay.ps1",
+                    "dispatch-learning.ps1",
+                    "trigger-simulation.ps1",
+                    "intent-router.ps1",
+                    "smart-next.ps1",
+                    "health-summary.ps1",
+                    "agent-scorecard.ps1",
+                    "task-retrospective.ps1",
+                    "release-readiness.ps1",
+                    "brain.ps1",
+                    "brain.bat",
+                    "brain-ui.vbs",
+                    "version-bump.ps1",
+                    "team-dispatch-check.ps1",
+                    "team-template-list.ps1",
+                    "team-template-select.ps1",
+                    "team-task-new.ps1",
+                    "team-task-add-delegation.ps1",
+                    "team-task-authorize.ps1",
+                    "team-task-review.ps1",
+                    "team-task-review-gate.ps1",
+                    "team-memory-retrieval.ps1",
+                    "team-task-audit.ps1",
+                    "team-task-decision.ps1",
+                    "team-task-status.ps1",
+                    "team-task-index.ps1",
+                    "smoke-test.ps1",
+                    "common.ps1",
+                    "session-compact.ps1"
+                ],
+    "internalScripts":  [
+                            "add-current-state-priority.py",
+                            "update-entry-skill.py"
+                        ],
+    "scriptTiers":  {
+                        "T0":  "read-only query/status/report scripts",
+                        "T1":  "low-risk generated state, package copy, or verification scripts",
+                        "T2":  "controlled memory, hook, graph, install, or fix scripts requiring clear intent",
+                        "T3":  "high-impact delete, private export, backup pruning, or broad overwrite scripts requiring explicit manual use"
+                    },
+    "scriptMetadata":  [
+                           {
+                               "path":  "install.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "SkipVerify",
+                                                         "NoBackup"
+                                                     ],
+                               "notes":  "Installs skills, refreshes hook, backs up existing skills, writes package-root.txt and memory-root.txt markers, supports Shared/SplitMemory scoped roots, and rolls back on failure."
+                           },
+                           {
+                               "path":  "install.bat",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Windows install entrypoint; launches the native UI by default and supports console fallback with the console/cmd argument."
+                           },
+                           {
+                               "path":  "install-ui.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "SmokeTest"
+                                                     ],
+                               "notes":  "Native Windows WinForms skill injector UI for global ZCode/Codex shared-memory injection, custom Agent skills directory injection, and preview-first install-backup cleanup; delegates to existing scripts and preserves typed confirmations for destructive operations."
+                           },
+                           {
+                               "path":  "install-ui.vbs",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "No-console Windows launcher for install-ui.ps1."
+                           },
+                           {
+                               "path":  "check-install-ui-paths.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only install UI path preflight for package roots, required UI scripts, workspace paths, merge-overlay, and common Agent skills directories."
+                           },
+                           {
+                               "path":  "health-check.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only health check."
+                           },
+                           {
+                               "path":  "status.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only status view."
+                           },
+                           {
+                               "path":  "doctor.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only aggregate diagnostics using summary, startup, skill sync, memory health, script tier views, recent verification state, and structured risk aggregation."
+                           },
+                           {
+                               "path":  "maintain.ps1",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "ApplySafe",
+                                                         "ApplyConfirmed"
+                                                     ],
+                               "notes":  "Central maintenance entrypoint: read-only plan by default, low-risk maintenance with -ApplySafe, confirmed high-impact maintenance with -ApplyConfirmed."
+                           },
+                           {
+                               "path":  "summary.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only compact Super Brain summary."
+                           },
+                           {
+                               "path":  "script-tiers.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only script safety tier view."
+                           },
+                           {
+                               "path":  "memory-health.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only memory health summary with layer, summary, expiry, feedback, decision, ADR, and privacy counters without raw memory output."
+                           },
+                           {
+                               "path":  "backup.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Creates package backups."
+                           },
+                           {
+                               "path":  "backup-retention.ps1",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Apply"
+                                                     ],
+                               "notes":  "Dry-run by default; deletes old backups only with -Apply."
+                           },
+                           {
+                               "path":  "migrate.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Copies package to another destination."
+                           },
+                           {
+                               "path":  "compact.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Candidate report only."
+                           },
+                           {
+                               "path":  "compact-report.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Exact duplicate report only."
+                           },
+                           {
+                               "path":  "compact-apply.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Force"
+                                                     ],
+                               "notes":  "Dry-run with -WhatIfOnly; memory mutation requires -Force."
+                           },
+                           {
+                               "path":  "write-memory.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Force",
+                                                         "ConfirmPrivate"
+                                                     ],
+                               "notes":  "Writes long-term memory through governance gate with MemoryMode, Layer, Summary, ExpiresAt, privacy, and negative feedback handling."
+                           },
+                           {
+                               "path":  "write-experience.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes structured reusable experience entries and updates memory/workspace/experience-index.md."
+                           },
+                           {
+                               "path":  "audit-memory.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Memory audit report."
+                           },
+                           {
+                               "path":  "baseline-update.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Updates baseline and writes memory; legacy manual tool."
+                           },
+                           {
+                               "path":  "prepare-share.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Force"
+                                                     ],
+                               "notes":  "Creates a privacy-clean slim share package; destination deletion is protected by path guards and share marker checks."
+                           },
+                           {
+                               "path":  "verify-package.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Integration",
+                                                         "WithShareBuild",
+                                                         "WithTempInstall"
+                                                     ],
+                               "notes":  "Default verification avoids share/temp-install integration; integration switches run heavier validation."
+                           },
+                           {
+                               "path":  "auto-check.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Force"
+                                                     ],
+                               "notes":  "State-first auto-check; may run verification when needed."
+                           },
+                           {
+                               "path":  "startup-check.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only startup hook/config check."
+                           },
+                           {
+                               "path":  "update-state.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes lightweight state cache."
+                           },
+                           {
+                               "path":  "state.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Reads state and may initialize missing cache."
+                           },
+                           {
+                               "path":  "recall-search.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only Hybrid Recall helper with Sandglass, graph, state, and recent candidates plus TopK, MaxTokens, Layer, MemoryMode, score, confidence, reason, and token estimates."
+                           },
+                           {
+                               "path":  "recall-recent.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only recent memory helper."
+                           },
+                           {
+                               "path":  "session-restore.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes memory/workspace/last-session-restore.json with a token-budgeted new-session continuity packet: state, checkpoint, last snapshot, experience-index preview, and optional evidence cards only when memory triggers justify recall."
+                           },
+                           {
+                               "path":  "learn-memory.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Preview",
+                                                         "AllowDuplicate",
+                                                         "ConfirmPrivate"
+                                                     ],
+                               "notes":  "Governed learn-this protocol wrapper over write-memory.ps1 and write-experience.ps1; supports preview-first learning, similar-memory duplicate checks, profile-card refresh, compact stable summaries, and memory/workspace/last-learn-memory.json."
+                           },
+                           {
+                               "path":  "profile-card.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Refresh"
+                                                     ],
+                               "notes":  "Builds memory/workspace/profile-card.json as a small profile/persona preference card for new-session restore without injecting raw long memory."
+                           },
+                           {
+                               "path":  "skill-sync-check.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Compares package and installed skill files plus package-root.txt and memory-root.txt markers."
+                           },
+                           {
+                               "path":  "memory-mode.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Switches installed ZCode/Codex memory-root.txt markers between Shared, SplitMemory, Group, and per-agent scoped roots while writing sharing policy and scope markers."
+                           },
+                           {
+                               "path":  "install-agent.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "NoBackup"
+                                                     ],
+                               "notes":  "Installs the Super Brain skill set for any agent skill directory and points memory-root.txt at shared, private agent, or group memory roots."
+                           },
+                           {
+                               "path":  "hot-refresh-skills.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "AllKnown",
+                                                         "NoBackup"
+                                                     ],
+                               "notes":  "Hot-refreshes already installed Super Brain skill copies for ZCode/Codex or provided skill roots without changing memory mode; writes memory/workspace/last-hot-refresh.json and may require new agent sessions if skill content is cached."
+                           },
+                           {
+                               "path":  "install-menu.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Interactive PowerShell menu behind install.bat for ZCode/Codex, auto-detected agents, manual SkillRoot installs, memory mode changes, cleanup, diagnostics, and CI."
+                           },
+                           {
+                               "path":  "cleanup-legacy-memory.ps1",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Apply"
+                                                     ],
+                               "notes":  "Dry-run by default; deletes only verified migrated memory-zcode and memory-codex legacy roots with -Apply."
+                           },
+                           {
+                               "path":  "cleanup-install-backups.ps1",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Apply"
+                                                     ],
+                               "notes":  "Dry-run by default; keeps the newest install backups and deletes older install-backup-* folders only with -Apply."
+                           },
+                           {
+                               "path":  "repair-hook.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "NoBackup"
+                                                     ],
+                               "notes":  "Rewrites session-start hook with a short stable memory router prefix; backs up by default."
+                           },
+                           {
+                               "path":  "encoding-check.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Fix"
+                                                     ],
+                               "notes":  "Read-only by default; can fix encoding issues with -Fix."
+                           },
+                           {
+                               "path":  "graph-normalize.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Fix"
+                                                     ],
+                               "notes":  "Read-only by default; can normalize graph with -Fix."
+                           },
+                           {
+                               "path":  "write-decision.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "NoGraph"
+                                                     ],
+                               "notes":  "Writes structured decision particles, governed memory, graph decision edges, and optional ADR records with status, context, consequences, alternatives, owner, scope, and supersedes links."
+                           },
+                           {
+                               "path":  "decision-search.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only structured decision and ADR graph search with current-first TopK, MaxTokens, AdrOnly, Status, Owner, Scope, and superseded filtering."
+                           },
+                           {
+                               "path":  "decision-audit.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only decision and ADR audit covering graph parse errors, current conflicts, schema gaps, invalid status, supersedes links, particles, and memory lifecycle."
+                           },
+                           {
+                               "path":  "bootstrap.ps1",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "SkipVerify"
+                                                     ],
+                               "notes":  "High-impact install, fix, and verification flow."
+                           },
+                           {
+                               "path":  "release-private.ps1",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Copies private package including memory; not for sharing."
+                           },
+                           {
+                               "path":  "release-share.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Builds and verifies slim share package."
+                           },
+                           {
+                               "path":  "verify-share.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "SkipPrepare"
+                                                     ],
+                               "notes":  "Verifies share privacy and slimness."
+                           },
+                           {
+                               "path":  "release.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Versioned share release flow."
+                           },
+                           {
+                               "path":  "graph-add.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Appends graph lineage edges."
+                           },
+                           {
+                               "path":  "graph-search.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only graph search."
+                           },
+                           {
+                               "path":  "extract-facts.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only candidate fact extraction."
+                           },
+                           {
+                               "path":  "test-recall.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only legacy recall fixture tests with text and JSON output."
+                           },
+                           {
+                               "path":  "memory-eval.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only Memory Eval Harness over static, Hybrid Recall, and decision/ADR fixtures with JSON metrics."
+                           },
+                           {
+                               "path":  "memory-eval-report.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Runs Memory Eval Harness and writes memory/workspace/last-memory-eval.json for auditability."
+                           },
+                           {
+                               "path":  "tag-legacy-memory.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Apply"
+                                                     ],
+                               "notes":  "Dry-run by default; memory mutation requires -Apply."
+                           },
+                           {
+                               "path":  "ci.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "SkipIntegration"
+                                                     ],
+                               "notes":  "Default one-command local CI for install-ready stability checks; writes memory/workspace/last-ci.json and includes Memory Eval Harness reporting."
+                           },
+                           {
+                               "path":  "lint.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Syntax lint and optional PSScriptAnalyzer checks."
+                           },
+                           {
+                               "path":  "test-pester.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Runs Pester tests when Pester is installed; skips cleanly otherwise."
+                           },
+                           {
+                               "path":  "task-verification.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes memory/workspace/last-task-verification.json by summarizing verification, release, hot-refresh, doctor risk, team-task evidence, and next-step status for the latest task."
+                           },
+                           {
+                               "path":  "roadmap-manager.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only roadmap status card combining roadmap ADR recall, current baseline, team-task status, and latest task verification."
+                           },
+                           {
+                               "path":  "memory-regression-checker.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only recall regression checks for critical memories such as agent/subagent roadmap, team memory retrieval, version route recall, and G1 display rule."
+                           },
+                           {
+                               "path":  "task-state-reporter.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only task state report for current version, verification, hot refresh, roadmap completion, remaining work, and review gate blockers."
+                           },
+                           {
+                               "path":  "privacy-sentinel.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only privacy sentinel over memory-health private-pattern counters; warns before sharing memory and never deletes memory automatically."
+                           },
+                           {
+                               "path":  "completion-guard.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "AllowPrivacyRisk"
+                                                     ],
+                               "notes":  "Read-only completion gate that aggregates package verification, hot refresh, task verification, roadmap recall, memory regression, task state, review gate, privacy sentinel status, and rejects lingering active checkpoints."
+                           },
+                           {
+                               "path":  "checkpoint-writer.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes, completes, clears, or reads the active checkpoint lifecycle with platform, agent, session/task identity, current step, blockers, next action, and evidence."
+                           },
+                           {
+                               "path":  "super-brain-dashboard.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only state control dashboard for version, roadmap, task, verification, hot refresh, memory regression, privacy, review gate, active checkpoint, risks, and next action."
+                           },
+                           {
+                               "path":  "auto-continuation.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only continuation advisor that restores next action from dashboard, last task verification, and last status snapshot."
+                           },
+                           {
+                               "path":  "status-snapshot-writer.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes memory/workspace/last-status-snapshot.json as a durable continuation anchor with summary, next action, evidence, roadmap state, verification, and risk flags."
+                           },
+                           {
+                               "path":  "privacy-hit-locator.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only locator for memory private-pattern hits with file, line, pattern, preview, and likely false-positive hints."
+                           },
+                           {
+                               "path":  "memory-quality-fixer.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only WhatIf memory quality cleanup planner for untagged lines, too-long entries, and malformed decision particles."
+                           },
+                           {
+                               "path":  "optimize-advisor.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only optimization advisor that aggregates doctor, memory quality, memory eval, backup retention, CI, and hot-refresh signals into prioritized next actions."
+                           },
+                           {
+                               "path":  "lesson-replay.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only experience-index replay helper that finds matching lessons before repeated repairs or direction changes."
+                           },
+                           {
+                               "path":  "dispatch-learning.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only dispatch learning report from private team-task history with template stats, blocked-task counters, and routing recommendations."
+                           },
+                           {
+                               "path":  "trigger-simulation.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only trigger simulation tests for common continuation, search, release, architecture, and memory-sensitive routing scenarios."
+                           },
+                           {
+                               "path":  "intent-router.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only user intent classifier for continuation, status, fixes, features, release, memory recall, and team/review requests."
+                           },
+                           {
+                               "path":  "smart-next.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only next-action advisor combining intent routing, auto-continuation, dashboard state, and dispatch learning."
+                           },
+                           {
+                               "path":  "health-summary.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only compact human health summary for version, readiness, risks, recent task, and recommended next action."
+                           },
+                           {
+                               "path":  "agent-scorecard.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only Agent Team scorecards from template definitions and private team-task history."
+                           },
+                           {
+                               "path":  "task-retrospective.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes memory/workspace/last-retrospective.json with concise task lessons, evidence, and next-improvement hints."
+                           },
+                           {
+                               "path":  "release-readiness.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only release readiness check for current verification, full CI, hot refresh, privacy, and share package freshness."
+                           },
+                           {
+                               "path":  "brain.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Unified read-only Super Brain command for status, next action, intent classification, release readiness, scorecards, dispatch learning, CI hints, and help."
+                           },
+                           {
+                               "path":  "brain.bat",
+                               "tier":  "T2",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Double-click launcher for the Super Brain Console UI; delegates to brain-ui.vbs and reports startup failures."
+                           },
+                           {
+                               "path":  "brain-ui.vbs",
+                               "tier":  "T2",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "No-console launcher for the Super Brain Console application with first-run setup checks."
+                           },
+                           {
+                               "path":  "version-bump.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Apply"
+                                                     ],
+                               "notes":  "Safe version bump helper: dry-run preview by default, updates manifest, changelog, baseline, history, and graph lineage only with -Apply."
+                           },
+                           {
+                               "path":  "team-dispatch-check.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only Commander dispatch scoring for direct, single_delegate, team_parallel, and review_board levels."
+                           },
+                           {
+                               "path":  "team-template-list.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Lists private workspace Agent Team templates and initializes default templates when missing."
+                           },
+                           {
+                               "path":  "team-template-select.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Selects an Agent Team template from dispatch level and reasons without mutating team-task records."
+                           },
+                           {
+                               "path":  "team-task-new.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Creates a private workspace team-task JSON record for Commander-led subagent collaboration memory."
+                           },
+                           {
+                               "path":  "team-task-add-delegation.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Adds an evidence-focused subagent delegation report to a team-task record."
+                           },
+                           {
+                               "path":  "team-task-authorize.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Records Commander authorization for a code-capable delegation with allowed files, forbidden files, success criteria, verification commands, rollback, drift guard, and pending review."
+                           },
+                           {
+                               "path":  "team-task-review.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Records Commander review for code-capable delegations and flags out-of-scope or forbidden changed files."
+                           },
+                           {
+                               "path":  "team-task-review-gate.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only Drift Guard + Commander Review Gate for team-task records; blocks unfinished Commander decisions, unverified tasks, unreviewed code-capable delegations, missing authorization fields, and drift guard failures."
+                           },
+                           {
+                               "path":  "team-memory-retrieval.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only Team Memory Retrieval over private team-task records with query, scoring, top-k summaries, and optional delegation evidence."
+                           },
+                           {
+                               "path":  "team-task-audit.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only audit for code-capable delegation authorization, review, drift, and blocked scope expansion counters."
+                           },
+                           {
+                               "path":  "team-task-decision.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "WriteLongTerm"
+                                                     ],
+                               "notes":  "Records Commander adoption, rejection, conflict, and memory-admission decisions for team-task findings."
+                           },
+                           {
+                               "path":  "team-task-status.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only team-task index and recent collaboration status view."
+                           },
+                           {
+                               "path":  "team-task-index.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Rebuilds private workspace team-task index from team-task JSON records."
+                           },
+                           {
+                               "path":  "smoke-test.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Temporary install smoke test for install-ready behavior."
+                           },
+                           {
+                               "path":  "common.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Shared helpers for hook discovery, scoped memory layout, sharing policy, scope markers, runtime file inventory, and UTF-8 no BOM writes."
+                           },
+                           {
+                               "path":  "session-compact.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes compressed session notes."
+                           },
+                           {
+                               "path":  "migrate-memory-layout.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "Apply"
+                                                     ],
+                               "notes":  "Dry-run by default; imports old memory from memory\\merge-overlay or legacy roots, supports Merge/Overwrite modes, can clean the import folder after successful -Apply, and never deletes legacy roots by default."
+                           },
+                           {
+                               "path":  "add-current-state-priority.py",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "internal":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Legacy internal helper with hardcoded local paths; excluded from share."
+                           },
+                           {
+                               "path":  "update-entry-skill.py",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "internal":  true,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Legacy internal helper with hardcoded local paths; excluded from share."
+                           }
+                       ],
+    "memoryShortcut":  "memory:auto；G1 governs, ORC routes, Sandglass Hybrid Recall only on semantic/keyword recall; stable state only; private memory requires confirmation and [PRIVACY].",
+    "memoryModes":  [
+                        "auto",
+                        "force",
+                        "off"
+                    ],
+    "memoryRouter":  {
+                         "alwaysOn":  true,
+                         "fullInjection":  false,
+                         "retrieval":  "hybrid: sandglass + graph + state + recent with semantic + keyword scoring",
+                         "top_k":  3,
+                         "max_tokens":  1200,
+                         "summaryFirst":  true,
+                         "confidenceGated":  true,
+                         "evalHarness":  "memory-eval.ps1",
+                         "planMode":  "threshold_based",
+                         "exploreAgent":  "threshold_based"
+                     },
+    "recallTrigger":  "If the user mentions another session, previous work, remember, progress, accepted rules, Super Brain state, old decisions, or semantically depends on past context, search summary-first explicit memory and NexSandglass before answering."
+}

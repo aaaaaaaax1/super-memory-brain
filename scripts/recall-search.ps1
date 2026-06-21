@@ -1,0 +1,424 @@
+param(
+  [Parameter(Mandatory=$true)]
+  [string]$Query,
+  [int]$Limit = 0,
+  [int]$TopK = 0,
+  [int]$MaxTokens = 0,
+  [ValidateSet('all','profile','project','decision','task','session')]
+  [string]$Layer = 'all',
+  [ValidateSet('auto','force','off')]
+  [string]$MemoryMode = 'auto',
+  [switch]$NoSummaryFirst,
+  [switch]$Json
+)
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$Root = Split-Path -Parent $PSScriptRoot
+$MemoryRoot = Get-SuperBrainActiveMemoryRoot $Root
+$MemoryScripts = Join-Path $MemoryRoot 'scripts'
+$MemoryBase = Get-SuperBrainMemoryBaseRoot $Root
+$Policy = Get-Content -LiteralPath (Join-Path $Root 'memory-policy.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+if ($MemoryMode -eq 'off') {
+  if ($Json) { '[]' } else { Write-Host 'MEMORY_OFF retrieval skipped' }
+  exit 0
+}
+
+if ($TopK -le 0) { $TopK = [int]$Policy.retrieval.top_k }
+if ($Limit -gt 0) { $TopK = $Limit }
+if ($MaxTokens -le 0) { $MaxTokens = [int]$Policy.retrieval.max_tokens }
+$candidateLimit = [Math]::Max($TopK * 4, $TopK)
+$maxChars = [Math]::Max($MaxTokens * 4, 1)
+$injectConfidence = [double]$Policy.retrieval.confidence.inject
+$summaryConfidence = [double]$Policy.retrieval.confidence.summaryOnly
+$hybrid = $Policy.retrieval.hybrid
+$recencyPolicy = $Policy.retrieval.recency
+$contextBudget = $Policy.retrieval.contextBudget
+$cardSnippetTokens = if ($contextBudget -and $contextBudget.PSObject.Properties['cardSnippetTokens']) { [int]$contextBudget.cardSnippetTokens } else { 72 }
+$evidenceTokens = if ($contextBudget -and $contextBudget.PSObject.Properties['evidenceTokens']) { [int]$contextBudget.evidenceTokens } else { $MaxTokens }
+$cardSnippetChars = [Math]::Max(80, ($cardSnippetTokens * 4))
+$maxEvidenceCards = if ($contextBudget -and $contextBudget.PSObject.Properties['maxEvidenceCards']) { [Math]::Max(1, [int]$contextBudget.maxEvidenceCards) } else { 6 }
+if ($contextBudget -and [bool]$contextBudget.enabled) {
+  $budgetTokens = [Math]::Min($MaxTokens, $evidenceTokens)
+  $maxChars = [Math]::Max($budgetTokens * 4, 1)
+}
+
+function Test-IntentTrigger([string]$Text, [object[]]$Triggers) {
+  $lower = $Text.ToLowerInvariant()
+  foreach ($trigger in @($Triggers)) {
+    if ($lower.Contains(([string]$trigger).ToLowerInvariant())) { return $true }
+  }
+  return $false
+}
+
+function Get-PolicyNumber($Object, [string]$Name, [double]$Default) {
+  if ($null -ne $Object -and $null -ne $Object.PSObject.Properties[$Name]) { return [double]$Object.PSObject.Properties[$Name].Value }
+  return $Default
+}
+
+function Get-LayerTag([string]$LayerName) {
+  if ($LayerName -eq 'all') { return '' }
+  return [string]$Policy.layers.tagMap.$LayerName
+}
+
+function Get-ItemText($Item) {
+  if ($Item -is [array] -and $Item.Count -ge 3) { return [string]$Item[2] }
+  if ($null -ne $Item -and $Item.PSObject.Properties['text']) { return [string]$Item.text }
+  return [string]$Item
+}
+
+function Get-ItemSource($Item, [string]$Fallback) {
+  if ($Item -is [array] -and $Item.Count -ge 2) { return ([string]$Item[0] + ':' + [string]$Item[1]) }
+  if ($null -ne $Item -and $Item.PSObject.Properties['source']) { return [string]$Item.source }
+  return $Fallback
+}
+
+function Get-QueryTerms([string]$Text) {
+  return @($Text.ToLowerInvariant() -split '[^\p{L}\p{Nd}]+' | Where-Object { $_.Length -ge 2 } | Select-Object -Unique)
+}
+
+function Get-Tags([string]$Text) {
+  $tags = @()
+  foreach ($match in [regex]::Matches($Text, '\[[A-Z_]+\]')) { $tags += $match.Value }
+  return @($tags | Select-Object -Unique)
+}
+
+function Get-LayerFromText([string]$Text) {
+  foreach ($layerName in @($Policy.layers.allowed)) {
+    $tag = [string]$Policy.layers.tagMap.$layerName
+    if ($Text.Contains($tag)) { return $layerName }
+  }
+  if ($Text.Contains('[DECISION]') -or $Text.Contains('[ADR]')) { return 'decision' }
+  return 'project'
+}
+
+function Test-Expired([string]$Text) {
+  $expires = [regex]::Match($Text, 'expires=(\d{4}-\d{2}-\d{2})')
+  if (-not $expires.Success) { return $false }
+  try { return ([datetime]::Parse($expires.Groups[1].Value) -lt (Get-Date).Date) } catch { return $true }
+}
+
+function Get-TextTimestamp([string]$Text) {
+  $patterns = @(
+    'timestamp=(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?)',
+    'updatedAt=(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?)',
+    'checkedAt=(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?)'
+  )
+  foreach ($pattern in $patterns) {
+    $match = [regex]::Match($Text, $pattern)
+    if ($match.Success) {
+      try { return [datetime]::Parse($match.Groups[1].Value) } catch {}
+    }
+  }
+  return $null
+}
+
+function Get-AgeDays([Nullable[datetime]]$Timestamp) {
+  if (-not $Timestamp.HasValue) { return 9999.0 }
+  return [Math]::Max(0.0, ((Get-Date) - $Timestamp.Value).TotalDays)
+}
+
+function Get-RecencyBoost([string]$Text, [string]$SourceType, [Nullable[datetime]]$Timestamp) {
+  if (-not [bool]$recencyPolicy.enabled) { return 0.0 }
+  $ageDays = Get-AgeDays $Timestamp
+  $halfLife = [Math]::Max(1.0, (Get-PolicyNumber $recencyPolicy 'halfLifeDays' 14.0))
+  $maxBoost = [Math]::Max(0.0, (Get-PolicyNumber $recencyPolicy 'maxBoost' 0.22))
+  $recencyScore = [Math]::Pow(0.5, ($ageDays / $halfLife))
+  $boost = $recencyScore * $maxBoost
+  if ($SourceType -eq 'recent') { $boost += (Get-PolicyNumber $recencyPolicy 'recentSourceBoost' 0.08) }
+  if ($SourceType -eq 'state') { $boost += (Get-PolicyNumber $recencyPolicy 'currentSourceBoost' 0.05) }
+  if ($Text.Contains('[SESSION]')) { $boost += (Get-PolicyNumber $recencyPolicy 'sessionBoost' 0.12) }
+  if ($Text.Contains('[TASK]')) { $boost += (Get-PolicyNumber $recencyPolicy 'taskBoost' 0.10) }
+  if ($boost -gt $maxBoost) { $boost = $maxBoost }
+  return [Math]::Round($boost, 4)
+}
+
+function Get-IntentBoost([string]$Text, [string]$SourceType) {
+  $boost = 0.0
+  $profileIntent = Test-IntentTrigger $Query @($hybrid.profileIntentTriggers)
+  $experienceIntent = Test-IntentTrigger $Query @($hybrid.experienceIntentTriggers)
+  $personaIntent = Test-IntentTrigger $Query @($hybrid.personaIntentTriggers)
+  if ($Text.Contains('[PROFILE]')) { $boost += (Get-PolicyNumber $hybrid.boosts 'profile' 0.08) }
+  if ($Text.Contains('[SESSION]')) { $boost += (Get-PolicyNumber $hybrid.boosts 'session' 0.06) }
+  if ($Text.Contains('[TASK]')) { $boost += (Get-PolicyNumber $hybrid.boosts 'task' 0.05) }
+  if ($SourceType -eq 'persona') { $boost += (Get-PolicyNumber $hybrid.boosts 'persona' 0.09) }
+  if ($Text.ToLowerInvariant().Contains('experience')) { $boost += (Get-PolicyNumber $hybrid.boosts 'experience' 0.07) }
+  if ($profileIntent -and ($Text.Contains('[PROFILE]') -or $SourceType -eq 'persona')) { $boost += (Get-PolicyNumber $recencyPolicy 'profileIntentBoost' 0.12) }
+  if ($experienceIntent -and $Text.ToLowerInvariant().Contains('experience')) { $boost += (Get-PolicyNumber $recencyPolicy 'experienceIntentBoost' 0.08) }
+  if ($personaIntent -and $SourceType -eq 'persona') { $boost += (Get-PolicyNumber $recencyPolicy 'personaIntentBoost' 0.08) }
+  return [Math]::Round($boost, 4)
+}
+
+function Get-MatchStrength([string]$Text, [object[]]$Terms) {
+  $lowerText = $Text.ToLowerInvariant()
+  $lowerQuery = $Query.ToLowerInvariant()
+  $score = 0.0
+  if (-not [string]::IsNullOrWhiteSpace($lowerQuery) -and $lowerText.Contains($lowerQuery)) { $score += (Get-PolicyNumber $hybrid.boosts 'exactQuery' 0.15) }
+  foreach ($term in $Terms) {
+    if ($lowerText.Contains([string]$term)) { $score += (Get-PolicyNumber $hybrid.boosts 'termMatch' 0.04) }
+  }
+  return $score
+}
+
+function Get-CompactSnippet([string]$Text) {
+  $clean = ($Text -replace '\s+', ' ').Trim()
+  if ($clean.Length -le $cardSnippetChars) { return $clean }
+  return $clean.Substring(0, $cardSnippetChars) + '...'
+}
+
+function New-EvidenceCard([string]$Text, [string]$Source, [string]$SourceType, [string]$Reason, [string]$Layer, [double]$Confidence, [double]$AgeDays, [double]$RecencyScore, [string]$RecallPriority, [object[]]$Tags) {
+  $claim = Get-CompactSnippet $Text
+  return [pscustomobject]@{
+    source = $Source
+    sourceType = $SourceType
+    claim = $claim
+    whyRelevant = $Reason
+    confidence = [Math]::Round($Confidence, 4)
+    lastVerified = if ($Text.Contains('[VERIFIED]')) { 'verified' } else { 'unverified' }
+    layer = $Layer
+    tags = @($Tags)
+    ageDays = [Math]::Round($AgeDays, 2)
+    recencyScore = $RecencyScore
+    recallPriority = $RecallPriority
+    snippet = $claim
+    tokenEstimate = [Math]::Ceiling($claim.Length / 4)
+  }
+}
+
+function Get-CandidateScore([string]$Text, [string]$SourceType, [object[]]$Terms, [Nullable[datetime]]$Timestamp) {
+  $score = Get-PolicyNumber $hybrid.sourceWeights $SourceType 0.4
+  if ($Text.Contains('[SUMMARY]')) { $score += (Get-PolicyNumber $hybrid.boosts 'summary' 0.12) }
+  if ($Text.Contains('[CURRENT]')) { $score += (Get-PolicyNumber $hybrid.boosts 'current' 0.1) }
+  if ($Text.Contains('[VERIFIED]')) { $score += (Get-PolicyNumber $hybrid.boosts 'verified' 0.08) }
+  if ($Text.Contains('[ADR]')) { $score += (Get-PolicyNumber $hybrid.boosts 'adr' 0.08) }
+  if ($Text.Contains('[DECISION]')) { $score += (Get-PolicyNumber $hybrid.boosts 'decision' 0.06) }
+  $score += Get-MatchStrength $Text $Terms
+  $score += Get-IntentBoost $Text $SourceType
+  $score += Get-RecencyBoost $Text $SourceType $Timestamp
+  if ($Text.Contains('[NEGATIVE_FEEDBACK]')) { $score -= (Get-PolicyNumber $hybrid.penalties 'negativeFeedback' 0.22) }
+  if ($Text.Contains('[STALE]')) { $score -= (Get-PolicyNumber $hybrid.penalties 'stale' 0.3) }
+  if (Test-Expired $Text) { $score -= (Get-PolicyNumber $hybrid.penalties 'expired' 0.35) }
+  if ((Get-Tags $Text).Count -eq 0) { $score -= (Get-PolicyNumber $hybrid.penalties 'untagged' 0.05) }
+  if ($score -lt 0) { return 0.0 }
+  if ($score -gt 1) { return 1.0 }
+  return [Math]::Round($score, 4)
+}
+
+function New-Candidate([string]$Text, [string]$Source, [string]$SourceType, [string]$Reason, [object[]]$Terms) {
+  $timestamp = Get-TextTimestamp $Text
+  $ageDays = Get-AgeDays $timestamp
+  $recencyScore = Get-RecencyBoost $Text $SourceType $timestamp
+  $score = Get-CandidateScore $Text $SourceType $Terms $timestamp
+  $confidence = $score
+  $candidateText = if ($contextBudget -and [bool]$contextBudget.enabled) { Get-CompactSnippet $Text } else { $Text }
+  if ($confidence -lt $injectConfidence -and -not $candidateText.Contains('[SUMMARY]') -and $candidateText.Length -gt 320) {
+    $candidateText = $candidateText.Substring(0, 320) + '...'
+  }
+  $layerName = Get-LayerFromText $Text
+  $tags = @(Get-Tags $Text)
+  $priority = if ($Text.Contains('[PROFILE]')) { 'profile' } elseif ($Text.Contains('[SESSION]')) { 'session' } elseif ($Text.Contains('[TASK]')) { 'task' } else { $SourceType }
+  $evidenceCard = New-EvidenceCard $Text $Source $SourceType $Reason $layerName $confidence $ageDays $recencyScore $priority $tags
+  return [pscustomobject]@{
+    text = $candidateText
+    evidenceCard = $evidenceCard
+    source = $Source
+    sourceType = $SourceType
+    layer = $layerName
+    tags = @($tags)
+    score = $score
+    confidence = $confidence
+    reason = $Reason
+    ageDays = [Math]::Round($ageDays, 2)
+    recencyScore = $recencyScore
+    recallPriority = $priority
+    tokenEstimate = [Math]::Ceiling($candidateText.Length / 4)
+  }
+}
+
+function Add-Candidate([object[]]$Candidates, [object]$Candidate) {
+  if ($Candidate.confidence -lt $summaryConfidence) { return @($Candidates) }
+  $layerTag = Get-LayerTag $Layer
+  if (-not [string]::IsNullOrWhiteSpace($layerTag) -and -not ([string]$Candidate.text).Contains($layerTag)) { return @($Candidates) }
+  $key = ([string]$Candidate.text).ToLowerInvariant()
+  foreach ($existing in $Candidates) {
+    if (([string]$existing.text).ToLowerInvariant() -eq $key) { return @($Candidates) }
+  }
+  return @($Candidates + $Candidate)
+}
+
+function Test-StateQuery([string]$Text, [object[]]$Terms) {
+  $lower = $Text.ToLowerInvariant()
+  foreach ($trigger in @($hybrid.stateTriggers)) {
+    if ($lower.Contains(([string]$trigger).ToLowerInvariant())) { return $true }
+  }
+  foreach ($term in $Terms) {
+    if (@('version','baseline','manifest','changelog','progress') -contains $term) { return $true }
+  }
+  return $false
+}
+
+function Get-FileSnippet([string]$RelativePath, [object[]]$Terms) {
+  $path = Join-Path $Root $RelativePath
+  if (-not (Test-Path $path)) { return '' }
+  $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+  $index = -1
+  foreach ($term in $Terms) {
+    $found = $text.ToLowerInvariant().IndexOf(([string]$term).ToLowerInvariant())
+    if ($found -ge 0 -and ($index -lt 0 -or $found -lt $index)) { $index = $found }
+  }
+  if ($index -lt 0) { $index = 0 }
+  $start = [Math]::Max(0, $index - 220)
+  $length = [Math]::Min(900, $text.Length - $start)
+  $snippet = $text.Substring($start, $length).Trim()
+  return "[PROJECT][CURRENT][VERIFIED][SUMMARY] $RelativePath $snippet"
+}
+
+function Get-ExperienceSnippets([object[]]$Terms) {
+  $snippets = @()
+  $indexPath = Join-Path (Join-Path $MemoryBase 'workspace') 'experience-index.md'
+  if (Test-Path $indexPath) {
+    $indexText = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
+    $lowerIndex = $indexText.ToLowerInvariant()
+    $matched = $lowerIndex.Contains($Query.ToLowerInvariant())
+    foreach ($term in $Terms) { if ($lowerIndex.Contains([string]$term)) { $matched = $true; break } }
+    if ($matched) { $snippets += "[PROJECT][CURRENT][VERIFIED][SUMMARY] experience-index.md $($indexText.Substring(0, [Math]::Min(900, $indexText.Length)).Trim())" }
+  }
+  $experienceRoot = Join-Path (Join-Path $MemoryBase 'workspace') 'experiences'
+  if (Test-Path $experienceRoot) {
+    foreach ($file in @(Get-ChildItem -LiteralPath $experienceRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+      try { $experience = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { continue }
+      $experienceText = "$($experience.id) $($experience.title) $($experience.status) $($experience.scope) $(@($experience.triggers) -join ' ') $(@($experience.symptoms) -join ' ') $($experience.recallQuery) timestamp=$($experience.updatedAt)"
+      $lowerExperience = $experienceText.ToLowerInvariant()
+      $matched = $lowerExperience.Contains($Query.ToLowerInvariant())
+      foreach ($term in $Terms) { if ($lowerExperience.Contains([string]$term)) { $matched = $true; break } }
+      if ($matched) {
+        $snippets += "[PROJECT][CURRENT][VERIFIED][SUMMARY] experience $($experience.id) title=$($experience.title) status=$($experience.status) confidence=$($experience.confidence) recallQuery=$($experience.recallQuery) updatedAt=$($experience.updatedAt) evidence=$(@($experience.evidence) -join ',')"
+      }
+    }
+  }
+  return @($snippets)
+}
+
+function Get-PersonaSnippets([object[]]$Terms) {
+  $snippets = @()
+  $personaPath = Join-Path (Join-Path $MemoryRoot 'persona') 'persona.md'
+  if (-not (Test-Path $personaPath)) { return @() }
+  $text = Get-Content -LiteralPath $personaPath -Raw -Encoding UTF8
+  $lower = $text.ToLowerInvariant()
+  $matched = Test-IntentTrigger $Query @($hybrid.personaIntentTriggers)
+  if (-not $matched) {
+    $matched = $lower.Contains($Query.ToLowerInvariant())
+    foreach ($term in $Terms) { if ($lower.Contains([string]$term)) { $matched = $true; break } }
+  }
+  if ($matched) {
+    $snippet = $text.Substring(0, [Math]::Min(900, $text.Length)).Trim()
+    $snippets += "[PROFILE][CURRENT][VERIFIED][SUMMARY] persona\persona.md $snippet"
+  }
+  return @($snippets)
+}
+
+$terms = Get-QueryTerms $Query
+$candidates = @()
+
+$env:NEXSANDBASE_HOME = $MemoryRoot
+$env:PYTHONPATH = $MemoryScripts
+$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Query))
+$code = "import base64,json; from sandglass_vault import search; q=base64.b64decode('$b64').decode('utf-8'); print(json.dumps(search(q)[:$candidateLimit], ensure_ascii=False))"
+try {
+  $result = (& python -c $code) -join "`n"
+  if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($result)) {
+    foreach ($item in @($result | ConvertFrom-Json)) {
+      $text = Get-ItemText $item
+      if ([string]::IsNullOrWhiteSpace($text)) { continue }
+      $candidate = New-Candidate $text (Get-ItemSource $item 'sandglass') 'sandglass' 'sandglass_search' $terms
+      $candidates = Add-Candidate $candidates $candidate
+    }
+  }
+} catch {}
+
+$graphPath = Join-Path $MemoryBase 'graph.jsonl'
+if (Test-Path $graphPath) {
+  $lineNumber = 0
+  foreach ($line in @(Get-Content -LiteralPath $graphPath -Encoding UTF8)) {
+    $lineNumber += 1
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try { $node = $line.TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { continue }
+    $graphText = "$($node.subject) $($node.relation) $($node.object) $($node.evidence) $($node.tags)"
+    $lowerGraph = $graphText.ToLowerInvariant()
+    $matched = $lowerGraph.Contains($Query.ToLowerInvariant())
+    foreach ($term in $terms) { if ($lowerGraph.Contains([string]$term)) { $matched = $true; break } }
+    if (-not $matched -and -not (Test-StateQuery $Query $terms)) { continue }
+    $candidate = New-Candidate $graphText ("memory\\graph.jsonl:$lineNumber") 'graph' 'graph_decision_or_lineage' $terms
+    $candidates = Add-Candidate $candidates $candidate
+  }
+}
+
+if (Test-StateQuery $Query $terms) {
+  foreach ($relativePath in @('CURRENT_BASELINE.md','manifest.json','CHANGELOG.md')) {
+    $snippet = Get-FileSnippet $relativePath $terms
+    if (-not [string]::IsNullOrWhiteSpace($snippet)) {
+      $candidate = New-Candidate $snippet $relativePath 'state' 'state_recall_priority' $terms
+      $candidates = Add-Candidate $candidates $candidate
+    }
+  }
+}
+
+foreach ($snippet in @(Get-ExperienceSnippets $terms)) {
+  if (-not [string]::IsNullOrWhiteSpace($snippet)) {
+    $candidate = New-Candidate $snippet 'memory\workspace\experience-index.md' 'state' 'experience_index_recall' $terms
+    $candidates = Add-Candidate $candidates $candidate
+  }
+}
+
+foreach ($snippet in @(Get-PersonaSnippets $terms)) {
+  if (-not [string]::IsNullOrWhiteSpace($snippet)) {
+    $candidate = New-Candidate $snippet 'persona\persona.md' 'persona' 'persona_recall_priority' $terms
+    $candidates = Add-Candidate $candidates $candidate
+  }
+}
+
+if ($candidates.Count -lt $TopK -and [bool]$hybrid.fallbackRecentWhenBelowTopK) {
+  $recentCode = "import json; from sandglass_vault import recent; print(json.dumps(recent($candidateLimit), ensure_ascii=False))"
+  try {
+    $recentResult = (& python -c $recentCode) -join "`n"
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($recentResult)) {
+      foreach ($item in @($recentResult | ConvertFrom-Json)) {
+        $text = Get-ItemText $item
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $candidate = New-Candidate $text (Get-ItemSource $item 'recent') 'recent' 'recent_fallback' $terms
+        $candidates = Add-Candidate $candidates $candidate
+      }
+    }
+  } catch {}
+}
+
+$summaryFirst = ([bool]$Policy.retrieval.summaryFirst -and -not $NoSummaryFirst)
+if ($summaryFirst) {
+  $candidates = @($candidates | Sort-Object @{ Expression = { -not ([string]$_.text).Contains('[SUMMARY]') } }, @{ Expression = 'score'; Descending = $true }, @{ Expression = 'confidence'; Descending = $true })
+} else {
+  $candidates = @($candidates | Sort-Object @{ Expression = 'score'; Descending = $true }, @{ Expression = 'confidence'; Descending = $true })
+}
+
+$selected = @()
+$usedChars = 0
+$effectiveTopK = if ($contextBudget -and [bool]$contextBudget.enabled) { [Math]::Min($TopK, $maxEvidenceCards) } else { $TopK }
+foreach ($candidate in $candidates) {
+  if ($selected.Count -ge $effectiveTopK) { break }
+  $budgetText = if ($contextBudget -and [bool]$contextBudget.enabled -and $candidate.evidenceCard) { [string]$candidate.evidenceCard.snippet } else { [string]$candidate.text }
+  $nextChars = $usedChars + $budgetText.Length
+  if ($nextChars -gt $maxChars -and $selected.Count -gt 0) { break }
+  $selected += $candidate
+  $usedChars = $nextChars
+}
+
+if ($Json) {
+  if ($selected.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject @($selected) -Depth 8 -Compress }
+} else {
+  foreach ($item in $selected) {
+    Write-Host ($item | ConvertTo-Json -Compress -Depth 8)
+  }
+}

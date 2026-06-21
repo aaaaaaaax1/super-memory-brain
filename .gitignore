@@ -1,0 +1,48 @@
+# Super Memory Brain public release guardrails
+# This share package is intended for GitHub/public distribution.
+# Keep local memory, machine-specific state, caches, logs, and secrets out of git.
+
+# Local memory and state
+memory/shared/**
+memory/agents/**
+memory/groups/**
+memory/workspace/**
+memory/persona/**
+memory/archive/**
+memory/**/*.db
+memory/**/*.idx
+memory/**/*.bak*
+memory/**/sandglass.txt
+memory/**/decision_particles.txt
+memory/**/shadow_sand.db
+memory/**/metrics.jsonl
+memory/**/search_weights.txt
+
+# Local install markers and sharing policy
+package-root.txt
+memory-root.txt
+.memory-scope.json
+memory-sharing-policy.json
+
+# Generated caches
+__pycache__/
+*.pyc
+
+# Backups and generated releases
+install-backup-*/
+super-memory-brain-package-share*/
+super-memory-brain-package-private*/
+super-memory-brain-package-release-v*/
+
+# Secrets and key material
+.env
+*.env
+*.secret
+*.key
+*.pem
+*.pfx
+
+# Logs and local status snapshots
+*.log
+memory/workspace/last-*.json
+memory/workspace/last-*.log
