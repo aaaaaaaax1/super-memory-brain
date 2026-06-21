@@ -1,0 +1,95 @@
+[
+  {
+    "id": "static-hybrid-recall-policy",
+    "question": "Hybrid Recall 是否有多源评分与置信门控？",
+    "mode": "staticSources",
+    "sources": ["memory-policy.json", "scripts/recall-search.ps1"],
+    "mustContain": ["hybrid", "sourceWeights", "confidence", "sourceType", "tokenEstimate"],
+    "mustNotContain": [],
+    "tags": ["hybrid", "policy"],
+    "weight": 1
+  },
+  {
+    "id": "static-adr-lifecycle",
+    "question": "ADR 是否具备 status/context/consequence/supersedes 审计链？",
+    "mode": "staticSources",
+    "sources": ["scripts/write-decision.ps1", "scripts/decision-search.ps1", "scripts/decision-audit.ps1"],
+    "mustContain": ["[ADR]", "has_status", "has_context", "has_consequence", "superseded_by", "AdrOnly"],
+    "mustNotContain": [],
+    "tags": ["adr", "decision"],
+    "weight": 1
+  },
+  {
+    "id": "recall-state-version",
+    "question": "当前 super-memory-brain 版本是多少？",
+    "mode": "recallSearch",
+    "topK": 3,
+    "maxTokens": 1200,
+    "minResults": 1,
+    "minConfidence": 0.2,
+    "mustContain": ["CURRENT_BASELINE.md", "Package Version"],
+    "mustNotContain": ["MEMORY_OFF"],
+    "tags": ["hybrid", "state"],
+    "weight": 1
+  },
+  {
+    "id": "decision-adr-schema-static",
+    "question": "ADR schema audit counters 是否存在？",
+    "mode": "staticSources",
+    "sources": ["scripts/decision-audit.ps1", "scripts/memory-health.ps1"],
+    "mustContain": ["adrGraphCount", "adrCurrentCount", "adrSupersededCount", "adrSchemaIssueCount"],
+    "mustNotContain": [],
+    "tags": ["adr", "audit"],
+    "weight": 1
+  },
+  {
+    "id": "static-recall-recency-persona",
+    "question": "Hybrid Recall 是否支持近事优先和 persona/profile 优先？",
+    "mode": "staticSources",
+    "sources": ["memory-policy.json", "scripts/recall-search.ps1", "README.md"],
+    "mustContain": ["recency", "profileIntentTriggers", "Get-RecencyBoost", "Get-PersonaSnippets", "recencyScore", "ageDays"],
+    "mustNotContain": [],
+    "tags": ["hybrid", "recency", "persona"],
+    "weight": 1
+  },
+  {
+    "id": "static-context-budget-evidence-cards",
+    "question": "召回是否支持 token budget 和 evidence cards？",
+    "mode": "staticSources",
+    "sources": ["memory-policy.json", "scripts/recall-search.ps1", "README.md"],
+    "mustContain": ["contextBudget", "evidenceTokens", "cardSnippetTokens", "New-EvidenceCard", "evidenceCard", "whyRelevant", "tokenEstimate"],
+    "mustNotContain": [],
+    "tags": ["token-budget", "evidence-card"],
+    "weight": 1
+  },
+  {
+    "id": "static-checkpoint-lifecycle",
+    "question": "任务断点是否具备 start/complete/clear 生命周期？",
+    "mode": "staticSources",
+    "sources": ["memory-policy.json", "scripts/checkpoint-writer.ps1", "scripts/auto-continuation.ps1", "scripts/completion-guard.ps1", "scripts/status-snapshot-writer.ps1", "scripts/task-verification.ps1"],
+    "mustContain": ["checkpointLifecycle", "active-checkpoint.json", "Start", "Complete", "Clear", "currentStep", "nextAction", "checkpointStatus"],
+    "mustNotContain": [],
+    "tags": ["checkpoint", "state"],
+    "weight": 1
+  },
+  {
+    "id": "static-optimization-advisor",
+    "question": "超级大脑是否能给出只读优化建议？",
+    "mode": "staticSources",
+    "sources": ["scripts/optimize-advisor.ps1", "scripts/brain.ps1", "manifest.json"],
+    "mustContain": ["OPTIMIZE_ADVISOR", "topAdvice", "memory-quality-fixer.ps1 -ShowDetails", "optimize", "optimize-advisor.ps1"],
+    "mustNotContain": ["Remove-Item", "Set-Content", "Add-Content"],
+    "tags": ["optimization", "advisor"],
+    "weight": 1
+  },
+  {
+    "id": "static-bare-superbrain-trigger",
+    "question": "裸词 超级大脑/G1 是否必须触发 super-memory-brain 并走 G1？",
+    "mode": "staticSources",
+    "sources": ["super-memory-brain/SKILL.md", "scripts/trigger-simulation.ps1", "scripts/startup-check.ps1", "scripts/repair-hook.ps1"],
+    "mustContain": ["Bare Super Brain trigger rule", "Super Brain fault trigger rule", "Do not treat these bare wake words as ordinary greeting/chat", "brain_fault_bare", "human_brain_self_report", "human_self_report_excluded", "bare_superbrain_zh", "bare_g1", "requiresG1", "Hook bare Super Brain wake words", "load Skill super-memory-brain first"],
+    "mustNotContain": [],
+    "tags": ["trigger", "g1", "skill-routing"],
+    "weight": 1
+  }
+]

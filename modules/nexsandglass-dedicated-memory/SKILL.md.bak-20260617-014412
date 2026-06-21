@@ -1,0 +1,134 @@
+---
+name: nexsandglass-dedicated-memory
+description: Use for NexSandglass / 沙漏 / DedicatedMemory local-first agent memory: writing durable local memories, searching local sandglass history, decision particles, drift/persona/soul memory, MCP memory server setup, or coordinating NexSandglass with skill-orchestrator / 超级大脑 and plusunm-g1. Trigger when the user mentions NexSandglass, Sandglass, 沙漏, DedicatedMemory, local agent memory, memory engine, memory search, sandglass_mcp, sandglass_log, sandglass_vault, or wants a second memory layer beside G1.
+---
+
+# NexSandglass Dedicated Memory
+
+Use NexSandglass as a local-first memory engine behind ORC/G1, not as a replacement for the current control layer.
+
+## Roles
+
+- `skill-orchestrator / ORC / 超级大脑`: routing brain. Decides whether this skill is needed.
+- `plusunm-g1`: primary governed memory gate. It decides durable memory policy and conflict precedence.
+- `nexsandglass-dedicated-memory`: auxiliary local memory engine for plaintext sandglass logging, search, decision particles, drift/persona traces, and optional MCP service.
+
+Precedence:
+1. Latest user instruction.
+2. Live files and verified tool output.
+3. Explicit project memory / G1 state.
+4. NexSandglass search results.
+5. Older summaries or model memory.
+
+## Installed Paths
+
+- Source repo: `C:\Users\MSJ\Documents\Codex\2026-06-02\new-chat\_skill_downloads\NexSandglass-Agent-DedicatedMemory`
+- Runtime scripts: `C:\Users\MSJ\.neurobase\scripts`
+- Data root: `C:\Users\MSJ\.neurobase`
+- Main data file: `C:\Users\MSJ\.neurobase\sandglass.txt`
+- Decision file: `C:\Users\MSJ\.neurobase\decision_particles.txt`
+- MCP entry: `C:\Users\MSJ\.neurobase\scripts\sandglass_mcp.py`
+
+NexSandglass uses `NEXSANDBASE_HOME` if set; otherwise it defaults to `%USERPROFILE%\.neurobase`.
+
+## Safe Memory Rules
+
+Write only compact durable facts that help future work:
+- accepted user preferences and stable rules;
+- important decisions and why they were accepted;
+- reusable workflow recipes;
+- project milestones, blockers, and next actions.
+
+Never write:
+- API keys, tokens, passwords, cookies, private credentials;
+- raw base64, full payloads, complete responses, full SSE streams, full image reference objects;
+- huge logs, temporary debug dumps, rejected drafts, or sensitive personal data unless explicitly required.
+
+NexSandglass stores plaintext. Treat it as local durable memory protected by OS-level disk security, not as a secret store.
+
+## Default Memory Write Policy
+
+System shortcut: `G1审记，ORC调度，沙漏只存稳态；不存秘密、噪音、猜测、长原文。`
+
+Use this compressed policy for every new message or stable decision:
+
+1. Let `plusunm-g1` decide whether the fact is durable enough to keep.
+2. Let `skill-orchestrator / ORC` decide whether NexSandglass is needed at all.
+3. Write to NexSandglass only when the fact is one of these:
+   - stable user preference;
+   - accepted rule or baseline;
+   - important decision or rollback point;
+   - reusable command, path, or workflow;
+   - blocker, milestone, or verified result.
+4. Do not write transient chat, guesses, noise, secrets, or long raw output.
+5. If uncertain, do not write yet; wait for confirmation or later acceptance.
+6. When a user says a rule is accepted or asks to remember it, write the shortest durable form and avoid duplication.
+
+## Fast Path
+
+Before using NexSandglass, let G1/ORC decide whether memory search or write is useful.
+
+### Search memory
+
+Use when the user asks what was decided before, mentions old context, or needs recall beyond current chat.
+
+```powershell
+$env:PYTHONPATH="$env:USERPROFILE\.neurobase\scripts"
+python -c "from sandglass_vault import search; print(search('关键词'))"
+```
+
+For recent entries:
+
+```powershell
+$env:PYTHONPATH="$env:USERPROFILE\.neurobase\scripts"
+python -c "from sandglass_vault import recent; print(recent(5))"
+```
+
+### Write memory
+
+Use only after G1 policy says the fact is durable and non-secret.
+
+```powershell
+$env:PYTHONPATH="$env:USERPROFILE\.neurobase\scripts"
+python -c "from sandglass_log import log_message; log_message('short durable event', 'agent')"
+```
+
+Prefer `sender='user'` for durable user-stated rules/preferences, and `sender='agent'` for assistant workflow notes that passed the value filter.
+
+### Write decision particle
+
+Use for explicit choices, accepted route decisions, or A/B decisions.
+
+```powershell
+$env:PYTHONPATH="$env:USERPROFILE\.neurobase\scripts"
+python -c "from decision_particles import log; log('选A还是B', 'B')"
+```
+
+## MCP Server
+
+Start the local MCP service when a client needs it:
+
+```powershell
+$env:PYTHONPATH="$env:USERPROFILE\.neurobase\scripts"
+python "$env:USERPROFILE\.neurobase\scripts\sandglass_mcp.py"
+```
+
+The upstream README says the service runs on `localhost:8765`. Verify with the actual server output before configuring clients.
+
+## Coordination With Super Brain + G1
+
+Default route for new messages:
+
+```text
+User message
+→ plusunm-g1 memory gate
+→ skill-orchestrator / ORC routing
+→ nexsandglass-dedicated-memory only when local memory search/write helps
+→ domain skill or direct answer
+```
+
+Use NexSandglass to extend recall depth, not to override G1. If NexSandglass returns stale or conflicting memory, say so and prefer current files/user instruction.
+
+## References
+
+Read `references/nexsandglass-usage.md` when you need command examples, install verification, or the repo's feature map.

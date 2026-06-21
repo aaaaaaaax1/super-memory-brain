@@ -1,0 +1,207 @@
+{
+  "version": "0.5.16",
+  "memoryShortcut": "memory:auto；G1 governs, ORC routes, Sandglass hybrid recall only on semantic/keyword recall; stable state only; private memory requires confirmation and [PRIVACY].",
+  "memoryModes": ["auto", "force", "off"],
+  "provenanceRequired": ["platform", "agent", "sessionId", "taskId", "timestamp", "status", "source", "evidence"],
+  "checkpointLifecycle": {
+    "preExecution": "write active checkpoint before long-running or pre-approved tasks with platform, agent, session/task code, timestamp, current step, and blockers",
+    "completion": "clear or supersede the active checkpoint after verification and write a completed state with evidence and next action"
+  },
+  "requiredTags": [
+    "[CURRENT]",
+    "[VERIFIED]",
+    "[HISTORY]",
+    "[STALE]",
+    "[BLOCKER]",
+    "[KNOWN_LIMITATION]",
+    "[PRIVACY]",
+    "[DECISION]",
+    "[ADR]",
+    "[PROFILE]",
+    "[PROJECT]",
+    "[TASK]",
+    "[SESSION]",
+    "[SUMMARY]",
+    "[NEGATIVE_FEEDBACK]",
+    "[TEAM_TASK]",
+    "[COMMANDER]",
+    "[DELEGATION]",
+    "[EVIDENCE]"
+  ],
+  "layers": {
+    "allowed": ["profile", "project", "decision", "task", "session"],
+    "default": "project",
+    "tagMap": {
+      "profile": "[PROFILE]",
+      "project": "[PROJECT]",
+      "decision": "[DECISION]",
+      "task": "[TASK]",
+      "session": "[SESSION]"
+    }
+  },
+  "teamTasks": {
+    "enabled": true,
+    "storage": "memory/workspace/team-tasks",
+    "index": "memory/workspace/team-task-index.json",
+    "defaultSharePolicy": "private_workspace_excluded",
+    "dispatchLevels": ["direct", "single_delegate", "team_parallel", "review_board"],
+    "requiredDelegationFields": ["role", "task", "status", "findings", "evidence", "assumptions", "unknowns", "risks", "recommendation"],
+    "memoryAdmission": {
+      "allow": ["user_approved_rule", "verified_fact", "accepted_decision", "failed_verification_lesson", "reusable_workflow"],
+      "block": ["raw_speculation", "unverified_recommendation", "message_noise", "private_data_without_confirmation", "large_raw_log"]
+    },
+    "codeCapable": {
+      "defaultMode": "read-only",
+      "requiresCommanderAuthorization": true,
+      "requiresAllowedFiles": true,
+      "requiresForbiddenFiles": true,
+      "requiresVerificationCommands": true,
+      "requiresRollback": true,
+      "requiresReviewBeforeAcceptance": true,
+      "patchApplication": "reserved_not_automatic"
+    }
+  },
+  "retrieval": {
+    "top_k": 3,
+    "max_tokens": 1200,
+    "summaryFirst": true,
+    "contextBudget": {
+      "enabled": true,
+      "profileTokens": 120,
+      "checkpointTokens": 160,
+      "stateTokens": 220,
+      "evidenceTokens": 700,
+      "rawFallbackTokens": 180,
+      "cardSnippetTokens": 72,
+      "maxEvidenceCards": 6,
+      "defaultOutput": "evidenceCard"
+    },
+    "confidence": {
+      "inject": 0.6,
+      "summaryOnly": 0.2
+    },
+    "recency": {
+      "enabled": true,
+      "halfLifeDays": 14,
+      "maxBoost": 0.22,
+      "sessionBoost": 0.12,
+      "taskBoost": 0.1,
+      "profileIntentBoost": 0.12,
+      "experienceIntentBoost": 0.08,
+      "personaIntentBoost": 0.08,
+      "recentSourceBoost": 0.08,
+      "currentSourceBoost": 0.05
+    },
+    "hybrid": {
+      "enabled": true,
+      "sourceWeights": {
+        "sandglass": 0.55,
+        "graph": 0.7,
+        "state": 0.75,
+        "recent": 0.35,
+        "persona": 0.62
+      },
+      "boosts": {
+        "summary": 0.12,
+        "current": 0.1,
+        "verified": 0.08,
+        "adr": 0.08,
+        "decision": 0.06,
+        "exactQuery": 0.15,
+        "termMatch": 0.04,
+        "profile": 0.08,
+        "session": 0.06,
+        "task": 0.05,
+        "experience": 0.07,
+        "persona": 0.09
+      },
+      "penalties": {
+        "negativeFeedback": 0.22,
+        "stale": 0.3,
+        "expired": 0.35,
+        "untagged": 0.05
+      },
+      "sources": ["sandglass", "graph", "state", "recent", "persona"],
+      "fallbackRecentWhenBelowTopK": true,
+      "stateTriggers": ["当前", "状态", "版本", "进度", "改到哪", "super-memory-brain", "baseline", "changelog", "manifest"],
+      "profileIntentTriggers": ["你觉得我是什么样的人", "我是什么样的人", "我的性格", "我的偏好", "按我的习惯来", "你还记得我吗", "还记得我", "我的经历", "我的风格", "我的习惯"],
+      "experienceIntentTriggers": ["我的经历", "之前踩过的坑", "以前怎么做", "按之前经验", "经验", "教训", "复盘"],
+      "personaIntentTriggers": ["你觉得我", "我的风格", "我的性格", "我通常怎么做"]
+    },
+    "keywordTriggers": ["上次", "之前", "记住", "我的偏好", "历史", "这个项目", "继续", "还记得", "决策", "方向", "目标", "长上下文", "大目标", "连续失败", "越改越偏", "经验目录", "我的性格", "我的经历", "我的习惯"],
+    "semanticTriggers": ["按我的习惯来", "照之前方案继续", "还是那个项目", "接着做", "按已有约定", "项目有进度但方向不明确", "需要保持用户需求", "需要保持已接受决策", "连续一个大目标推进", "先查经验", "先按我的偏好来", "先想想我是什么风格"]
+  },
+  "adr": {
+    "statuses": ["proposed", "accepted", "deprecated", "superseded", "rejected"],
+    "defaultStatus": "accepted",
+    "requiredRelations": ["decides", "has_title", "has_status", "has_context", "has_consequence"],
+    "currentStatuses": ["proposed", "accepted"]
+  },
+  "expiry": {
+    "profileDays": 365,
+    "decisionDays": 180,
+    "projectDays": 60,
+    "taskDays": 14,
+    "sessionDays": 3
+  },
+  "feedback": {
+    "negativePatterns": ["不是这个", "别按上次", "不对", "错了", "以后不要"],
+    "negativeTag": "[NEGATIVE_FEEDBACK]"
+  },
+  "logging": {
+    "minimal": true,
+    "noRawMemoryInHealth": true,
+    "noRawPrivateInLogs": true
+  },
+  "writeAllowSignals": [
+    "记住",
+    "以后都",
+    "默认",
+    "采用",
+    "就这个",
+    "按这个来",
+    "按我的习惯来",
+    "我的偏好",
+    "我的性格",
+    "我的经历",
+    "我是一个",
+    "我喜欢",
+    "我通常",
+    "verified",
+    "baseline",
+    "CURRENT",
+    "VERIFIED",
+    "DECISION",
+    "ADR"
+  ],
+  "privatePatterns": [
+    "api key",
+    "apikey",
+    "password",
+    "passwd",
+    "token",
+    "cookie",
+    "secret",
+    "BEGIN PRIVATE KEY",
+    "base64,",
+    "data:image",
+    "Authorization: Bearer",
+    "身份证",
+    "手机号",
+    "住址",
+    "银行卡"
+  ],
+  "maxMemoryChars": 800,
+  "admissionThreshold": 3,
+  "scores": {
+    "explicitRemember": 3,
+    "verifiedResult": 2,
+    "currentBaseline": 3,
+    "decision": 2,
+    "adr": 3,
+    "reusableWorkflow": 2,
+    "temporaryChatPenalty": -3,
+    "privateNeedsConfirmation": 0,
+    "tooLongPenalty": -2
+  }
+}

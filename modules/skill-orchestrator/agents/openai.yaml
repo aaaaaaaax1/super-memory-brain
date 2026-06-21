@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skill Orchestrator"
+  short_description: "Concise assistant brain for skills, plugins, and clean workflows."
+  default_prompt: "Use $skill-orchestrator to finish my request with global skill discipline, fast response mode, anti-stall progress updates, clean routing, stable solutions, no filler, concise answers, PlusUNM explicit memory, and solved-task memory."
+
+policy:
+  allow_implicit_invocation: true

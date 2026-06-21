@@ -1,0 +1,7 @@
+interface:
+  display_name: "PlusUNM G1"
+  short_description: "Explicit governed memory for Codex continuity."
+  default_prompt: "Use $plusunm-g1 to prefer explicit PlusUNM/local state over hidden AI memory, keep compact durable context, prune stale memory, and resume work from verified state."
+
+policy:
+  allow_implicit_invocation: true
