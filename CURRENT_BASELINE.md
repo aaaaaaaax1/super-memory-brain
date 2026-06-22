@@ -1,8 +1,8 @@
 # CURRENT_BASELINE
 
-Last Updated: 2026-06-20
+Last Updated: 2026-06-22
 Status: [CURRENT][VERIFIED]
-Package Version: 0.5.41
+Package Version: 0.5.43
 
 ## Current State
 
@@ -42,6 +42,11 @@ G1 governs memory; ORC routes only when needed; Sandglass stores stable state on
 ``
 
 ## Verified Capabilities
+
+- [VERIFIED] Super Brain slimming safety invariant is active: optimization must not damage overall function, remove capability chains, or introduce logic/function breakpoints.
+- [VERIFIED] Commander Team Memory is explicit-only from the public entry; normal Super Brain wake/status/recall/learn/session-restore automatic triggers remain active, but team templates, team-task state, and dispatch scoring stay unloaded until explicit team/subagent/review_board/code-capable approval.
+- [VERIFIED] Script inventory remains complete in `manifest.scripts`, while `manifest.scriptGroups` and `script-tiers.ps1` provide compact grouped views without breaking verification.
+- [VERIFIED] Memory index defaults are slimmer through smaller evidence cards, profile cards, session restore previews, and state/experience/persona snippets while preserving state/graph/Sandglass/recent/persona recall sources.
 
 - [VERIFIED] Installed ZCode/Codex skill directories use `package-root.txt` to point to the current dynamic package root.
 - [VERIFIED] Installed ZCode/Codex skill directories use `memory-root.txt` to point to the active memory root.

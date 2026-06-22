@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.43
+
+- Hardened `learn-memory.ps1` CLI handling for repeated string-array values by accepting remaining arguments and routing extra `[TAG]` values into tags instead of failing positional binding.
+- Added Tool schema discipline to Super Brain and ORC so optional workflow tools such as TodoWrite are not retried with identical invalid arguments after schema validation failures.
+
+## 0.5.42
+
+- Added Super Brain slimming safety invariants: optimization must not damage overall function or introduce logic/function breakpoints.
+- Slimmed cold-start routing by making Commander Team Memory explicit-only from the public entry while preserving Super Brain automatic wake/status/recall/learn/session-restore triggers.
+- Added compact script groups for script inventory display while keeping the full manifest script truth source intact.
+- Reduced default memory evidence-card/session/profile snippet budgets without deleting recall sources or durable memory.
+
 ## 0.5.41
 
 - Added preview-first learning with similar-memory duplicate checks to `learn-memory.ps1`, including `-Preview`, `-AllowDuplicate`, and compact similar evidence cards.

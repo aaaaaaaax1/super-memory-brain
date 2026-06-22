@@ -2,6 +2,7 @@ param(
   [ValidateSet('T0','T1','T2','T3')]
   [string]$Tier = '',
   [switch]$IncludeInternal,
+  [switch]$Full,
   [switch]$Json
 )
 
@@ -20,7 +21,9 @@ if (-not [string]::IsNullOrWhiteSpace($Tier)) {
 $result = [pscustomobject]@{
   version = $manifest.version
   tiers = $manifest.scriptTiers
+  scriptGroups = if ($manifest.PSObject.Properties['scriptGroups']) { $manifest.scriptGroups } else { $null }
   includeInternal = [bool]$IncludeInternal
+  compact = -not [bool]$Full
   filterTier = if ([string]::IsNullOrWhiteSpace($Tier)) { $null } else { $Tier }
   scripts = @($entries | Sort-Object tier,path | ForEach-Object {
     [pscustomobject]@{
@@ -37,16 +40,24 @@ $result = [pscustomobject]@{
 if ($Json) {
   $result | ConvertTo-Json -Depth 6
 } else {
-  Write-Host "SCRIPT_TIERS version=$($result.version) count=$($result.scripts.Count) includeInternal=$($result.includeInternal) tier=$($result.filterTier)"
-  foreach ($group in @($result.scripts | Group-Object tier | Sort-Object Name)) {
-    Write-Host "[$($group.Name)] $($manifest.scriptTiers.$($group.Name))"
-    foreach ($script in @($group.Group | Sort-Object path)) {
-      $flags = @()
-      if ($script.manualOnly) { $flags += 'manual' }
-      if ($script.internal) { $flags += 'internal' }
-      if ($script.dangerousSwitches.Count -gt 0) { $flags += ('switches=' + ($script.dangerousSwitches -join ',')) }
-      $flagText = if ($flags.Count -gt 0) { ' ' + ($flags -join ';') } else { '' }
-      Write-Host "  - $($script.path)$flagText"
+  Write-Host "SCRIPT_TIERS version=$($result.version) count=$($result.scripts.Count) includeInternal=$($result.includeInternal) compact=$($result.compact) tier=$($result.filterTier)"
+  if (-not $Full -and $result.scriptGroups) {
+    foreach ($group in @($result.scriptGroups.PSObject.Properties | Sort-Object Name)) {
+      $items = @($group.Value)
+      Write-Host "[$($group.Name)] count=$($items.Count) $($items -join ', ')"
+    }
+    Write-Host 'Use -Full to print the complete script list.'
+  } else {
+    foreach ($group in @($result.scripts | Group-Object tier | Sort-Object Name)) {
+      Write-Host "[$($group.Name)] $($manifest.scriptTiers.$($group.Name))"
+      foreach ($script in @($group.Group | Sort-Object path)) {
+        $flags = @()
+        if ($script.manualOnly) { $flags += 'manual' }
+        if ($script.internal) { $flags += 'internal' }
+        if ($script.dangerousSwitches.Count -gt 0) { $flags += ('switches=' + ($script.dangerousSwitches -join ',')) }
+        $flagText = if ($flags.Count -gt 0) { ' ' + ($flags -join ';') } else { '' }
+        Write-Host "  - $($script.path)$flagText"
+      }
     }
   }
 }

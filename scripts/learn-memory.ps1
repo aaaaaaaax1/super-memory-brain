@@ -11,7 +11,9 @@ param(
   [switch]$Preview,
   [switch]$AllowDuplicate,
   [switch]$ConfirmPrivate,
-  [switch]$Json
+  [switch]$Json,
+  [Parameter(ValueFromRemainingArguments=$true)]
+  [string[]]$RemainingArgs = @()
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -20,6 +22,16 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $PSScriptRoot
+if (@($RemainingArgs).Count -gt 0) {
+  $extraTags = @()
+  $extraEvidence = @()
+  foreach ($arg in @($RemainingArgs)) {
+    if ([string]::IsNullOrWhiteSpace($arg)) { continue }
+    if ($arg -match '^\[[A-Z_]+\]$') { $extraTags += $arg } else { $extraEvidence += $arg }
+  }
+  if ($extraTags.Count -gt 0) { $Tags = @($Tags + $extraTags) }
+  if ($extraEvidence.Count -gt 0) { $Evidence = @($Evidence + $extraEvidence) }
+}
 $workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
 if (-not (Test-Path $workspace)) { New-Item -ItemType Directory -Force -Path $workspace | Out-Null }
 $statusPath = Join-Path $workspace 'last-learn-memory.json'
@@ -69,7 +81,7 @@ $allTags = @('[CURRENT]','[VERIFIED]','[SUMMARY]', $tagMap[$Layer]) + $Tags
 if ($Layer -eq 'experience') { $allTags += '[EVIDENCE]' }
 $prefix = (($allTags | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) -join '')
 $evidenceText = if (@($Evidence).Count -gt 0) { ' evidence=' + ((@($Evidence) | ForEach-Object { $_ -replace '\s+', '_' }) -join ',') } else { '' }
-$memoryText = "$prefix $Title — $clean timestamp=$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) source=learn-memory.ps1$evidenceText"
+$memoryText = "$prefix $Title - $clean timestamp=$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) source=learn-memory.ps1$evidenceText"
 
 $similar = @()
 $similarOutput = @()

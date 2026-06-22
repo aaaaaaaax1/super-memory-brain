@@ -2,7 +2,7 @@ param(
   [string]$Query = '',
   [ValidateSet('auto','force','off')]
   [string]$MemoryMode = 'auto',
-  [int]$MaxTokens = 800,
+  [int]$MaxTokens = 600,
   [int]$TopK = 3,
   [switch]$Deep,
   [switch]$Json
@@ -20,7 +20,7 @@ if (-not (Test-Path $workspace)) { New-Item -ItemType Directory -Force -Path $wo
 $statusPath = Join-Path $workspace 'last-session-restore.json'
 
 $policy = Get-Content -LiteralPath (Join-Path $Root 'memory-policy.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($MaxTokens -le 0) { $MaxTokens = 800 }
+if ($MaxTokens -le 0) { $MaxTokens = 600 }
 if ($TopK -le 0) { $TopK = 3 }
 if ($MemoryMode -eq 'off') {
   $result = [pscustomobject]@{
@@ -55,7 +55,7 @@ $experienceIndex = ''
 $experienceIndexPath = Join-Path $workspace 'experience-index.md'
 if (Test-Path $experienceIndexPath) {
   $experienceIndex = (Get-Content -LiteralPath $experienceIndexPath -Raw -Encoding UTF8)
-  if ($experienceIndex.Length -gt 1200) { $experienceIndex = $experienceIndex.Substring(0, 1200) + '...' }
+  if ($experienceIndex.Length -gt 700) { $experienceIndex = $experienceIndex.Substring(0, 700) + '...' }
 }
 $profileCard = $null
 $profileCardPath = Join-Path $workspace 'profile-card.json'

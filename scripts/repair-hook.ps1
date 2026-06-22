@@ -23,7 +23,8 @@ $text = Get-Content -LiteralPath $HookPath -Raw -Encoding UTF8
 $original = $text
 $escapedPackageRoot = $PackageRoot.Replace('\', '\\').Replace('"', '\"')
 $chineseSuperBrain = -join ([char[]](0x8D85,0x7EA7,0x5927,0x8111))
-$startupRule = "SuperBrain: for bare $chineseSuperBrain/Super Brain/G1 or recall/status/optimize/start/refresh, load Skill super-memory-brain first. memory:auto. G1 governs, ORC routes, Sandglass only on semantic/keyword recall. No secrets/no noise. Checks on demand. Package: $escapedPackageRoot"
+# Keep the verified semantic contract: light recall if state needed.
+$startupRule = "SuperBrain: explicit $chineseSuperBrain/Super Brain/G1/status/fault/start/refresh -> load Skill super-memory-brain first; visible G1. continue/previous/remember -> light recall. memory:auto silent; no G1 for ok/chat/code. ORC routes; Sandglass on semantic/keyword recall. Package: $escapedPackageRoot"
 $startupLine = 'super_brain_content="' + $startupRule + '"'
 $escapedLine = 'super_brain_escaped=$(escape_for_json "$super_brain_content")'
 $sessionLine = 'session_context="<EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n**Below is the full content of your ''superpowers:using-superpowers'' skill - your introduction to using skills. For all other skills, use the ''Skill'' tool:**\n\n${using_superpowers_escaped}\n\n<SUPER_MEMORY_BRAIN_STARTUP>\n${super_brain_escaped}\n</SUPER_MEMORY_BRAIN_STARTUP>\n\n${warning_escaped}\n</EXTREMELY_IMPORTANT>"'

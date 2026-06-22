@@ -1,7 +1,7 @@
 param(
   [switch]$Refresh,
-  [int]$MaxTokens = 220,
-  [int]$TopK = 5,
+  [int]$MaxTokens = 180,
+  [int]$TopK = 3,
   [switch]$Json
 )
 
@@ -38,7 +38,7 @@ $claims = @($cards | ForEach-Object {
 } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
 
 $budgetChars = [Math]::Max(80, $MaxTokens * 4)
-$summary = (($claims | Select-Object -First 4) -join ' | ')
+$summary = (($claims | Select-Object -First 3) -join ' | ')
 if ($summary.Length -gt $budgetChars) { $summary = $summary.Substring(0, $budgetChars) + '...' }
 if ([string]::IsNullOrWhiteSpace($summary)) { $summary = 'No stable profile memory found yet.' }
 

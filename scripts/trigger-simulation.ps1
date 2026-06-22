@@ -17,42 +17,40 @@ $zhBrain = U @(0x8111,0x5B50)
 $zhRefreshSuperBrain = (U @(0x5237,0x65B0)) + $zhSuperBrain
 $zhStartSuperBrain = (U @(0x542F,0x52A8)) + $zhSuperBrain
 $zhOptimizeQuestion = $zhSuperBrain + (U @(0x8FD8,0x6709,0x53EF,0x4EE5,0x4F18,0x5316,0x7684,0x5417))
-$zhBrainFault = $zhBrain + (U @(0x6709,0x95EE,0x9898))
-$zhBigBrainFault = $zhBigBrain + (U @(0x6709,0x95EE,0x9898))
-$zhThisBrainWrong = (U @(0x8FD9,0x4E2A)) + $zhBrain + (U @(0x4E0D,0x5BF9))
-$zhBrainWrong = $zhBrain + (U @(0x4E0D,0x5BF9))
-$zhBigBrainWrong = $zhBigBrain + (U @(0x4E0D,0x5BF9))
-$zhSuperBrainBroken = $zhSuperBrain + (U @(0x574F,0x4E86))
-$zhSuperBrainFault = $zhSuperBrain + (U @(0x6709,0x95EE,0x9898))
-$zhIBrainFault = (U @(0x6211)) + $zhBrainFault
-$zhMyBrain = (U @(0x6211,0x7684)) + $zhBrain
-$zhIBigBrainWrongAsk = (U @(0x6211)) + $zhBigBrain + (U @(0x4E0D,0x5BF9,0x52B2,0x600E,0x4E48,0x529E))
-$zhMyBigBrain = (U @(0x6211,0x7684)) + $zhBigBrain
-$zhPersonBrain = (U @(0x4EBA)) + $zhBrain
-$zhHumanBrain = (U @(0x4EBA,0x7C7B)) + $zhBrain
-$zhMeBrain = (U @(0x672C,0x4EBA)) + $zhBrain
-$zhBrainBroken = $zhBrain + (U @(0x574F,0x4E86))
-$zhBigBrainBroken = $zhBigBrain + (U @(0x574F,0x4E86))
-$zhThisBrain = (U @(0x8FD9,0x4E2A)) + $zhBrain
-$zhThisBrainShort = (U @(0x8FD9)) + $zhBrain
-$zhYouBrain = (U @(0x4F60)) + $zhBrain
-$zhAssistantBrain = (U @(0x52A9,0x624B)) + $zhBrain
-$zhBigBrainSystem = $zhBigBrain + (U @(0x7CFB,0x7EDF))
 $zhOptimize = U @(0x4F18,0x5316)
 $zhPresent = U @(0x5728,0x5417)
 $zhStatus = U @(0x72B6,0x6001)
 $zhRefresh = U @(0x5237,0x65B0)
+$zhHumanBrainSelfReport = (U @(0x6211)) + $zhBrain + (U @(0x6709,0x95EE,0x9898))
+$zhOkNoProblem = (U @(0x597D,0x7684,0x6CA1,0x95EE,0x9898))
+$zhHello = U @(0x4F60,0x597D)
+$zhNevermind = U @(0x6CA1,0x4E8B)
+$zhHumanBrainConfused = (U @(0x6211,0x7684)) + $zhBrain + (U @(0x6709,0x70B9,0x4E71))
+$zhIncidentalG1Product = (U @(0x8FD9,0x4E2A)) + ' G1 ' + (U @(0x578B,0x53F7,0x600E,0x4E48,0x6837))
+$zhSuperBrainFault = $zhSuperBrain + (U @(0x574F,0x4E86))
+$zhBrainSystemFault = $zhBrain + (U @(0x4E0D,0x5BF9))
+$zhBad = U @(0x574F,0x4E86)
+$zhNotRight = U @(0x4E0D,0x5BF9)
 
 $scenarios = @(
   [pscustomobject]@{ name='bare_superbrain_zh'; prompt=$zhSuperBrain; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
   [pscustomobject]@{ name='bare_g1'; prompt='G1'; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
   [pscustomobject]@{ name='bare_superbrain_en'; prompt='Super Brain'; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
   [pscustomobject]@{ name='superbrain_optimize'; prompt=$zhOptimizeQuestion; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
-  [pscustomobject]@{ name='brain_fault_bare'; prompt=$zhBrainFault; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
-  [pscustomobject]@{ name='brain_fault_system'; prompt=$zhThisBrainWrong; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
-  [pscustomobject]@{ name='superbrain_fault'; prompt=$zhSuperBrainBroken; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
-  [pscustomobject]@{ name='human_brain_self_report'; prompt=$zhIBrainFault; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
-  [pscustomobject]@{ name='human_brain_medical'; prompt=$zhIBigBrainWrongAsk; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='ack_ok_zh'; prompt=(U @(0x597D,0x7684)); kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='ack_received_zh'; prompt=(U @(0x6536,0x5230)); kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='ack_no_problem_zh'; prompt=(U @(0x6CA1,0x95EE,0x9898)); kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='ack_ok_en'; prompt='ok'; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='ack_ok_no_problem_zh'; prompt=$zhOkNoProblem; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='greeting_hello_zh'; prompt=$zhHello; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='casual_nevermind_zh'; prompt=$zhNevermind; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='ordinary_coding_question'; prompt='帮我改这个 bug'; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='incidental_g1_mention'; prompt='这个 G1 规则可以写进文档'; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='incidental_g1_product'; prompt=$zhIncidentalG1Product; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='human_brain_self_report'; prompt=$zhHumanBrainSelfReport; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='human_brain_confused'; prompt=$zhHumanBrainConfused; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
+  [pscustomobject]@{ name='superbrain_fault'; prompt=$zhSuperBrainFault; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
+  [pscustomobject]@{ name='brain_system_fault'; prompt=$zhBrainSystemFault; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
   [pscustomobject]@{ name='simple_continue'; prompt='continue'; kind='dispatch'; flags='SimpleDirect'; expectedLevel='direct'; expectedTemplate=$null },
   [pscustomobject]@{ name='single_file_fast_fix'; prompt='known single-file fast fix'; kind='dispatch'; flags='KnownSingleFile,FastRequested,VerificationRequired'; expectedLevel='direct'; expectedTemplate=$null },
   [pscustomobject]@{ name='broad_project_search'; prompt='broad project search and understand implementation'; kind='dispatch'; flags='BroadSearch,Parallelizable,VerificationRequired'; expectedLevel='team_parallel'; expectedTemplate='explore-team' },
@@ -64,40 +62,25 @@ $scenarios = @(
 function Test-BareSuperBrainTrigger([string]$Prompt) {
   $trimmed = ([string]$Prompt).Trim()
   $normalized = $trimmed.ToLowerInvariant()
-  $bareWords = @($script:zhSuperBrain,'super brain','g1',$script:zhBigBrain,$script:zhBrain,$script:zhRefreshSuperBrain,$script:zhStartSuperBrain)
-  $humanSelfReportPatterns = @($script:zhIBrainFault.Substring(0, 3),$script:zhMyBrain,(U @(0x6211)) + $script:zhBigBrain,$script:zhMyBigBrain,$script:zhMeBrain,$script:zhPersonBrain,$script:zhHumanBrain)
-  $faultPatterns = @($script:zhBrainFault,$script:zhBigBrainFault,$script:zhBrainWrong,$script:zhBigBrainWrong,$script:zhBrainBroken,$script:zhBigBrainBroken,$script:zhSuperBrainBroken,$script:zhSuperBrainFault,'g1' + (U @(0x574F,0x4E86)),'g1' + (U @(0x6709,0x95EE,0x9898)))
-  $assistantContextPatterns = @($script:zhThisBrain,$script:zhThisBrainShort,$script:zhYouBrain,$script:zhAssistantBrain,$script:zhSuperBrain,$script:zhBigBrainSystem,'g1')
-
-  $isHumanSelfReport = $false
-  foreach ($pattern in $humanSelfReportPatterns) {
-    if ($normalized.StartsWith($pattern.ToLowerInvariant())) { $isHumanSelfReport = $true; break }
-  }
+  $bareWords = @($script:zhSuperBrain,'super brain','g1',$script:zhRefreshSuperBrain,$script:zhStartSuperBrain)
 
   $isBare = $false
   foreach ($word in $bareWords) {
     if ($normalized -eq $word.ToLowerInvariant()) { $isBare = $true; break }
   }
 
-  $hasFaultLanguage = $false
-  foreach ($pattern in $faultPatterns) {
-    if ($normalized -like "*$($pattern.ToLowerInvariant())*") { $hasFaultLanguage = $true; break }
-  }
-
-  $hasAssistantContext = $false
-  foreach ($pattern in $assistantContextPatterns) {
-    if ($normalized -like "*$($pattern.ToLowerInvariant())*") { $hasAssistantContext = $true; break }
-  }
-
-  $isSuperBrainIntent = $isBare -or ($trimmed -like "*$script:zhSuperBrain*") -or ($normalized -like '*super brain*') -or ($trimmed -like '*G1*')
+  $isSuperBrainMention = ($trimmed -like "*$script:zhSuperBrain*") -or ($normalized -like '*super brain*')
+  $isHumanSelfReport = ($trimmed -like "我*$script:zhBrain*" -or $trimmed -like "我*$script:zhBigBrain*")
+  $isBrainSystemFault = (-not $isHumanSelfReport) -and (($trimmed -like "*$script:zhSuperBrain*$script:zhBad*") -or ($trimmed -like "*$script:zhBrain*$script:zhNotRight*") -or ($trimmed -like "*$script:zhBigBrain*$script:zhNotRight*"))
+  $isG1Question = (($normalized -match '(^|\s)g1(\s|$)') -and (($normalized -like '*status*') -or ($normalized -like '*working*') -or ($normalized -like '*optimiz*') -or ($trimmed -like "*$script:zhStatus*") -or ($trimmed -like "*$script:zhPresent*")))
+  $isSuperBrainIntent = $isBare -or $isSuperBrainMention -or $isG1Question -or $isBrainSystemFault
   $isStatusOrOptimize = ($trimmed -like "*$script:zhOptimize*") -or ($normalized -like '*optimiz*') -or ($trimmed -like "*$script:zhPresent*") -or ($trimmed -like "*$script:zhStatus*") -or ($trimmed -like "*$script:zhRefresh*")
-  $isFaultTrigger = (-not $isHumanSelfReport) -and $hasFaultLanguage -and (($trimmed -eq $script:zhBrainFault) -or ($trimmed -eq $script:zhBigBrainFault) -or $hasAssistantContext)
-  $triggered = $isBare -or ($isSuperBrainIntent -and $isStatusOrOptimize) -or $isFaultTrigger
+  $triggered = $isBare -or $isBrainSystemFault -or ($isSuperBrainIntent -and $isStatusOrOptimize)
   [pscustomobject]@{
     triggered = $triggered
     skill = if ($triggered) { 'super-memory-brain' } else { $null }
     requiresG1 = $triggered
-    reason = if ($isBare) { 'bare_superbrain_wake_word' } elseif ($isFaultTrigger) { 'superbrain_fault_semantic_trigger' } elseif ($isHumanSelfReport) { 'human_self_report_excluded' } elseif ($triggered) { 'superbrain_status_or_optimize_intent' } else { 'no_superbrain_trigger' }
+    reason = if ($isBare) { 'bare_superbrain_wake_word' } elseif ($isBrainSystemFault) { 'superbrain_system_fault' } elseif ($triggered) { 'superbrain_status_or_optimize_intent' } else { 'no_superbrain_trigger' }
   }
 }
 
