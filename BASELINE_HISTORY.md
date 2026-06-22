@@ -1,9 +1,27 @@
 # BASELINE_HISTORY
 
+## 0.5.43
+
+Date: 2026-06-22
+Status: [CURRENT][VERIFIED]
+Change:
+- Hardened learn-memory CLI string-array argument handling and added tool schema discipline so invalid optional tool calls are corrected or skipped instead of repeated.
+Supersedes: 0.5.42
+Rollback: Restore 0.5.42 scripts/docs/manifest/baseline if CLI argument hardening needs to be disabled temporarily.
+
+## 0.5.42
+
+Date: 2026-06-22
+Status: [HISTORY][VERIFIED]
+Change:
+- Added slimming safety invariants, explicit-only Commander Team Memory entry loading, compact script groups, and reduced default recall/profile/session evidence budgets while preserving full capability paths.
+Supersedes: 0.5.41
+Rollback: Restore 0.5.41 scripts/docs/manifest/baseline if cold-start slimming or explicit-only Commander Team loading needs to be disabled temporarily.
+
 ## 0.5.41
 
 Date: 2026-06-21
-Status: [CURRENT][VERIFIED]
+Status: [HISTORY][VERIFIED]
 Change:
 - Added preview-first learning, similar-memory duplicate checks, and compact profile-card restore for profile/persona preference recall.
 Supersedes: 0.5.40

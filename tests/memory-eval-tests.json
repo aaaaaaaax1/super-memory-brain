@@ -57,7 +57,7 @@
     "question": "召回是否支持 token budget 和 evidence cards？",
     "mode": "staticSources",
     "sources": ["memory-policy.json", "scripts/recall-search.ps1", "README.md"],
-    "mustContain": ["contextBudget", "evidenceTokens", "cardSnippetTokens", "New-EvidenceCard", "evidenceCard", "whyRelevant", "tokenEstimate"],
+    "mustContain": ["contextBudget", "evidenceTokens", "cardSnippetTokens", "New-EvidenceCard", "evidenceCard", "whyRelevant", "tokenEstimate", "aliasNormalization", "Get-AliasTerms"],
     "mustNotContain": [],
     "tags": ["token-budget", "evidence-card"],
     "weight": 1
@@ -83,11 +83,21 @@
     "weight": 1
   },
   {
+    "id": "static-status-card-cache",
+    "question": "状态查询是否支持轻量 status-card 缓存以节省 token？",
+    "mode": "staticSources",
+    "sources": ["super-memory-brain/SKILL.md", "scripts/status-snapshot-writer.ps1", "scripts/ci.ps1"],
+    "mustContain": ["Status-card cache rule", "status-card.json", "statusCardPath", "status-snapshot-writer"],
+    "mustNotContain": [],
+    "tags": ["token-budget", "status-card"],
+    "weight": 1
+  },
+  {
     "id": "static-bare-superbrain-trigger",
-    "question": "裸词 超级大脑/G1 是否必须触发 super-memory-brain 并走 G1？",
+    "question": "裸词 超级大脑/G1 是否触发，同时普通确认/人类自述不显示 G1？",
     "mode": "staticSources",
     "sources": ["super-memory-brain/SKILL.md", "scripts/trigger-simulation.ps1", "scripts/startup-check.ps1", "scripts/repair-hook.ps1"],
-    "mustContain": ["Bare Super Brain trigger rule", "Super Brain fault trigger rule", "Do not treat these bare wake words as ordinary greeting/chat", "brain_fault_bare", "human_brain_self_report", "human_self_report_excluded", "bare_superbrain_zh", "bare_g1", "requiresG1", "Hook bare Super Brain wake words", "load Skill super-memory-brain first"],
+    "mustContain": ["Bare Super Brain trigger rule", "Visible `G1` prefix is explicit-only", "ordinary acknowledgements", "dormant `memory:auto` routing", "bare_superbrain_zh", "bare_g1", "ack_ok_no_problem_zh", "greeting_hello_zh", "incidental_g1_product", "human_brain_confused", "human_brain_self_report", "superbrain_fault", "requiresG1", "Hook explicit Super Brain wake words", "load Skill super-memory-brain first"],
     "mustNotContain": [],
     "tags": ["trigger", "g1", "skill-routing"],
     "weight": 1

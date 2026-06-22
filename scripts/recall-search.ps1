@@ -55,6 +55,29 @@ function Test-IntentTrigger([string]$Text, [object[]]$Triggers) {
   return $false
 }
 
+function Get-AliasTerms([string]$Text) {
+  function U([int[]]$Codes) { return -join ($Codes | ForEach-Object { [char]$_ }) }
+  $lower = $Text.ToLowerInvariant()
+  $aliasGroups = @(
+    @((U @(0x8D85,0x7EA7,0x5927,0x8111)),(U @(0x5927,0x8111)),(U @(0x8111,0x5B50)),'super brain','g1','super-memory-brain'),
+    @((U @(0x4E0D,0x56DE,0x590D)),(U @(0x6CA1,0x53CD,0x5E94)),(U @(0x4E0D,0x5728)),(U @(0x65AD,0x4E86)),(U @(0x574F,0x4E86)),(U @(0x5931,0x7075)),'fault','broken','not working'),
+    @('github',(U @(0x516C,0x5F00,0x7248)),(U @(0x5206,0x4EAB,0x5305)),'release','zip',(U @(0x4E0A,0x4F20)),(U @(0x53D1,0x5E03))),
+    @((U @(0x8FD8,0x8BB0,0x5F97)),(U @(0x4E0A,0x6B21)),(U @(0x4E4B,0x524D)),(U @(0x53E6,0x4E00,0x4E2A,0x4F1A,0x8BDD)),(U @(0x7EE7,0x7EED)),'remember','previous','resume','continue')
+  )
+  if ($Policy.retrieval.PSObject.Properties['aliasNormalization']) {
+    $aliasGroups = @($Policy.retrieval.aliasNormalization.groups)
+  }
+  $aliases = @()
+  foreach ($group in @($aliasGroups)) {
+    $matched = $false
+    foreach ($alias in @($group)) {
+      if ($lower.Contains(([string]$alias).ToLowerInvariant())) { $matched = $true; break }
+    }
+    if ($matched) { $aliases += @($group) }
+  }
+  return @($aliases | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+}
+
 function Get-PolicyNumber($Object, [string]$Name, [double]$Default) {
   if ($null -ne $Object -and $null -ne $Object.PSObject.Properties[$Name]) { return [double]$Object.PSObject.Properties[$Name].Value }
   return $Default
@@ -272,7 +295,7 @@ function Get-FileSnippet([string]$RelativePath, [object[]]$Terms) {
   }
   if ($index -lt 0) { $index = 0 }
   $start = [Math]::Max(0, $index - 220)
-  $length = [Math]::Min(900, $text.Length - $start)
+	  $length = [Math]::Min(600, $text.Length - $start)
   $snippet = $text.Substring($start, $length).Trim()
   return "[PROJECT][CURRENT][VERIFIED][SUMMARY] $RelativePath $snippet"
 }
@@ -285,7 +308,7 @@ function Get-ExperienceSnippets([object[]]$Terms) {
     $lowerIndex = $indexText.ToLowerInvariant()
     $matched = $lowerIndex.Contains($Query.ToLowerInvariant())
     foreach ($term in $Terms) { if ($lowerIndex.Contains([string]$term)) { $matched = $true; break } }
-    if ($matched) { $snippets += "[PROJECT][CURRENT][VERIFIED][SUMMARY] experience-index.md $($indexText.Substring(0, [Math]::Min(900, $indexText.Length)).Trim())" }
+    if ($matched) { $snippets += "[PROJECT][CURRENT][VERIFIED][SUMMARY] experience-index.md $($indexText.Substring(0, [Math]::Min(600, $indexText.Length)).Trim())" }
   }
   $experienceRoot = Join-Path (Join-Path $MemoryBase 'workspace') 'experiences'
   if (Test-Path $experienceRoot) {
@@ -315,13 +338,13 @@ function Get-PersonaSnippets([object[]]$Terms) {
     foreach ($term in $Terms) { if ($lower.Contains([string]$term)) { $matched = $true; break } }
   }
   if ($matched) {
-    $snippet = $text.Substring(0, [Math]::Min(900, $text.Length)).Trim()
+    $snippet = $text.Substring(0, [Math]::Min(600, $text.Length)).Trim()
     $snippets += "[PROFILE][CURRENT][VERIFIED][SUMMARY] persona\persona.md $snippet"
   }
   return @($snippets)
 }
 
-$terms = Get-QueryTerms $Query
+$terms = @((Get-QueryTerms $Query) + (Get-AliasTerms $Query) | ForEach-Object { ([string]$_).ToLowerInvariant() } | Where-Object { $_.Length -ge 2 } | Select-Object -Unique)
 $candidates = @()
 
 $env:NEXSANDBASE_HOME = $MemoryRoot

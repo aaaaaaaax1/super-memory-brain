@@ -54,8 +54,10 @@ if (Test-Path $hook) {
     @{ name = 'Hook startup rule'; needles = @('SuperBrain:', 'Super Brain default:', 'Default Super Brain startup rule'); requireAll = $false },
     @{ name = 'Hook mandatory skill load'; needles = @('load super-memory-brain for recall/status', 'load Skill super-memory-brain first', 'Load Skill super-memory-brain first'); requireAll = $false },
     @{ name = 'Hook memory policy'; needles = @('memory:auto', 'stable state only', 'Memory shortcut:'); requireAll = $false },
+    @{ name = 'Hook silent memory auto'; needles = @('memory:auto silent', 'no G1 for ok/chat/code'); requireAll = $true },
+    @{ name = 'Hook lightweight continuation recall'; needles = @('continue/previous/remember -> light recall if state needed', 'semantic/keyword recall'); requireAll = $false },
     @{ name = 'Hook recall trigger'; needles = @('semantic/keyword recall', 'state/version/progress/remember/previous-session', 'Recall previous', 'Recall trigger:'); requireAll = $false },
-    @{ name = 'Hook short router'; needles = @('G1 governs', 'ORC routes', 'Sandglass only on semantic/keyword recall'); requireAll = $true }
+    @{ name = 'Hook short router'; needles = @('ORC routes', 'Sandglass on semantic/keyword recall'); requireAll = $true }
   )) {
     $found = [bool]$item.requireAll
     foreach ($needle in $item.needles) {

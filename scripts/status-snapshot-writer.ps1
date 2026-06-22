@@ -59,10 +59,28 @@ $snapshot = [pscustomobject]@{
 $path = Join-Path $workspace 'last-status-snapshot.json'
 Write-JsonUtf8NoBom $path $snapshot 10
 
+$statusCard = [pscustomobject]@{
+  ok = $snapshot.ok
+  updatedAt = $snapshot.checkedAt
+  version = $snapshot.version
+  packageOk = $dashboard.ok
+  verifyOk = $snapshot.verifyOk
+  hotRefreshOk = $snapshot.hotRefreshOk
+  memoryRegressionOk = $snapshot.memoryRegressionOk
+  reviewGateOk = $snapshot.reviewGateOk
+  privacyOk = $snapshot.privacyOk
+  risksCount = @($snapshot.risks).Count
+  nextAction = $snapshot.nextAction
+  source = 'status-snapshot-writer.ps1'
+}
+$statusCardPath = Join-Path $workspace 'status-card.json'
+Write-JsonUtf8NoBom $statusCardPath $statusCard 6
+
 if ($Json) {
+  $snapshot | Add-Member -NotePropertyName statusCardPath -NotePropertyValue $statusCardPath -Force
   $snapshot | ConvertTo-Json -Depth 10
 } else {
-  Write-Host "STATUS_SNAPSHOT_WRITER ok=True path=$path version=$($snapshot.version)"
+  Write-Host "STATUS_SNAPSHOT_WRITER ok=True path=$path version=$($snapshot.version) statusCard=$statusCardPath"
   Write-Host "STATUS_SNAPSHOT_SUMMARY $($snapshot.summary)"
   Write-Host "STATUS_SNAPSHOT_NEXT $($snapshot.nextAction)"
 }

@@ -1,6 +1,6 @@
 {
     "name":  "super-memory-brain-package",
-    "version":  "0.5.41",
+    "version":  "0.5.43",
     "description":  "Focused native Windows skill injector with BAT/VBS entrypoints, global ZCode/Codex shared-memory injection, custom agent skill directory injection, preview-first install-backup cleanup, Hybrid Recall, ADR decision records, Memory Eval Harness, structured local memory, package-root and memory-root hot-load markers, scoped memory roots, verification, share privacy guards, silent START response discipline, Commander review gates, team memory retrieval, roadmap management, recall regression checks, task state reporting, privacy sentinel checks, completion guard, maintenance tools, strict task verification parameter binding, smoke-test policy restoration, regression guards for completion-state isolation, dispatch learning, trigger simulation, intent routing, smart next actions, health summaries, agent scorecards, task retrospectives, release readiness checks, a unified brain command, and safe version bump previews, and a read-only optimization advisor.",
     "entrySkill":  "super-memory-brain",
     "modules":  [
@@ -161,6 +161,53 @@
                     "common.ps1",
                     "session-compact.ps1"
                 ],
+    "scriptGroups":  {
+                         "core":  [
+                                      "brain.ps1",
+                                      "summary.ps1",
+                                      "status.ps1",
+                                      "doctor.ps1",
+                                      "health-summary.ps1"
+                                  ],
+                         "startup":  [
+                                         "startup-check.ps1",
+                                         "auto-check.ps1",
+                                         "repair-hook.ps1",
+                                         "hot-refresh-skills.ps1",
+                                         "skill-sync-check.ps1"
+                                     ],
+                         "memory":  [
+                                        "recall-search.ps1",
+                                        "session-restore.ps1",
+                                        "learn-memory.ps1",
+                                        "profile-card.ps1",
+                                        "memory-health.ps1",
+                                        "memory-eval.ps1"
+                                    ],
+                         "maintenance":  [
+                                            "maintain.ps1",
+                                            "verify-package.ps1",
+                                            "lint.ps1",
+                                            "ci.ps1",
+                                            "completion-guard.ps1",
+                                            "optimize-advisor.ps1"
+                                        ],
+                         "team":  [
+                                      "team-dispatch-check.ps1",
+                                      "team-template-list.ps1",
+                                      "team-template-select.ps1",
+                                      "team-task-status.ps1",
+                                      "team-task-review-gate.ps1",
+                                      "team-memory-retrieval.ps1"
+                                  ],
+                         "release":  [
+                                         "prepare-share.ps1",
+                                         "verify-share.ps1",
+                                         "release-share.ps1",
+                                         "release-private.ps1",
+                                         "release-readiness.ps1"
+                                     ]
+                     },
     "internalScripts":  [
                             "add-current-state-priority.py",
                             "update-entry-skill.py"

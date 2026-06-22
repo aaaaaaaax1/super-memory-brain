@@ -17,12 +17,14 @@ $memoryRoot = Get-SuperBrainActiveMemoryRoot $Root
 $statePath = Join-Path $Root 'memory\workspace\super-brain-state.json'
 $verifyPath = Join-Path $Root 'memory\workspace\last-verify-package.json'
 $evalPath = Join-Path $Root 'memory\workspace\last-memory-eval.json'
+$statusCardPath = Join-Path $Root 'memory\workspace\status-card.json'
 $memoryPath = Join-Path $memoryRoot 'sandglass.txt'
 
 $manifest = Read-JsonFile $manifestPath
 $state = Read-JsonFile $statePath
 $lastVerify = Read-JsonFile $verifyPath
 $lastEval = Read-JsonFile $evalPath
+$statusCard = Read-JsonFile $statusCardPath
 
 $memoryLines = 0
 if (Test-Path $memoryPath) {
@@ -44,6 +46,9 @@ $summary = [pscustomobject]@{
   lastEvalExists = Test-Path $evalPath
   lastEvalOk = if ($null -ne $lastEval) { [bool]$lastEval.ok } else { $false }
   lastEvalPassRate = if ($null -ne $lastEval) { $lastEval.passRate } else { $null }
+  statusCardExists = Test-Path $statusCardPath
+  statusCardOk = if ($null -ne $statusCard) { [bool]$statusCard.ok } else { $false }
+  statusCardUpdatedAt = if ($null -ne $statusCard) { $statusCard.updatedAt } else { $null }
   stateUpdatedAt = if ($null -ne $state) { $state.updatedAt } else { $null }
   lastVerifyCheckedAt = if ($null -ne $lastVerify) { $lastVerify.checkedAt } else { $null }
   lastEvalCheckedAt = if ($null -ne $lastEval) { $lastEval.checkedAt } else { $null }
@@ -52,7 +57,7 @@ $summary = [pscustomobject]@{
 if ($Json) {
   $summary | ConvertTo-Json -Depth 5
 } else {
-  Write-Host "SUPER_BRAIN_SUMMARY version=$($summary.version) ok=$($summary.ok) stateOk=$($summary.stateOk) hookOk=$($summary.hookOk) lastVerifyOk=$($summary.lastVerifyOk) lastEvalOk=$($summary.lastEvalOk) evalPassRate=$($summary.lastEvalPassRate) memoryLines=$($summary.memoryLines)"
+  Write-Host "SUPER_BRAIN_SUMMARY version=$($summary.version) ok=$($summary.ok) stateOk=$($summary.stateOk) hookOk=$($summary.hookOk) lastVerifyOk=$($summary.lastVerifyOk) lastEvalOk=$($summary.lastEvalOk) statusCardOk=$($summary.statusCardOk) evalPassRate=$($summary.lastEvalPassRate) memoryLines=$($summary.memoryLines)"
   Write-Host "package=$($summary.packageRoot)"
   Write-Host "memory=$($summary.memoryPath)"
 }

@@ -70,11 +70,20 @@
       "profileTokens": 120,
       "checkpointTokens": 160,
       "stateTokens": 220,
-      "evidenceTokens": 700,
-      "rawFallbackTokens": 180,
-      "cardSnippetTokens": 72,
-      "maxEvidenceCards": 6,
+      "evidenceTokens": 500,
+      "rawFallbackTokens": 160,
+      "cardSnippetTokens": 56,
+      "maxEvidenceCards": 4,
       "defaultOutput": "evidenceCard"
+    },
+    "aliasNormalization": {
+      "enabled": true,
+      "groups": [
+        ["超级大脑", "大脑", "脑子", "Super Brain", "G1", "super-memory-brain"],
+        ["不回复", "没反应", "不在", "断了", "坏了", "失灵", "fault", "broken", "not working"],
+        ["GitHub", "公开版", "分享包", "release", "zip", "上传", "发布"],
+        ["还记得", "上次", "之前", "另一个会话", "继续", "remember", "previous", "resume", "continue"]
+      ]
     },
     "confidence": {
       "inject": 0.6,
