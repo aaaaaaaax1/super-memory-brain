@@ -1,9 +1,313 @@
 # BASELINE_HISTORY
 
+## 0.5.75
+
+Date: 2026-07-02
+Status: [CURRENT][VERIFIED]
+Change:
+- Added a Super Brain extension/skill ingestion hub with List/Inspect/Adopt/RebuildMap actions.
+- Added extension capability map generation and merged core+extension skill list/search/detail views for ORC automatic routing.
+- Added `brain.ps1 skills`, `brain.ps1 capability`, and `brain.ps1 extensions` user-facing commands while preserving rules_as_execution_constraints_not_menu_calls.
+Supersedes: 0.5.74
+Rollback: Restore 0.5.74 scripts/docs/manifest/baseline if extension ingestion or merged capability routing causes regressions.
+
+## 0.5.74
+
+Date: 2026-07-02
+Status: [CURRENT][VERIFIED]
+Change:
+- Closed residual guard risks by making current-task-context freshness explicit, expanding skill capability/completion audit coverage, and requiring real-user-path acceptance metadata before completion claims.
+- Completion audit now expects current-task guard, real-user-path verifier, version record keeper, cache freshness checker, and skill proficiency learning coverage in addition to rule/test/review roles.
+Supersedes: 0.5.73
+Rollback: Restore 0.5.73 scripts, manifest, skill-capability-map, baseline docs, and regression tests if the stricter completion audit blocks valid internal-only work.
+
+## 0.5.73
+
+Date: 2026-06-30
+Status: [HISTORY][VERIFIED]
+Change:
+- Added the five approved automation modules: workspace lifecycle manager, auto hygiene runner, machine-readable maintenance policy, post-task maintenance hook, and self-improvement queue.
+- Safe local hygiene is automatic with archive/evidence and verification; destructive/private/external/broad/hook-install/global/unclear-risk actions require confirmation.
+- Compaction/resume must prioritize visible context, compressed summaries/records, checkpoints/status/ledger, and recent tool results before long-term memory.
+Supersedes: 0.5.72
+Rollback: Restore 0.5.72 manifest/scripts/docs/policies/startup bootstrap if automatic maintenance causes regressions.
+
+## 0.5.72
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Added Goal Route Lock, Route Checkpoint, Verified Module Snapshot, Integration Parity Check, procedure expectations, structural causal reasoning, causal-change-plan.ps1, and gap/logic-breakpoint candidate generation.
+- Completion and task verification now distinguish module smoke, integration smoke, and user-facing acceptance evidence.
+- Structural thinking now records observed problem -> root cause -> known facts/prior changes -> proposed intervention -> expected optimization -> verification method -> residual risk, with RCA / Theory of Change / Systems Thinking / OODA / PDCA / AAR / ADR / anti-overfitting lesson guard concepts absorbed into procedure memory.
+Supersedes: 0.5.71
+Rollback: Restore 0.5.71 manifest/scripts/docs/tests if route/integration guards need temporary disablement.
+
+## 0.5.71
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Added cognitive enforcement, runtime drift checkpoints, governed reflection promotion, and AgentBridge procedure-card reuse so Super Brain self-learning is an execution-control loop instead of passive storage.
+- Reflection promotion remains preview/analyze by default and only applies durable learning through governed memory, experience, or skill-evolution paths after privacy, duplicate, evidence, conflict, and confidence gates.
+Supersedes: 0.5.70
+Rollback: Restore 0.5.70 scripts, manifest, Super Brain rule wording, baseline docs, and regression tests if cognitive enforcement or reflection promotion must be disabled temporarily.
+
+## 0.5.70
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Added cognitive-preflight as a memory-driven execution-control layer that turns stored/retrieved memory into pre-action constraints, similar-experience reuse, working-memory guidance, and drift guards.
+- Documented semantic/episodic/procedural/working memory roles and reflection/lesson promotion after corrections or failures.
+Supersedes: 0.5.69
+Rollback: Restore 0.5.69 scripts, manifest, Super Brain rule wording, README, baseline, and regression tests if cognitive preflight must be disabled temporarily.
+
+## 0.5.69
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Hardened Agent Bridge short command semantics so `开启子agent通道` opens a local channel in the current controlled target conversation and must not launch a nested agent/worker/explorer/helper/Tesla.
+Supersedes: 0.5.68
+Rollback: Restore 0.5.68 super-memory-brain/agent-bridge skill wording, common.ps1 bootstrap, smart-next guidance, docs, and tests if no-nested-agent routing needs to be disabled temporarily.
+
+## 0.5.68
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Changed Agent Bridge subordinate idle waits so no-connection/no-message is quiet idle waiting, not blocked/paused/failed/completed.
+- Added no-progress-report-required guards to prevent repeated target-mode status chatter while waiting.
+Supersedes: 0.5.67
+Rollback: Restore 0.5.67 agent-bridge-channel.ps1, smart-next.ps1, skill wording, common.ps1 startup guard, docs, and tests if idle-wait semantics need to be disabled temporarily.
+
+## 0.5.67
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Fixed Agent Bridge channel open so sub-agent short-command `Open` creates a fresh channel by default instead of reusing an old active/last channel.
+- Hardened target mode so one received message plus one reply is not treated as Goal/target completion; the sub-agent must keep waiting until explicit close.
+Supersedes: 0.5.66
+Rollback: Restore 0.5.66 agent-bridge-channel.ps1, Agent Bridge skill wording, common.ps1 startup guard, docs, and tests if fresh-channel/no-goal-completion behavior needs to be disabled temporarily.
+
+## 0.5.66
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Added a hard global startup guard so mixed CJK/non-English phrases containing ASCII `agent` route to Super Brain Agent Bridge instead of host default explorer/worker/default role help.
+Supersedes: 0.5.65
+Rollback: Restore 0.5.65 common.ps1/startup bootstrap behavior if the hard CJK-agent routing guard needs to be disabled temporarily.
+
+## 0.5.65
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Added Agent Bridge channel trigger phrases to the global Super Memory Brain startup bootstrap so new agent conversations route `开启agent通道` / `开启子agent通道` through Super Brain instead of host default agent role help.
+Supersedes: 0.5.64
+Rollback: Restore 0.5.64 common.ps1/startup bootstrap behavior if global startup channel routing needs to be disabled temporarily.
+
+## 0.5.64
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Added Agent Bridge short-command protocol and routing so `开启子agent通道` is enough for sub-agent target mode: Open reports `waiting_connect` once, then WaitConnect/WaitInbox keep the channel alive without auto-close.
+Supersedes: 0.5.63
+Rollback: Restore 0.5.63 intent-router, smart-next, skills, docs, manifest, and tests if short-command routing needs to be disabled temporarily.
+
+## 0.5.63
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Added Agent Bridge subordinate wait-state actions with `WaitConnect`, `WaitInbox`, `waiting_connect`, one-time connected notification, bounded silent message waiting, and no repeated waiting output/no auto-close behavior.
+Supersedes: 0.5.62
+Rollback: Restore 0.5.62 `agent-bridge-channel.ps1`, manifest, docs, and tests if subordinate wait-state behavior needs to be disabled temporarily.
+
+## 0.5.62
+
+Date: 2026-06-28
+Status: [HISTORY][VERIFIED]
+Change:
+- Upgraded Agent Bridge channel mode with Connect/Active/WaitReply/SendAndWait, remembered active channel alias, bounded reply waiting, and user-close-clears-active behavior for controlled main/sub-agent conversations.
+Supersedes: 0.5.61
+Rollback: Restore 0.5.61 `agent-bridge-channel.ps1`, manifest, docs, and tests if target-mode active channel behavior needs to be disabled temporarily.
+
+## 0.5.61
+
+Date: 2026-06-27
+Status: [HISTORY][VERIFIED]
+Change:
+- Added isolated Agent Bridge channel conversations with Open/Send/Inbox/Ack/Close/Status so Agent1 can relay to Agent2 target sessions and read replies from the same workspace channel.
+Supersedes: 0.5.60
+Rollback: Restore 0.5.60 manifest/docs/scripts/tests if shared channel conversations need to be disabled temporarily.
+
+## 0.5.60
+
+Date: 2026-06-27
+Status: [HISTORY][VERIFIED]
+Change:
+- Added `task-register.ps1` lightweight task registration fast path so Codex/ZCode can broadcast shared task status without active checkpoint writes or heavy doctor/verify/hot-refresh/CI flows.
+Supersedes: 0.5.59
+Rollback: Restore 0.5.59 manifest/docs/scripts/tests if status-only task registration needs to be disabled temporarily.
+
+## 0.5.59
+
+Date: 2026-06-27
+Status: [HISTORY][VERIFIED]
+Change:
+- Added cross-agent/session task identity indexing with shared agent/session/task cards, task-memory links, compact task-status tables, and unknown-not-no-task semantics for unregistered sessions.
+Supersedes: 0.5.58
+Rollback: Restore 0.5.58 skill/docs/manifest/scripts/tests if shared task identity indexing needs to be disabled temporarily.
+
+## 0.5.58
+
+Date: 2026-06-27
+Status: [HISTORY][VERIFIED]
+Change:
+- Added Agent Bridge dispatch and resilience extras: target-agent/new-session handoff packets, role permission checks, lightweight queue relay, dry-run team-task archival, and clearer host-session cache limitation prompts.
+Supersedes: 0.5.57
+Rollback: Restore 0.5.57 skill/docs/manifest/scripts/tests if bridge dispatch extras need to be disabled temporarily.
+
+## 0.5.57
+
+Date: 2026-06-26
+Status: [HISTORY][VERIFIED]
+Change:
+- Added isolated Agent Bridge module and script for controlled multi-agent dialogue, task handoff, heartbeat, failover, new-conversation continuation, and Commander-only adoption without default shared-memory pollution.
+Supersedes: 0.5.56
+Rollback: Restore 0.5.56 skill/docs/manifest/scripts/tests if agent bridge needs to be disabled temporarily.
+
+## 0.5.56
+
+Date: 2026-06-26
+Status: [HISTORY][VERIFIED]
+Change:
+- Added reliable task execution system upgrades: task index/list buckets, scriptable intent gate, recovery E2E validation, detailed step ledger, ranked resume candidates, and host cache freshness checks.
+Supersedes: 0.5.55
+Rollback: Restore 0.5.55 skill/docs/manifest/scripts/tests if task execution system upgrades need to be disabled temporarily.
+
+## 0.5.55
+
+Date: 2026-06-26
+Status: [HISTORY][VERIFIED]
+Change:
+- Added current-task status and paste-free resume hardening so `任务状态` prioritizes the current conversation task, recovery reads compact anchors instead of requiring pasted old replies, ambiguous resumes ask for a numbered task choice, and ZCode avoids TodoWrite unless explicitly requested.
+Supersedes: 0.5.54
+Rollback: Restore 0.5.54 skill/docs/manifest/tests if the current-task resume hardening needs to be disabled temporarily.
+
+## 0.5.54
+
+Date: 2026-06-25
+Status: [HISTORY][VERIFIED]
+Change:
+- Added cold-start dominance and output suppression hardening: auto-check no longer runs full verify by default when stale, dashboard has Light/Full/Team modes, smart-next avoids dispatch learning outside team intent, plain continue avoids recall by itself, and Super Brain/ORC rules suppress accidental skill wakeups and verbose output.
+Supersedes: 0.5.53
+Rollback: Restore 0.5.53 scripts/docs/manifest/baseline if 0.5.54 changes need to be disabled temporarily.
+
+## 0.5.53
+
+Date: 2026-06-25
+Status: [HISTORY][VERIFIED]
+Change:
+- Added CompleteTask/ArchiveTask/ClearTask task lifecycle hardening and archived task workspace records for crash-safe continuation.
+- Embedded continuity, impact, and codegraph summaries in status snapshots and task verification; refined dynamic unknown detection through CommandAst.
+Supersedes: 0.5.52
+Rollback: Restore 0.5.52 scripts/docs/manifest/baseline if crash-resume lifecycle hardening needs to be disabled temporarily.
+
+## 0.5.52
+
+Date: 2026-06-25
+Status: [HISTORY][VERIFIED]
+Change:
+- Upgraded codegraph indexing with dynamic PowerShell call edges and lightweight workspace read/write dataflow.
+- Added impact advisor for changed-file risk analysis, affected scripts/workspace files, and recommended verification commands.
+Supersedes: 0.5.51
+Rollback: Restore 0.5.51 scripts/docs/manifest/baseline if impact advice or codegraph v2 dataflow needs to be disabled temporarily.
+
+## 0.5.51
+
+Date: 2026-06-25
+Status: [HISTORY][VERIFIED]
+Change:
+- Added lightweight PowerShell codegraph indexing for script/function/parameter/call edges and mutation metadata.
+- Connected codegraph-index to Project Graph Continuity, verification, Pester regression guards, and CI.
+Supersedes: 0.5.50
+Rollback: Restore 0.5.50 scripts/docs/manifest/baseline if codegraph indexing needs to be disabled temporarily.
+
+## 0.5.50
+
+Date: 2026-06-25
+Status: [HISTORY][VERIFIED]
+Change:
+- Expanded Project Graph Continuity with task graph state, step-ledger actions, candidate-only agent findings, and Commander admission/rejection controls.
+- Strengthened structure baseline rules so open steps and candidate findings remain explicit before completion or formal memory claims.
+Supersedes: 0.5.49
+Rollback: Restore 0.5.49 scripts/docs/manifest/baseline if task-graph or findings isolation needs to be disabled temporarily.
+
+## 0.5.49
+
+Date: 2026-06-23
+Status: [HISTORY][VERIFIED]
+Change:
+- Added extension smoke/collision/health summary checks and privacy token false-positive regression guards.
+- Removed default session-restore snippet tails, reduced default restore evidence to 2 cards, and compacted active checkpoint restore output while preserving automatic recall triggers and Codex/ZCode shared-memory checks.
+Supersedes: 0.5.48
+Rollback: Restore 0.5.48 scripts/docs/manifest/tests if the expanded health checks need to be disabled.
+
+## 0.5.48
+
+Date: 2026-06-23
+Status: [HISTORY][VERIFIED]
+Change:
+- Added opt-in external extension packs for Karpathy guidelines and curated Matt Pocock skills, plus extension manifest verification.
+Supersedes: 0.5.47
+Rollback: Restore 0.5.47 scripts/docs/manifest and remove `extensions/` if optional external skill packs need to be disabled.
+
+## 0.5.47
+
+Date: 2026-06-22
+Status: [HISTORY][VERIFIED]
+Change:
+- Added compression-recovery stale guards so continuation prefers fresh status cards/snapshots and rejects old task summaries when version or verify time shows they are stale.
+Supersedes: 0.5.46
+Rollback: Restore 0.5.46 scripts/docs/manifest/baseline and remove the compression-recovery memory-eval case if the stale-summary guard needs to be disabled temporarily.
+
+## 0.5.46
+
+Date: 2026-06-22
+Status: [HISTORY][VERIFIED]
+Change:
+- Added proactive long-memory compression and experience-learning rules, and compressed the Atoapi horizontal history audit memory while preserving graph/ADR evidence.
+Supersedes: 0.5.45
+Rollback: Restore 0.5.45 scripts/docs/manifest/baseline and the prior sandglass line if proactive compression/experience rules need to be disabled temporarily.
+
+## 0.5.45
+
+Date: 2026-06-22
+Status: [HISTORY][VERIFIED]
+Change:
+- Added temporary session-binding evidence bundles with TTL, memory:off, version/root/privacy guards, status/doctor visibility, and avoidable-issue prevention rules.
+Supersedes: 0.5.44
+Rollback: Restore 0.5.44 scripts/docs/manifest/baseline if session binding needs to be disabled temporarily.
+
+## 0.5.44
+
+Date: 2026-06-22
+Status: [HISTORY][VERIFIED]
+Change:
+- Added durable rules for version-iteration before/after comparison, positive/neutral/negative optimization classification, and meticulous detail control for high-quality releases.
+Supersedes: 0.5.43
+Rollback: Restore 0.5.43 scripts/docs/manifest/baseline if the iteration review/detail-control rules need to be disabled temporarily.
+
 ## 0.5.43
 
 Date: 2026-06-22
-Status: [CURRENT][VERIFIED]
+Status: [HISTORY][VERIFIED]
 Change:
 - Hardened learn-memory CLI string-array argument handling and added tool schema discipline so invalid optional tool calls are corrected or skipped instead of repeated.
 Supersedes: 0.5.42

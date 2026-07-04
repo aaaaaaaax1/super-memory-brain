@@ -15,9 +15,10 @@ function Convert-ToolJson([object[]]$Output, [string]$ScriptName) {
   return ((@($Output[$jsonStart..($Output.Count - 1)]) -join "`n") | ConvertFrom-Json)
 }
 
-$dashboard = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') -Json 6>$null) 'super-brain-dashboard.ps1'
+$dashboard = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') -Mode Full -Json 6>$null) 'super-brain-dashboard.ps1'
 $doctor = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'doctor.ps1') -Json 6>$null) 'doctor.ps1'
 $smartNext = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'smart-next.ps1') -Json 6>$null) 'smart-next.ps1'
+$extensions = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'verify-extensions.ps1') -Json 6>$null) 'verify-extensions.ps1'
 
 $summaryLines = @(
   "version=$($dashboard.version)",
@@ -27,20 +28,26 @@ $summaryLines = @(
   "privacy=$($dashboard.privacy.ok)",
   "reviewGate=$($dashboard.reviewGate.ok)",
   "risks=$(@($dashboard.risks).Count)",
+  "locks=$($doctor.lockHealth.lockCount)/stale=$($doctor.lockHealth.staleCount)",
+  "tools=$($doctor.toolHealth.warningFresh)",
+  "extensions=$($extensions.extensionCount)/$($extensions.skillCount)",
   "next=$($smartNext.nextAction)"
 )
 
 $result = [pscustomobject]@{
-  ok = ($dashboard.ok -eq $true -and $doctor.ok -eq $true)
+  ok = ($dashboard.ok -eq $true -and $doctor.ok -eq $true -and $extensions.ok -eq $true)
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
   version = $dashboard.version
   ready = $dashboard.ok
   summary = ($summaryLines -join '; ')
   risks = @($dashboard.risks)
   riskSummary = $doctor.riskSummary
+  lockHealth = $doctor.lockHealth
+  toolHealth = $doctor.toolHealth
+  extensions = [pscustomobject]@{ ok=$extensions.ok; extensionCount=$extensions.extensionCount; skillCount=$extensions.skillCount; collisionCount=$extensions.collisionCount }
   nextAction = $smartNext.nextAction
   recentTask = $dashboard.task.summary
-  commands = @('scripts\smart-next.ps1 -Json','scripts\super-brain-dashboard.ps1 -Json','scripts\doctor.ps1 -Json')
+  commands = @('scripts\smart-next.ps1 -Json','scripts\super-brain-dashboard.ps1 -Json','scripts\doctor.ps1 -Json','scripts\verify-extensions.ps1 -Json')
 }
 
 if ($Json) {

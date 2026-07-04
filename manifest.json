@@ -1,18 +1,21 @@
-{
+﻿{
     "name":  "super-memory-brain-package",
-    "version":  "0.5.43",
-    "description":  "Focused native Windows skill injector with BAT/VBS entrypoints, global ZCode/Codex shared-memory injection, custom agent skill directory injection, preview-first install-backup cleanup, Hybrid Recall, ADR decision records, Memory Eval Harness, structured local memory, package-root and memory-root hot-load markers, scoped memory roots, verification, share privacy guards, silent START response discipline, Commander review gates, team memory retrieval, roadmap management, recall regression checks, task state reporting, privacy sentinel checks, completion guard, maintenance tools, strict task verification parameter binding, smoke-test policy restoration, regression guards for completion-state isolation, dispatch learning, trigger simulation, intent routing, smart next actions, health summaries, agent scorecards, task retrospectives, release readiness checks, a unified brain command, and safe version bump previews, and a read-only optimization advisor.",
+    "version":  "0.5.75",
+    "description":  "Focused native Windows skill injector with BAT/VBS entrypoints, global ZCode/Codex shared-memory injection, custom agent skill directory injection, preview-first install-backup cleanup, Hybrid Recall, ADR decision records, Memory Eval Harness, structured local memory, package-root and memory-root hot-load markers, scoped memory roots, verification, share privacy guards, silent START response discipline, Commander review gates, team memory retrieval, roadmap management, recall regression checks, task state reporting, cross-agent/session task identity indexing, lightweight task registration fast path, compact task status tables, scriptable intent gating, recovery E2E checks, detailed step ledgers, ranked resume candidates, host cache checks, paste-free current-task resume, ZCode TodoWrite avoidance, privacy sentinel checks, completion guard, maintenance tools, strict task verification parameter binding, smoke-test policy restoration, regression guards for completion-state isolation, dispatch learning, trigger simulation, intent routing, smart next actions, health summaries, agent scorecards, agent bridge isolation/failover, shared channel conversations with active target mode, task handoff, bridge dispatch packets, bridge role permissions, bridge queue relay, team-task archival, release readiness checks, a unified brain command, and safe version bump previews, and a read-only optimization advisor, and causal change plans for structural problem-solving, plus automatic workspace lifecycle maintenance, auto memory hygiene, policy-governed post-task maintenance hooks, self-improvement queues, and compaction-safe continuation priority.",
     "entrySkill":  "super-memory-brain",
     "modules":  [
                     "skill-orchestrator",
                     "plusunm-g1",
-                    "nexsandglass-dedicated-memory"
+                    "nexsandglass-dedicated-memory",
+                    "skill-evolution-loop",
+                    "agent-bridge"
                 ],
     "vendor":  [
                    "NexSandglass-Agent-DedicatedMemory"
                ],
     "runtimeFiles":  [
                          "sandglass_paths.py",
+                         "sandglass_lock.py",
                          "sandglass_vault.py",
                          "sandglass_sqlite.py",
                          "sandglass_log.py",
@@ -53,7 +56,8 @@
                              "memory/graph.jsonl",
                              "memory/workspace/session-notes.md",
                              "tests/memory-recall-tests.json",
-                             "tests/memory-eval-tests.json"
+                             "tests/memory-eval-tests.json",
+                             "maintenance-policy.json"
                          ],
     "scripts":  [
                     "install.ps1",
@@ -65,6 +69,10 @@
                     "status.ps1",
                     "doctor.ps1",
                     "maintain.ps1",
+                    "self-improvement-queue.ps1",
+                    "post-task-maintenance.ps1",
+                    "auto-hygiene-runner.ps1",
+                    "workspace-lifecycle-manager.ps1",
                     "summary.ps1",
                     "script-tiers.ps1",
                     "memory-health.ps1",
@@ -87,12 +95,14 @@
                     "recall-search.ps1",
                     "recall-recent.ps1",
                     "session-restore.ps1",
+                    "session-binding.ps1",
                     "learn-memory.ps1",
                     "profile-card.ps1",
                     "skill-sync-check.ps1",
                     "memory-mode.ps1",
                     "install-agent.ps1",
                     "hot-refresh-skills.ps1",
+                    "host-cache-check.ps1",
                     "install-menu.ps1",
                     "cleanup-legacy-memory.ps1",
                     "cleanup-install-backups.ps1",
@@ -122,8 +132,32 @@
                     "roadmap-manager.ps1",
                     "memory-regression-checker.ps1",
                     "task-state-reporter.ps1",
+                    "task-index.ps1",
+                    "task-register.ps1",
+                    "memory-scout.ps1",
+                    "why-plan.ps1",
+                    "skill-capability-map.ps1",
+                    "extension-capability-map.ps1",
+                    "extension-ingest.ps1",
+                    "autonomous-executor.ps1",
                     "privacy-sentinel.ps1",
                     "completion-guard.ps1",
+                    "accepted-constraints-preflight.ps1",
+                    "cognitive-preflight.ps1",
+                    "integration-parity-check.ps1",
+                    "causal-change-plan.ps1",
+                    "current-task-context.ps1",
+                    "guard-negative-e2e.ps1",
+                    "lesson-scope-gate.ps1",
+                    "guard-flow-e2e.ps1",
+                    "integration-contract-replay.ps1",
+                    "causal-change-review.ps1",
+                    "verified-module-snapshot.ps1",
+                    "route-checkpoint.ps1",
+                    "goal-route-lock.ps1",
+                    "reflection-promotion.ps1",
+                    "runtime-drift-checkpoint.ps1",
+                    "cognitive-enforce.ps1",
                     "checkpoint-writer.ps1",
                     "super-brain-dashboard.ps1",
                     "auto-continuation.ps1",
@@ -134,9 +168,25 @@
                     "lesson-replay.ps1",
                     "dispatch-learning.ps1",
                     "trigger-simulation.ps1",
+                    "cold-start-audit.ps1",
+                    "recovery-e2e.ps1",
+                    "autonomous-executor-e2e.ps1",
+                    "agent-bridge.ps1",
+                    "agent-bridge-channel.ps1",
+                    "agent-bridge-dispatch.ps1",
+                    "agent-bridge-permissions.ps1",
+                    "agent-bridge-queue.ps1",
                     "intent-router.ps1",
+                    "intent-gate.ps1",
                     "smart-next.ps1",
                     "health-summary.ps1",
+                    "tool-health.ps1",
+                    "evidence-freshness.ps1",
+                    "project-continuity.ps1",
+                    "step-ledger.ps1",
+                    "change-integrity.ps1",
+                    "codegraph-index.ps1",
+                    "impact-advisor.ps1",
                     "agent-scorecard.ps1",
                     "task-retrospective.ps1",
                     "release-readiness.ps1",
@@ -156,10 +206,15 @@
                     "team-task-audit.ps1",
                     "team-task-decision.ps1",
                     "team-task-status.ps1",
+                    "team-task-archive.ps1",
                     "team-task-index.ps1",
                     "smoke-test.ps1",
+                    "concurrency-smoke-test.ps1",
                     "common.ps1",
-                    "session-compact.ps1"
+                    "session-compact.ps1",
+                    "verify-extensions.ps1",
+                    "skill-evolution.ps1",
+                    "install-ui-regression.ps1"
                 ],
     "scriptGroups":  {
                          "core":  [
@@ -167,36 +222,92 @@
                                       "summary.ps1",
                                       "status.ps1",
                                       "doctor.ps1",
-                                      "health-summary.ps1"
+                                      "health-summary.ps1",
+                                      "tool-health.ps1",
+                                      "evidence-freshness.ps1",
+                                      "project-continuity.ps1",
+                                      "step-ledger.ps1",
+                                      "task-index.ps1",
+                                      "task-register.ps1",
+                                      "memory-scout.ps1",
+                                      "why-plan.ps1",
+                                      "skill-capability-map.ps1",
+                                      "extension-capability-map.ps1",
+                                      "extension-ingest.ps1",
+                                      "autonomous-executor.ps1"
                                   ],
                          "startup":  [
                                          "startup-check.ps1",
                                          "auto-check.ps1",
+                                         "intent-gate.ps1",
                                          "repair-hook.ps1",
                                          "hot-refresh-skills.ps1",
-                                         "skill-sync-check.ps1"
+                                         "skill-sync-check.ps1",
+                                         "host-cache-check.ps1"
                                      ],
                          "memory":  [
                                         "recall-search.ps1",
                                         "session-restore.ps1",
+                                        "session-binding.ps1",
                                         "learn-memory.ps1",
                                         "profile-card.ps1",
                                         "memory-health.ps1",
                                         "memory-eval.ps1"
                                     ],
                          "maintenance":  [
-                                            "maintain.ps1",
-                                            "verify-package.ps1",
-                                            "lint.ps1",
-                                            "ci.ps1",
-                                            "completion-guard.ps1",
-                                            "optimize-advisor.ps1"
-                                        ],
+                                             "maintain.ps1",
+                                             "self-improvement-queue.ps1",
+                                             "post-task-maintenance.ps1",
+                                             "auto-hygiene-runner.ps1",
+                                             "workspace-lifecycle-manager.ps1",
+                                             "verify-package.ps1",
+                                             "lint.ps1",
+                                             "ci.ps1",
+                                             "concurrency-smoke-test.ps1",
+                                             "completion-guard.ps1",
+                                             "accepted-constraints-preflight.ps1",
+                                             "cognitive-preflight.ps1",
+                                             "memory-scout.ps1",
+                                             "why-plan.ps1",
+                                             "skill-capability-map.ps1",
+                                             "extension-capability-map.ps1",
+                                             "extension-ingest.ps1",
+                                             "autonomous-executor.ps1",
+                                             "integration-parity-check.ps1",
+                                             "causal-change-plan.ps1",
+                                             "current-task-context.ps1",
+                                             "guard-negative-e2e.ps1",
+                                             "lesson-scope-gate.ps1",
+                                             "guard-flow-e2e.ps1",
+                                             "integration-contract-replay.ps1",
+                                             "causal-change-review.ps1",
+                                             "verified-module-snapshot.ps1",
+                                             "route-checkpoint.ps1",
+                                             "goal-route-lock.ps1",
+                                             "reflection-promotion.ps1",
+                                             "runtime-drift-checkpoint.ps1",
+                                             "cognitive-enforce.ps1",
+                                             "evidence-freshness.ps1",
+                                             "project-continuity.ps1",
+                                             "step-ledger.ps1",
+                                             "codegraph-index.ps1",
+                                             "impact-advisor.ps1",
+                                             "optimize-advisor.ps1",
+                                             "cold-start-audit.ps1",
+                                             "recovery-e2e.ps1",
+                                             "autonomous-executor-e2e.ps1",
+                                             "agent-bridge.ps1",
+                                             "agent-bridge-channel.ps1",
+                                             "agent-bridge-dispatch.ps1",
+                                             "agent-bridge-permissions.ps1",
+                                             "agent-bridge-queue.ps1"
+                                         ],
                          "team":  [
                                       "team-dispatch-check.ps1",
                                       "team-template-list.ps1",
                                       "team-template-select.ps1",
                                       "team-task-status.ps1",
+                                      "team-task-archive.ps1",
                                       "team-task-review-gate.ps1",
                                       "team-memory-retrieval.ps1"
                                   ],
@@ -205,8 +316,14 @@
                                          "verify-share.ps1",
                                          "release-share.ps1",
                                          "release-private.ps1",
-                                         "release-readiness.ps1"
-                                     ]
+                                         "release-readiness.ps1",
+                                         "install-ui-regression.ps1"
+                                     ],
+                         "extensions":  [
+                                            "verify-extensions.ps1",
+                                            "extension-capability-map.ps1",
+                                            "extension-ingest.ps1"
+                                        ]
                      },
     "internalScripts":  [
                             "add-current-state-priority.py",
@@ -301,6 +418,42 @@
                                                          "ApplyConfirmed"
                                                      ],
                                "notes":  "Central maintenance entrypoint: read-only plan by default, low-risk maintenance with -ApplySafe, confirmed high-impact maintenance with -ApplyConfirmed."
+                           },
+                           {
+                               "path":  "workspace-lifecycle-manager.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "ApplySafe"
+                                                     ],
+                               "notes":  "Plans or applies low-risk workspace lifecycle cleanup for expired session bindings, expired Agent Bridge channels, stale active pointers, stale locks, generated temp files, and evidence-preserving draft visibility."
+                           },
+                           {
+                               "path":  "auto-hygiene-runner.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "ApplySafe"
+                                                     ],
+                               "notes":  "Plans or applies low-risk automatic memory hygiene: overlong memory compression with original evidence archive, duplicate cleanup with archive, and private-pattern hits surfaced for confirmation."
+                           },
+                           {
+                               "path":  "post-task-maintenance.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "ApplySafe"
+                                                     ],
+                               "notes":  "Post-task maintenance hook that runs workspace lifecycle, auto hygiene, self-improvement queue update, state refresh, and status snapshot after task verification so safe maintenance is proactive."
+                           },
+                           {
+                               "path":  "self-improvement-queue.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Maintains a candidate-only self-improvement queue from hygiene, lifecycle, doctor, reflection, and user-feedback signals without automatic skill mutation or external publishing."
                            },
                            {
                                "path":  "summary.ps1",
@@ -504,6 +657,15 @@
                                "notes":  "Writes memory/workspace/last-session-restore.json with a token-budgeted new-session continuity packet: state, checkpoint, last snapshot, experience-index preview, and optional evidence cards only when memory triggers justify recall."
                            },
                            {
+                               "path":  "session-binding.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Creates, reads, expires, and clears temporary session-binding evidence bundles in memory/workspace without writing raw chat or durable shared memory; respects memory:off, TTL, package version, and active memory root guards."
+                           },
+                           {
                                "path":  "learn-memory.ps1",
                                "tier":  "T2",
                                "manualOnly":  false,
@@ -512,7 +674,61 @@
                                                          "AllowDuplicate",
                                                          "ConfirmPrivate"
                                                      ],
-                               "notes":  "Governed learn-this protocol wrapper over write-memory.ps1 and write-experience.ps1; supports preview-first learning, similar-memory duplicate checks, profile-card refresh, compact stable summaries, and memory/workspace/last-learn-memory.json."
+                               "notes":  "Governed learn-this protocol wrapper over write-memory.ps1 and write-experience.ps1; supports preview-first learning, -TextFile compact drafts for long-context safe writes, similar-memory duplicate checks, profile-card refresh, compact stable summaries, and memory/workspace/last-learn-memory.json."
+                           },
+                           {
+                               "path":  "evidence-freshness.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Checks log/snapshot freshness by age and package version before current-state conclusions so stale evidence is not treated as live truth."
+                           },
+                           {
+                               "path":  "change-integrity.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only static integrity check for continuity, freshness, and learning script markers."
+                           },
+                           {
+                               "path":  "project-continuity.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Maintains Project Graph Continuity artifacts with task lifecycle actions CompleteTask, ArchiveTask, and ClearTask plus project/task/step/finding status for crash-safe continuation."
+                           },
+                           {
+                               "path":  "codegraph-index.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Builds a lightweight PowerShell script/function/call graph index with AST-backed dynamic call and workspace dataflow edges into memory/workspace for impact analysis and continuity."
+                           },
+                           {
+                               "path":  "step-ledger.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Clear"
+                                                     ],
+                               "notes":  "Maintains detailed step-ledger state with open/completed/blocked/skipped buckets, evidence, related files, verification commands/results, blockers, reasons, and next actions."
+                           },
+                           {
+                               "path":  "impact-advisor.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Reports change impact, affected scripts/workspace files, risk level, and recommended verification commands from codegraph and continuity artifacts."
                            },
                            {
                                "path":  "profile-card.ps1",
@@ -559,6 +775,15 @@
                                                          "NoBackup"
                                                      ],
                                "notes":  "Hot-refreshes already installed Super Brain skill copies for ZCode/Codex or provided skill roots without changing memory mode; writes memory/workspace/last-hot-refresh.json and may require new agent sessions if skill content is cached."
+                           },
+                           {
+                               "path":  "host-cache-check.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Checks installed ZCode/Codex Super Brain skill copies, package-root and memory-root markers, last hot-refresh state, and reports current-session cache limitations."
                            },
                            {
                                "path":  "install-menu.ps1",
@@ -783,7 +1008,7 @@
                                "dangerousSwitches":  [
 
                                                      ],
-                               "notes":  "Writes memory/workspace/last-task-verification.json by summarizing verification, release, hot-refresh, doctor risk, team-task evidence, and next-step status for the latest task."
+                               "notes":  "Writes task verification evidence, completes checkpoints, refreshes continuity task completion when safe, and writes crash-resume status snapshots."
                            },
                            {
                                "path":  "roadmap-manager.ps1",
@@ -813,6 +1038,60 @@
                                "notes":  "Read-only task state report for current version, verification, hot refresh, roadmap completion, remaining work, and review gate blockers."
                            },
                            {
+                               "path":  "task-index.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Builds a shared cross-agent/session task identity index from task cards, session cards, active checkpoint, task graph, step ledger, status card, and recent verification with ranked resume candidates and compact Markdown task status tables."
+                           },
+                           {
+                               "path":  "task-register.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Fast path for shared task status registration: writes only shared agent/session/task/link identity cards and does not touch active checkpoints or run doctor, verify, hot-refresh, CI, dashboard, auto-check, or recall. Auto mode reuses matching active/paused/blocked task cards to avoid duplicates."
+                           },
+                           {
+                               "path":  "memory-scout.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Lightweight automatic scout for task cards, workspace state, and compact memory hints before execution; avoids raw long-history injection."
+                           },
+                           {
+                               "path":  "why-plan.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes a compact goal reasoning card with why, success criteria, non-goals, efficiency options, risks, and verification plan before acting."
+                           },
+                           {
+                               "path":  "autonomous-executor.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Default automatic cognitive execution loop for natural goals: intent gate, memory scout, why-plan, task card auto create/update, current task context, and next action."
+                           },
+                           {
+                               "path":  "autonomous-executor-e2e.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "E2E verification that natural execute goals auto-create/reuse a task card while question/plan-only goals do not mutate."
+                           },
+                           {
                                "path":  "privacy-sentinel.ps1",
                                "tier":  "T0",
                                "manualOnly":  false,
@@ -831,13 +1110,160 @@
                                "notes":  "Read-only completion gate that aggregates package verification, hot refresh, task verification, roadmap recall, memory regression, task state, review gate, privacy sentinel status, and rejects lingering active checkpoints."
                            },
                            {
+                               "path":  "accepted-constraints-preflight.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes compact accepted-constraints preflight guards from current decisions, Hybrid Recall, active checkpoint, and session binding before code/rule/architecture changes without raw memory tails."
+                           },
+                           {
+                               "path":  "cognitive-preflight.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes compact cognitive execution preflight cards with user hard rules, accepted constraints, similar experiences, domain reflexes, mustPreserve items, and driftGuards before substantial actions."
+                           },
+                           {
+                               "path":  "goal-route-lock.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Clear"
+                                                     ],
+                               "notes":  "Creates/checks goal-route-lock.json so approved goals, routes, non-goals, mustPreserve, and mustNotDriftTo remain active during long or high-risk work."
+                           },
+                           {
+                               "path":  "route-checkpoint.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "AllowMissingGoalLock",
+                                                         "Clear"
+                                                     ],
+                               "notes":  "Writes route-checkpoint.json / last-route-checkpoint.json and reports ROUTE_DRIFT_DETECTED when current actions drift from the accepted goal route."
+                           },
+                           {
+                               "path":  "verified-module-snapshot.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Records verified module snapshots with behavior, entrypoint, inputs, environment, dependencies, state assumptions, command, evidence, and snapshotHash."
+                           },
+                           {
+                               "path":  "integration-parity-check.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "AllowMissingSnapshot"
+                                                     ],
+                               "notes":  "Compares verified module contract with current integration context and separates module smoke OK, integration smoke OK, and user-facing acceptance OK; reports INTEGRATION_DRIFT_DETECTED."
+                           },
+                           {
+                               "path":  "causal-change-plan.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes causal change plans that connect observed problem, root cause, known facts, prior changes, proposed intervention, expected optimization, verification method, and residual risk before meaningful changes."
+                           },
+                           {
+                               "path":  "current-task-context.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Clear"
+                                                     ],
+                               "notes":  "Creates current-task-context.json so guard scripts inherit one taskId, accepted goal, route, evidence paths, and completion requirements instead of trusting stale global last-* state."
+                           },
+                           {
+                               "path":  "guard-negative-e2e.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Runs negative guard E2E checks proving stale task evidence, integration mismatch, missing acceptance evidence, broad lessons, and scope creep are blocked."
+                           },
+                           {
+                               "path":  "lesson-scope-gate.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Anti-overfitting gate requiring scope, evidence, applies/does-not-apply conditions, counterexamples/falsifiers, and confidence before durable lesson promotion."
+                           },
+                           {
+                               "path":  "guard-flow-e2e.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Runs an end-to-end guard flow across goal-route lock, route checkpoints, causal plan/review, verified module snapshot, integration parity, and behavior replay."
+                           },
+                           {
+                               "path":  "integration-contract-replay.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Replays verified module behavior contracts against integrated actual outputs and reports INTEGRATION_BEHAVIOR_MISMATCH when behavior diverges."
+                           },
+                           {
+                               "path":  "causal-change-review.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Reviews causal change plans by comparing expected optimization with actual evidence and requiring keep/revise/rollback decisions before completion or learning promotion."
+                           },
+                           {
+                               "path":  "cognitive-enforce.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "AllowMissingPreflight"
+                                                     ],
+                               "notes":  "Writes last-cognitive-enforce.json as a hard gate so high-risk intents cannot skip cognitive-preflight, mustPreserve, and driftGuards before action."
+                           },
+                           {
+                               "path":  "runtime-drift-checkpoint.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes runtime-drift-checkpoint.json and last-runtime-drift-checkpoint.json with DRIFT_DETECTED, unresolvedDrift, phase checks, AgentBridge drift guards, and completion drift protection."
+                           },
+                           {
+                               "path":  "reflection-promotion.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Apply",
+                                                         "ConfirmPrivate",
+                                                         "AllowDuplicate"
+                                                     ],
+                               "notes":  "Self-learning reflection promotion pipeline: Analyze/Preview by default, Apply only after evidence, privacy, duplicate, confidence, and reusable-scope checks; routes to learn-memory, write-experience, or skill-evolution without direct skill mutation."
+                           },
+                           {
                                "path":  "checkpoint-writer.ps1",
                                "tier":  "T2",
                                "manualOnly":  false,
                                "dangerousSwitches":  [
 
                                                      ],
-                               "notes":  "Writes, completes, clears, or reads the active checkpoint lifecycle with platform, agent, session/task identity, current step, blockers, next action, and evidence."
+                               "notes":  "Writes, completes, clears, or reads the active checkpoint lifecycle and shared identity cards with platform, agentId, agent, sessionId, sessionName, taskId, taskName, memoryIds, current step, blockers, next action, and evidence."
                            },
                            {
                                "path":  "super-brain-dashboard.ps1",
@@ -864,7 +1290,7 @@
                                "dangerousSwitches":  [
 
                                                      ],
-                               "notes":  "Writes memory/workspace/last-status-snapshot.json as a durable continuation anchor with summary, next action, evidence, roadmap state, verification, and risk flags."
+                               "notes":  "Writes compact crash-resume status snapshots and status cards including dashboard, continuity, task graph, impact advisor, and codegraph summaries."
                            },
                            {
                                "path":  "privacy-hit-locator.ps1",
@@ -921,6 +1347,24 @@
                                "notes":  "Read-only trigger simulation tests for common continuation, search, release, architecture, and memory-sensitive routing scenarios."
                            },
                            {
+                               "path":  "cold-start-audit.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only cold-start and output-discipline audit that proves ordinary continue, casual G1/brain mentions, Light dashboard, and stale auto-check paths do not wake deep recall, team dispatch, full dashboard checks, or full verification by default."
+                           },
+                           {
+                               "path":  "recovery-e2e.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Runs recovery end-to-end checks for plan-only, status-only, continue restore, task-list buckets, and OCR/log noise isolation; writes last-recovery-e2e.json."
+                           },
+                           {
                                "path":  "intent-router.ps1",
                                "tier":  "T0",
                                "manualOnly":  false,
@@ -928,6 +1372,15 @@
 
                                                      ],
                                "notes":  "Read-only user intent classifier for continuation, status, fixes, features, release, memory recall, and team/review requests."
+                           },
+                           {
+                               "path":  "intent-gate.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Scripts execution permission gating for plan_only, status_only, execute, and clarify intents; writes last-intent-gate.json and prevents accidental mutation on plan/status/noise turns."
                            },
                            {
                                "path":  "smart-next.ps1",
@@ -945,7 +1398,16 @@
                                "dangerousSwitches":  [
 
                                                      ],
-                               "notes":  "Read-only compact human health summary for version, readiness, risks, recent task, and recommended next action."
+                               "notes":  "Read-only compact human health summary for version, readiness, risks, locks, optional tool warnings, recent task, and recommended next action."
+                           },
+                           {
+                               "path":  "tool-health.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only optional host-tool schema warning status; helps diagnose TodoWrite/schema drift while preserving checkpoint fallback."
                            },
                            {
                                "path":  "agent-scorecard.ps1",
@@ -1132,9 +1594,18 @@
                                "tier":  "T1",
                                "manualOnly":  false,
                                "dangerousSwitches":  [
+                                                         "Extensions"
+                                                     ],
+                               "notes":  "Temporary install smoke test for install-ready behavior. Supports opt-in extension install smoke checks."
+                           },
+                           {
+                               "path":  "concurrency-smoke-test.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
 
                                                      ],
-                               "notes":  "Temporary install smoke test for install-ready behavior."
+                               "notes":  "Verifies shared memory file locks and atomic writes under concurrent PowerShell writers."
                            },
                            {
                                "path":  "common.ps1",
@@ -1182,6 +1653,114 @@
 
                                                      ],
                                "notes":  "Legacy internal helper with hardcoded local paths; excluded from share."
+                           },
+                           {
+                               "path":  "verify-extensions.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only verification for optional extension manifests, bundled SKILL.md files, provenance, duplicate names, excluded categories, and installed-name collision warnings."
+                           },
+                           {
+                               "path":  "agent-bridge.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Adopt"
+                                                     ],
+                               "notes":  "Maintains isolated multi-agent bridge sessions under memory/workspace/agent-bridge with compact task packets, heartbeat, failover, task handoff, advisory results, and Commander-only adoption."
+                           },
+                           {
+                               "path":  "agent-bridge-channel.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Close"
+                                                     ],
+                               "notes":  "Maintains isolated shared channel conversations between agent sessions with Open/Connect/Send/Inbox/Ack/WaitReply/SendAndWait/Active/Close/Status, active target-mode binding, target-session routing, compact evidence cards, and no durable shared-memory adoption by default."
+                           },
+                           {
+                               "path":  "agent-bridge-dispatch.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Generates isolated handoff/failover dispatch packets and target-agent startup prompts from active agent-bridge state without sending externally or writing shared memory."
+                           },
+                           {
+                               "path":  "agent-bridge-permissions.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Maintains isolated bridge role permissions for reader/advisor/code-suggester/adopt-requester/commander and checks allowed bridge operations."
+                           },
+                           {
+                               "path":  "agent-bridge-queue.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Clear"
+                                                     ],
+                               "notes":  "Maintains a lightweight isolated bridge message queue with Enqueue/Poll/Ack/Status/Clear for non-real-time agent relay."
+                           },
+                           {
+                               "path":  "team-task-archive.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Apply"
+                                                     ],
+                               "notes":  "Dry-run-first archival for old team-task files; only moves files with -Apply and keeps recent tasks visible."
+                           },
+                           {
+                               "path":  "skill-evolution.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Pass"
+                                                     ],
+                               "notes":  "Lightweight SkillOpt-inspired governance loop: captures compact failure samples, stages bounded skill/rule proposals, and records validation gate results. Does not mutate skill files or read full transcripts automatically."
+                           },
+                           {
+                               "path":  "skill-capability-map.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only skill capability map list/search/detail query for ORC/cognitive preflight skill selection; merges core and extension capabilities, classifies by category, role, triggers, apply phase, setup notes, provenance, and verification."
+                           },
+                           {
+                               "path":  "extension-capability-map.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only extension capability map builder/query. Builds memory/workspace/extension-capability-map.json from bundled extension manifests so extension skills become ORC-routable capabilities with triggers, roles, setup notes, and provenance."
+                           },
+                           {
+                               "path":  "extension-ingest.ps1",
+                               "tier":  "T2",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+                                                         "Adopt"
+                                                     ],
+                               "notes":  "Extension and skill ingestion hub: List/Inspect/RebuildMap are low-risk; can adopt a reviewed local skill/plugin. Adopt copies a local skill/plugin into extensions/\u003cid\u003e and requires explicit user intent."
+                           },
+                           {
+                               "path":  "install-ui-regression.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Cold-path install.bat/UI/share/memory-import/cleanup/hot-refresh report-only regression gate; release-readiness treats missing or stale report as blocking after package, extension, manifest, install, share, or UI changes."
                            }
                        ],
     "memoryShortcut":  "memory:auto；G1 governs, ORC routes, Sandglass Hybrid Recall only on semantic/keyword recall; stable state only; private memory requires confirmation and [PRIVACY].",
@@ -1202,5 +1781,103 @@
                          "planMode":  "threshold_based",
                          "exploreAgent":  "threshold_based"
                      },
-    "recallTrigger":  "If the user mentions another session, previous work, remember, progress, accepted rules, Super Brain state, old decisions, or semantically depends on past context, search summary-first explicit memory and NexSandglass before answering."
+    "recallTrigger":  "If the user mentions another session, previous work, remember, progress, accepted rules, Super Brain state, old decisions, or semantically depends on past context, search summary-first explicit memory and NexSandglass before answering.",
+    "extensions":  [
+                       {
+                           "id":  "karpathy-guidelines",
+                           "name":  "Karpathy Guidelines",
+                           "path":  "extensions/karpathy-guidelines",
+                           "defaultEnabled":  false,
+                           "installOptIn":  "karpathy-guidelines",
+                           "sourceRepo":  "https://github.com/multica-ai/andrej-karpathy-skills",
+                           "sourceCommit":  "2c606141936f1eeef17fa3043a72095b4765b9c2",
+                           "license":  "MIT",
+                           "skillCount":  1
+                       },
+                       {
+                           "id":  "mattpocock-skills",
+                           "name":  "Matt Pocock Skills",
+                           "path":  "extensions/mattpocock-skills",
+                           "defaultEnabled":  false,
+                           "installOptIn":  "mattpocock-skills",
+                           "sourceRepo":  "https://github.com/mattpocock/skills",
+                           "sourceCommit":  "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+                           "license":  "MIT",
+                           "skillCount":  17,
+                           "curatedFromPluginJson":  true
+                       },
+                       {
+                           "id":  "ponytail",
+                           "name":  "Ponytail",
+                           "path":  "extensions/ponytail",
+                           "defaultEnabled":  false,
+                           "installOptIn":  "ponytail",
+                           "sourceRepo":  "https://github.com/DietrichGebert/ponytail",
+                           "sourceCommit":  "local-adapted",
+                           "license":  "MIT",
+                           "skillCount":  1
+                       },
+                       {
+                           "id":  "browser-act-suite",
+                           "name":  "Browser Act Suite",
+                           "path":  "extensions/browser-act-suite",
+                           "defaultEnabled":  false,
+                           "installOptIn":  "browser-act-suite",
+                           "sourceRepo":  "https://github.com/browser-act/skills",
+                           "sourceCommit":  "main",
+                           "license":  "unknown",
+                           "skillCount":  2,
+                           "setupRequired":  "browser-act CLI must be installed locally by the receiving user when first needed."
+                       },
+                       {
+                           "id":  "reverselab-unified",
+                           "name":  "ReverseLab Unified",
+                           "type":  "optional-extension",
+                           "defaultEnabled":  false,
+                           "sourceRepo":  "https://github.com/LING71671/open-reverselab + https://github.com/GeniusHu-tgty/Open-tgtylab",
+                           "sourceCommit":  "external-install",
+                           "license":  "external-repos-see-upstream",
+                           "installNote":  "Provides a unified Super Brain skill plus one-click deployment scripts. Recipients can run scripts/reverselab-deploy.ps1 -Apply -Profile Full -RegisterCodexMcp to clone/configure the external ReverseLab repositories, sync MCP dependencies, run the upstream all-tools installer, and verify status/toolcheck results.",
+                           "skills":  [
+                                          {
+                                              "name":  "reverselab-unified",
+                                              "path":  "skills/reverselab-unified",
+                                              "triggers":  [
+                                                               "逆向",
+                                                               "ReverseLab",
+                                                               "open-reverselab",
+                                                               "Open-tgtylab",
+                                                               "reverse engineering",
+                                                               "reversing",
+                                                               "sample analysis",
+                                                               "malware triage",
+                                                               "PE reverse",
+                                                               "APK reverse",
+                                                               "CTF reverse",
+                                                               "website API reverse",
+                                                               "接口逆向",
+                                                               "样本分析",
+                                                               "APK 逆向",
+                                                               "PE 逆向",
+                                                               "一键部署逆向工具",
+                                                               "装齐逆向工具"
+                                                           ],
+                                              "category":  "domain_execution",
+                                              "role":  "reverse_engineering_router",
+                                              "canDo":  [
+                                                            "route reverse-engineering tasks to open-reverselab commands, Open-tgtylab MCP tools, or browser-act-skill-forge",
+                                                            "detect whether both upstream ReverseLab repositories and MCP tools are available",
+                                                            "run a one-click full deployment path for recipients when the external repositories or dependencies are missing",
+                                                            "use local knowledge bases for PE/APK/CTF/website API reverse workflows"
+                                                        ],
+                                              "cannotDo":  [
+                                                               "make external repositories available without cloning or bundling them",
+                                                               "hide missing host-specific GUI/device setup from the final deploy report"
+                                                           ],
+                                              "setupRequired":  "Run scripts/reverselab-deploy.ps1 -Apply -Profile Full -RegisterCodexMcp for full setup. Requires Git, Python/uv, network access for upstream repos/tools, and host-specific confirmation for GUI/device tools when upstream cannot automate them."
+                                          }
+                                      ],
+                           "path":  "extensions/reverselab-unified"
+                       }
+                   ]
 }

@@ -1,0 +1,27 @@
+﻿{
+    "id":  "ponytail",
+    "name":  "Ponytail",
+    "type":  "optional-extension",
+    "defaultEnabled":  false,
+    "sourceRepo":  "https://github.com/DietrichGebert/ponytail",
+    "sourceCommit":  "local-adapted",
+    "license":  "MIT",
+    "licenseEvidence":  [
+                            "skills/ponytail/SKILL.md"
+                        ],
+    "skills":  [
+                   {
+                       "name":  "ponytail",
+                       "path":  "skills/ponytail",
+                       "triggers":  [
+                                        "anti-overengineering",
+                                        "minimal solution",
+                                        "YAGNI",
+                                        "pre-code check",
+                                        "少写点",
+                                        "别过度工程",
+                                        "最小实现"
+                                    ]
+                   }
+               ]
+}

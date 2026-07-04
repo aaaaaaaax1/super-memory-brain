@@ -1,105 +1,974 @@
-[
-  {
-    "id": "static-hybrid-recall-policy",
-    "question": "Hybrid Recall 是否有多源评分与置信门控？",
-    "mode": "staticSources",
-    "sources": ["memory-policy.json", "scripts/recall-search.ps1"],
-    "mustContain": ["hybrid", "sourceWeights", "confidence", "sourceType", "tokenEstimate"],
-    "mustNotContain": [],
-    "tags": ["hybrid", "policy"],
-    "weight": 1
-  },
-  {
-    "id": "static-adr-lifecycle",
-    "question": "ADR 是否具备 status/context/consequence/supersedes 审计链？",
-    "mode": "staticSources",
-    "sources": ["scripts/write-decision.ps1", "scripts/decision-search.ps1", "scripts/decision-audit.ps1"],
-    "mustContain": ["[ADR]", "has_status", "has_context", "has_consequence", "superseded_by", "AdrOnly"],
-    "mustNotContain": [],
-    "tags": ["adr", "decision"],
-    "weight": 1
-  },
-  {
-    "id": "recall-state-version",
-    "question": "当前 super-memory-brain 版本是多少？",
-    "mode": "recallSearch",
-    "topK": 3,
-    "maxTokens": 1200,
-    "minResults": 1,
-    "minConfidence": 0.2,
-    "mustContain": ["CURRENT_BASELINE.md", "Package Version"],
-    "mustNotContain": ["MEMORY_OFF"],
-    "tags": ["hybrid", "state"],
-    "weight": 1
-  },
-  {
-    "id": "decision-adr-schema-static",
-    "question": "ADR schema audit counters 是否存在？",
-    "mode": "staticSources",
-    "sources": ["scripts/decision-audit.ps1", "scripts/memory-health.ps1"],
-    "mustContain": ["adrGraphCount", "adrCurrentCount", "adrSupersededCount", "adrSchemaIssueCount"],
-    "mustNotContain": [],
-    "tags": ["adr", "audit"],
-    "weight": 1
-  },
-  {
-    "id": "static-recall-recency-persona",
-    "question": "Hybrid Recall 是否支持近事优先和 persona/profile 优先？",
-    "mode": "staticSources",
-    "sources": ["memory-policy.json", "scripts/recall-search.ps1", "README.md"],
-    "mustContain": ["recency", "profileIntentTriggers", "Get-RecencyBoost", "Get-PersonaSnippets", "recencyScore", "ageDays"],
-    "mustNotContain": [],
-    "tags": ["hybrid", "recency", "persona"],
-    "weight": 1
-  },
-  {
-    "id": "static-context-budget-evidence-cards",
-    "question": "召回是否支持 token budget 和 evidence cards？",
-    "mode": "staticSources",
-    "sources": ["memory-policy.json", "scripts/recall-search.ps1", "README.md"],
-    "mustContain": ["contextBudget", "evidenceTokens", "cardSnippetTokens", "New-EvidenceCard", "evidenceCard", "whyRelevant", "tokenEstimate", "aliasNormalization", "Get-AliasTerms"],
-    "mustNotContain": [],
-    "tags": ["token-budget", "evidence-card"],
-    "weight": 1
-  },
-  {
-    "id": "static-checkpoint-lifecycle",
-    "question": "任务断点是否具备 start/complete/clear 生命周期？",
-    "mode": "staticSources",
-    "sources": ["memory-policy.json", "scripts/checkpoint-writer.ps1", "scripts/auto-continuation.ps1", "scripts/completion-guard.ps1", "scripts/status-snapshot-writer.ps1", "scripts/task-verification.ps1"],
-    "mustContain": ["checkpointLifecycle", "active-checkpoint.json", "Start", "Complete", "Clear", "currentStep", "nextAction", "checkpointStatus"],
-    "mustNotContain": [],
-    "tags": ["checkpoint", "state"],
-    "weight": 1
-  },
-  {
-    "id": "static-optimization-advisor",
-    "question": "超级大脑是否能给出只读优化建议？",
-    "mode": "staticSources",
-    "sources": ["scripts/optimize-advisor.ps1", "scripts/brain.ps1", "manifest.json"],
-    "mustContain": ["OPTIMIZE_ADVISOR", "topAdvice", "memory-quality-fixer.ps1 -ShowDetails", "optimize", "optimize-advisor.ps1"],
-    "mustNotContain": ["Remove-Item", "Set-Content", "Add-Content"],
-    "tags": ["optimization", "advisor"],
-    "weight": 1
-  },
-  {
-    "id": "static-status-card-cache",
-    "question": "状态查询是否支持轻量 status-card 缓存以节省 token？",
-    "mode": "staticSources",
-    "sources": ["super-memory-brain/SKILL.md", "scripts/status-snapshot-writer.ps1", "scripts/ci.ps1"],
-    "mustContain": ["Status-card cache rule", "status-card.json", "statusCardPath", "status-snapshot-writer"],
-    "mustNotContain": [],
-    "tags": ["token-budget", "status-card"],
-    "weight": 1
-  },
-  {
-    "id": "static-bare-superbrain-trigger",
-    "question": "裸词 超级大脑/G1 是否触发，同时普通确认/人类自述不显示 G1？",
-    "mode": "staticSources",
-    "sources": ["super-memory-brain/SKILL.md", "scripts/trigger-simulation.ps1", "scripts/startup-check.ps1", "scripts/repair-hook.ps1"],
-    "mustContain": ["Bare Super Brain trigger rule", "Visible `G1` prefix is explicit-only", "ordinary acknowledgements", "dormant `memory:auto` routing", "bare_superbrain_zh", "bare_g1", "ack_ok_no_problem_zh", "greeting_hello_zh", "incidental_g1_product", "human_brain_confused", "human_brain_self_report", "superbrain_fault", "requiresG1", "Hook explicit Super Brain wake words", "load Skill super-memory-brain first"],
-    "mustNotContain": [],
-    "tags": ["trigger", "g1", "skill-routing"],
-    "weight": 1
-  }
+﻿[
+    {
+        "id":  "static-hybrid-recall-policy",
+        "question":  "Hybrid Recall 是否有多源评分与置信门控？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "memory-policy.json",
+                        "scripts/recall-search.ps1"
+                    ],
+        "mustContain":  [
+                            "hybrid",
+                            "sourceWeights",
+                            "confidence",
+                            "sourceType",
+                            "tokenEstimate"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "hybrid",
+                     "policy"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-adr-lifecycle",
+        "question":  "ADR 是否具备 status/context/consequence/supersedes 审计链？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/write-decision.ps1",
+                        "scripts/decision-search.ps1",
+                        "scripts/decision-audit.ps1"
+                    ],
+        "mustContain":  [
+                            "[ADR]",
+                            "has_status",
+                            "has_context",
+                            "has_consequence",
+                            "superseded_by",
+                            "AdrOnly"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "adr",
+                     "decision"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "recall-state-version",
+        "question":  "当前 super-memory-brain 版本是多少？",
+        "mode":  "recallSearch",
+        "topK":  3,
+        "maxTokens":  1200,
+        "minResults":  1,
+        "minConfidence":  0.2,
+        "mustContain":  [
+                            "CURRENT_BASELINE.md",
+                            "Package Version"
+                        ],
+        "mustNotContain":  [
+                               "MEMORY_OFF"
+                           ],
+        "tags":  [
+                     "hybrid",
+                     "state"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "decision-adr-schema-static",
+        "question":  "ADR schema audit counters 是否存在？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/decision-audit.ps1",
+                        "scripts/memory-health.ps1"
+                    ],
+        "mustContain":  [
+                            "adrGraphCount",
+                            "adrCurrentCount",
+                            "adrSupersededCount",
+                            "adrSchemaIssueCount"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "adr",
+                     "audit"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-recall-recency-persona",
+        "question":  "Hybrid Recall 是否支持近事优先和 persona/profile 优先？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "memory-policy.json",
+                        "scripts/recall-search.ps1",
+                        "README.md"
+                    ],
+        "mustContain":  [
+                            "recency",
+                            "profileIntentTriggers",
+                            "Get-RecencyBoost",
+                            "Get-PersonaSnippets",
+                            "recencyScore",
+                            "ageDays"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "hybrid",
+                     "recency",
+                     "persona"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-context-budget-evidence-cards",
+        "question":  "召回是否支持 token budget 和 evidence cards？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "memory-policy.json",
+                        "scripts/recall-search.ps1",
+                        "README.md"
+                    ],
+        "mustContain":  [
+                            "contextBudget",
+                            "evidenceTokens",
+                            "cardSnippetTokens",
+                            "New-EvidenceCard",
+                            "evidenceCard",
+                            "whyRelevant",
+                            "tokenEstimate",
+                            "aliasNormalization",
+                            "Get-AliasTerms"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "token-budget",
+                     "evidence-card"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-session-restore-no-tail-default",
+        "question":  "默认 session restore 是否去掉 snippet 小尾巴但保留自动召回元数据？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/session-restore.ps1",
+                        "memory-policy.json",
+                        "super-memory-brain/SKILL.md",
+                        "scripts/skill-sync-check.ps1"
+                    ],
+        "mustContain":  [
+                            "[int]$TopK = 2",
+                            "if ($TopK -le 0) { $TopK = 2 }",
+                            "if ($Deep)",
+                            "evidenceCard.snippet",
+                            "New-CompactCheckpoint",
+                            "recallTriggered",
+                            "keywordTriggers",
+                            "semanticTriggers",
+                            "Autonomous recall rule",
+                            "codexMemoryRootOk"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "token-budget",
+                     "no-tail",
+                     "session-restore",
+                     "codex"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-accepted-constraints-preflight",
+        "question":  "修改前是否能把已接受需求/结构底线转成短约束 guard？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/accepted-constraints-preflight.ps1",
+                        "memory-policy.json",
+                        "super-memory-brain/SKILL.md",
+                        "manifest.json"
+                    ],
+        "mustContain":  [
+                            "preflight",
+                            "acceptedConstraintTags",
+                            "last-accepted-constraints-preflight.json",
+                            "decision-search.ps1",
+                            "recall-search.ps1",
+                            "mustPreserve",
+                            "mustNotViolate",
+                            "guardHash",
+                            "Accepted constraints preflight rule"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "preflight",
+                     "constraints",
+                     "decision-stability"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-pre-code-guard-no-tail",
+        "question":  "preflight 是否不靠默认小尾巴或长历史注入？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/accepted-constraints-preflight.ps1",
+                        "super-memory-brain/SKILL.md"
+                    ],
+        "mustContain":  [
+                            "noTail",
+                            "rawTranscript=$false",
+                            "longSnippet=$false",
+                            "historyTail=$false",
+                            "Do not replace this with default restore tails or long snippets"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "preflight",
+                     "no-tail"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-completion-guard-checks-constraints",
+        "question":  "completion guard / task verification / checkpoint 是否接入约束守卫？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/completion-guard.ps1",
+                        "scripts/task-verification.ps1",
+                        "scripts/checkpoint-writer.ps1",
+                        "scripts/verify-package.ps1"
+                    ],
+        "mustContain":  [
+                            "accepted-constraints-preflight",
+                            "last-accepted-constraints-preflight.json",
+                            "constraintPreflight",
+                            "constraintsPreserved",
+                            "acceptedConstraints",
+                            "constraintSources",
+                            "preflightId",
+                            "guardHash"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "preflight",
+                     "completion-guard",
+                     "checkpoint"
+                 ],
+        "weight":  1
+    },
+    {
+        "question":  "任务断点是否具备 start/complete/clear 生命周期？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "memory-policy.json",
+                        "scripts/checkpoint-writer.ps1",
+                        "scripts/auto-continuation.ps1",
+                        "scripts/completion-guard.ps1",
+                        "scripts/status-snapshot-writer.ps1",
+                        "scripts/task-verification.ps1"
+                    ],
+        "mustContain":  [
+                            "checkpointLifecycle",
+                            "active-checkpoint.json",
+                            "Start",
+                            "Complete",
+                            "Clear",
+                            "currentStep",
+                            "nextAction",
+                            "checkpointStatus"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "checkpoint",
+                     "state"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-optimization-advisor",
+        "question":  "超级大脑是否能给出只读优化建议？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/optimize-advisor.ps1",
+                        "scripts/brain.ps1",
+                        "manifest.json"
+                    ],
+        "mustContain":  [
+                            "OPTIMIZE_ADVISOR",
+                            "topAdvice",
+                            "memory-quality-fixer.ps1 -ShowDetails",
+                            "optimize",
+                            "optimize-advisor.ps1"
+                        ],
+        "mustNotContain":  [
+                               "Remove-Item",
+                               "Set-Content",
+                               "Add-Content"
+                           ],
+        "tags":  [
+                     "optimization",
+                     "advisor"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-status-card-cache",
+        "question":  "状态查询是否支持轻量 status-card 缓存以节省 token？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "scripts/status-snapshot-writer.ps1",
+                        "scripts/ci.ps1"
+                    ],
+        "mustContain":  [
+                            "Status-card cache rule",
+                            "status-card.json",
+                            "statusCardPath",
+                            "status-snapshot-writer"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "token-budget",
+                     "status-card"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-bare-superbrain-trigger",
+        "question":  "裸词 超级大脑/G1 是否触发，同时普通确认/人类自述不显示 G1？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "scripts/trigger-simulation.ps1",
+                        "scripts/startup-check.ps1",
+                        "scripts/repair-hook.ps1"
+                    ],
+        "mustContain":  [
+                            "Bare Super Brain trigger rule",
+                            "Visible `G1` prefix is explicit-only",
+                            "ordinary acknowledgements",
+                            "dormant `memory:auto` routing",
+                            "bare_superbrain_zh",
+                            "bare_g1",
+                            "ack_ok_no_problem_zh",
+                            "greeting_hello_zh",
+                            "incidental_g1_product",
+                            "human_brain_confused",
+                            "human_brain_self_report",
+                            "superbrain_fault",
+                            "requiresG1",
+                            "Hook explicit Super Brain wake words",
+                            "load Skill super-memory-brain first"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "trigger",
+                     "g1",
+                     "skill-routing"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-session-binding-temporary-evidence",
+        "question":  "临时会话绑定是否具备 TTL、memory:off、版本/根路径/隐私守卫和状态诊断？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "memory-policy.json",
+                        "scripts/session-binding.ps1",
+                        "scripts/session-restore.ps1",
+                        "scripts/recall-search.ps1",
+                        "scripts/status.ps1",
+                        "scripts/doctor.ps1"
+                    ],
+        "mustContain":  [
+                            "Temporary session binding protocol",
+                            "session-binding.json",
+                            "ttlMinutes",
+                            "expiresAt",
+                            "memory:off",
+                            "sessionBinding",
+                            "temporary_session_binding",
+                            "session_binding_version_mismatch",
+                            "noRawChat",
+                            "Avoidable Issue Elimination Rule"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "session-binding",
+                     "anti-hallucination",
+                     "temporary-memory"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-compression-recovery-stale-guard",
+        "question":  "压缩后续接是否有状态优先和旧任务摘要 stale guard？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "scripts/session-restore.ps1",
+                        "scripts/auto-continuation.ps1",
+                        "tests/memory-eval-tests.json"
+                    ],
+        "mustContain":  [
+                            "Compression recovery rule",
+                            "context is compressed",
+                            "status-card.json",
+                            "last-task-verification.json",
+                            "lastTaskStale",
+                            "staleReasons",
+                            "last_task_version_mismatch",
+                            "last_task_older_than_verify",
+                            "statusCard",
+                            "static-compression-recovery-stale-guard"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "compression",
+                     "continuation",
+                     "anti-hallucination",
+                     "stale-guard"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-privacy-token-false-positive-guard",
+        "question":  "隐私检测是否避免把 cached_tokens 等技术术语误报为密钥？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/privacy-hit-locator.ps1",
+                        "scripts/memory-health.ps1",
+                        "tests/memory-eval-tests.json"
+                    ],
+        "mustContain":  [
+                            "Test-PrivatePatternHit",
+                            "access[_-]?token",
+                            "refresh[_-]?token",
+                            "bearer\\s+",
+                            "token\\s*[:=]",
+                            "static-privacy-token-false-positive-guard"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "privacy",
+                     "token",
+                     "false-positive"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "recall-state-priority-over-experience-index",
+        "question":  "当前 super-memory-brain 版本和状态是什么？",
+        "mode":  "recallSearch",
+        "topK":  3,
+        "maxTokens":  1200,
+        "minResults":  1,
+        "minConfidence":  0.2,
+        "mustContain":  [
+                            "state_recall_priority",
+                            "CURRENT_BASELINE.md",
+                            "Package Version"
+                        ],
+        "mustNotContain":  [
+                               "MEMORY_OFF"
+                           ],
+        "tags":  [
+                     "hybrid",
+                     "state",
+                     "noise-regression"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "decision-current-session-first-adr-recall",
+        "question":  "memory-current-session-first ADR 是否可召回？",
+        "query":  "memory-current-session-first",
+        "mode":  "decisionSearch",
+        "topK":  3,
+        "maxTokens":  1200,
+        "adrOnly":  true,
+        "status":  "accepted",
+        "minResults":  1,
+        "mustContain":  [
+                            "memory-current-session-first",
+                            "isAdr",
+                            "context",
+                            "consequence"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "adr",
+                     "noise-regression"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-fast-session-resume",
+        "question":  "继续 #sess_xxx 是否走快速续接而不是全量召回？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "scripts/session-restore.ps1",
+                        "scripts/session-binding.ps1",
+                        "scripts/trigger-simulation.ps1"
+                    ],
+        "mustContain":  [
+                            "Fast Session Resume rule",
+                            "继续 #sess_xxx",
+                            "fastSessionResume",
+                            "noDefaultDeepRecall",
+                            "sessionIdSummaryOnly",
+                            "fast_session_resume_zh",
+                            "fast_session_resume_negative_no_id"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "session-binding",
+                     "fast-resume",
+                     "token-budget"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-project-graph-continuity",
+        "question":  "项目图续接层是否防止断层、漏步骤、结构漂移和多 agent 乱写？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "scripts/project-continuity.ps1",
+                        "scripts/evidence-freshness.ps1",
+                        "scripts/learn-memory.ps1",
+                        "manifest.json"
+                    ],
+        "mustContain":  [
+                            "Project Graph Continuity rule",
+                            "Multi-agent memory isolation rule",
+                            "Evidence freshness gate",
+                            "Long-context safe learning rule",
+                            "Step/structure anti-drift rule",
+                            "project-graph.json",
+                            "structure-baseline.json",
+                            "step-ledger.json",
+                            "task-graph.json",
+                            "agent-findings",
+                            "AdmitFinding",
+                            "RejectFinding",
+                            "candidate-only",
+                            "Commander admission",
+                            "TextFile",
+                            "evidence-freshness.ps1",
+                            "project-continuity.ps1"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "project-graph",
+                     "continuity",
+                     "multi-agent",
+                     "freshness",
+                     "anti-drift"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-current-task-status-and-paste-free-resume",
+        "question":  "任务状态/恢复是否优先当前会话任务，免大段粘贴，并在 ZCode 避免 TodoWrite？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "tests/memory-eval-tests.json"
+                    ],
+        "mustContain":  [
+                            "Current-task status rule",
+                            "Paste-free resume rule",
+                            "ZCode TodoWrite avoidance rule",
+                            "任务状态",
+                            "current conversation task-status query",
+                            "active-checkpoint.json",
+                            "step-ledger.json",
+                            "status-card.json",
+                            "do not ask the user to paste previous long replies",
+                            "do not call `TodoWrite`",
+                            "do not run doctor/CI/auto-check",
+                            "numbered shortlist"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "task-status",
+                     "paste-free-resume",
+                     "zcode",
+                     "todo-avoidance"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-task-index-current-task-list",
+        "question":  "任务状态是否能列出当前/暂停/完成/候选任务列表？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "scripts/task-index.ps1",
+                        "manifest.json"
+                    ],
+        "mustContain":  [
+                            "task-index.ps1",
+                            "last-task-index.json",
+                            "有哪些任务",
+                            "任务列表",
+                            "numbered shortlist",
+                            "active-checkpoint.json",
+                            "task-graph.json",
+                            "step-ledger.json",
+                            "last-completed-checkpoint.json",
+                            "current",
+                            "paused",
+                            "completed",
+                            "candidates"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "task-index",
+                     "task-status",
+                     "resume"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-intent-gate-permission-script",
+        "question":  "执行许可门控是否脚本化，能区分只计划/只状态/执行/澄清？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "super-memory-brain/SKILL.md",
+                        "scripts/intent-gate.ps1",
+                        "manifest.json"
+                    ],
+        "mustContain":  [
+                            "intent-gate.ps1",
+                            "last-intent-gate.json",
+                            "plan_only",
+                            "status_only",
+                            "execute",
+                            "clarify",
+                            "canMutate",
+                            "shouldExecute",
+                            "不要执行",
+                            "任务状态",
+                            "按这个做"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "intent-gate",
+                     "permission",
+                     "execution-control"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-recovery-e2e-suite",
+        "question":  "恢复端到端测试是否覆盖计划不执行、状态只读、继续恢复、任务列表和噪声隔离？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/recovery-e2e.ps1",
+                        "manifest.json",
+                        "super-memory-brain/SKILL.md"
+                    ],
+        "mustContain":  [
+                            "recovery-e2e.ps1",
+                            "last-recovery-e2e.json",
+                            "plan_only_cannot_mutate",
+                            "status_only_cannot_mutate",
+                            "continue_restore_light_packet",
+                            "task_list_has_buckets",
+                            "task_list_is_status_only",
+                            "ocr_noise_does_not_execute",
+                            "intent-gate.ps1",
+                            "session-restore.ps1",
+                            "task-index.ps1"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "recovery-e2e",
+                     "permission",
+                     "task-status"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-detailed-step-ledger",
+        "question":  "step-ledger 是否能细粒度记录步骤状态、证据、验证、阻塞与下一步？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/step-ledger.ps1",
+                        "super-memory-brain/SKILL.md",
+                        "manifest.json"
+                    ],
+        "mustContain":  [
+                            "step-ledger.ps1",
+                            "last-step-ledger.json",
+                            "openSteps",
+                            "completedSteps",
+                            "blockedSteps",
+                            "skippedSteps",
+                            "verificationCommands",
+                            "verificationResults",
+                            "relatedFiles",
+                            "blockers",
+                            "nextAction",
+                            "evidence",
+                            "reason"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "step-ledger",
+                     "continuity",
+                     "task-execution"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-continue-candidate-ranking",
+        "question":  "继续恢复候选是否按 active checkpoint、active task、paused、recent completed、status fallback 排序？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/task-index.ps1",
+                        "super-memory-brain/SKILL.md"
+                    ],
+        "mustContain":  [
+                            "rankingPolicy",
+                            "rank",
+                            "confidence",
+                            "ageMinutes",
+                            "active checkpoint rank 10",
+                            "active task graph rank 20",
+                            "paused/blocked rank 30",
+                            "status-card fallback rank 90",
+                            "rank/confidence/freshness",
+                            "numbered choice list"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "resume-ranking",
+                     "task-index",
+                     "continue"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-host-cache-version-check",
+        "question":  "宿主缓存/安装副本版本是否有检测入口并提示新开会话限制？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/host-cache-check.ps1",
+                        "super-memory-brain/SKILL.md",
+                        "manifest.json"
+                    ],
+        "mustContain":  [
+                            "host-cache-check.ps1",
+                            "last-host-cache-check.json",
+                            "installedFresh",
+                            "contentMatches",
+                            "packageRootMatches",
+                            "currentSessionCacheRisk",
+                            "already-loaded skill text",
+                            "open a new session",
+                            "last-hot-refresh.json"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "host-cache",
+                     "startup",
+                     "hot-refresh"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-agent-bridge-isolated-failover",
+        "question":  "agent-bridge 是否支持隔离状态、任务移交、断线 failover 和不污染 shared memory？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "modules/agent-bridge/SKILL.md",
+                        "scripts/agent-bridge.ps1"
+                    ],
+        "mustContain":  [
+                            "memory/workspace/agent-bridge",
+                            "failover",
+                            "Adopt",
+                            "Close",
+                            "Heartbeat",
+                            "Open",
+                            "Send",
+                            "Receive",
+                            "not pollute",
+                            "does not write shared memory",
+                            "currentOwner",
+                            "staleAgents",
+                            "messageCount"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "agent-bridge",
+                     "failover",
+                     "isolation"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-agent-bridge-dispatch-permission-queue",
+        "question":  "agent-bridge 是否支持dispatch投递包、权限模型、轻量队列和隔离中继？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "modules/agent-bridge/SKILL.md",
+                        "scripts/agent-bridge-dispatch.ps1",
+                        "scripts/agent-bridge-permissions.ps1",
+                        "scripts/agent-bridge-queue.ps1",
+                        "super-memory-brain/SKILL.md"
+                    ],
+        "mustContain":  [
+                            "agent-bridge-dispatch.ps1",
+                            "agent-bridge-permissions.ps1",
+                            "agent-bridge-queue.ps1",
+                            "handoffPrompt",
+                            "targetAgent",
+                            "reader",
+                            "advisor",
+                            "code-suggester",
+                            "adopt-requester",
+                            "commander",
+                            "Enqueue",
+                            "Poll",
+                            "Ack",
+                            "memory/workspace/agent-bridge"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "agent-bridge",
+                     "dispatch",
+                     "permissions",
+                     "queue"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-team-task-archive-and-cache-prompt",
+        "question":  "旧team-task归档和当前会话缓存提示是否有安全入口？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "scripts/team-task-archive.ps1",
+                        "scripts/host-cache-check.ps1",
+                        "manifest.json"
+                    ],
+        "mustContain":  [
+                            "team-task-archive.ps1",
+                            "last-team-task-archive.json",
+                            "Dry run only",
+                            "-Apply",
+                            "loadedSkillLimitation",
+                            "newSessionPrompt",
+                            "already-loaded skill text"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "archive",
+                     "host-cache",
+                     "maintenance"
+                 ],
+        "weight":  1
+    },
+    {
+        "id":  "static-agent-bridge-channel-target-mode",
+        "question":  "Agent Bridge channel target mode supports active alias send and bounded reply wait?",
+        "mode":  "staticSources",
+        "sources":  [
+                        "modules/agent-bridge/SKILL.md",
+                        "scripts/agent-bridge-channel.ps1",
+                        "scripts/intent-router.ps1",
+                        "scripts/smart-next.ps1",
+                        "manifest.json",
+                        "COMMANDS.md"
+                    ],
+        "mustContain":  [
+                            "Connect",
+                            "Active",
+                            "WaitConnect",
+                            "WaitInbox",
+                            "WaitReply",
+                            "SendAndWait",
+                            "waiting_connect",
+                            "message_received",
+                            "connectedAt",
+                            "active-agent-bridge-channel.json",
+                            "Alias",
+                            "bounded",
+                            "boundedWait",
+                            "no infinite watch loop",
+                            "no repeated waiting output",
+                            "userCloseClearsActive",
+                            "targetSessionId",
+                            "lastSentMessageId",
+                            "lastReceivedMessageId",
+                            "agent_bridge_channel",
+                            "开启子agent通道",
+                            "连接子agent通道",
+                            "发送信息",
+                            "Open success is not completion",
+                            "persistent target-mode wait state"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "agent-bridge",
+                     "channel",
+                     "target-mode"
+                 ]
+    }
 ]

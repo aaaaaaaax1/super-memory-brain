@@ -1,200 +1,291 @@
 ---
 name: super-memory-brain
-description: Public entry skill for explicit Super Memory Brain / 超级大脑 requests, including bare wake words such as 超级大脑, Super Brain, G1, 大脑, 脑子, or 刷新超级大脑. Load when the user explicitly asks to enable, start, check status of, recall from, optimize, or modify Super Brain memory/routing. Keep startup lightweight: use memory:auto, G1 governance, ORC routing, and Hybrid Recall only when continuity or evidence is needed. Do not load this full skill for ordinary coding/chat tasks unless Super Brain state, memory, prior-session continuity, or package maintenance is directly relevant.
+description: Public entry skill for explicit Super Memory Brain / 超级大脑 control, G1 status, memory recall, continuation, learning, automatic evolution closeout, restore, single-agent subagent workflow, legacy Agent Bridge, refresh, install, repair, or package maintenance. Load for clear wake/control/status/recall phrases such as 超级大脑, 启动超级大脑, 刷新超级大脑, Super Brain, G1, 任务状态, 还记得, 上次, 之前, 另一个会话, subagent execution/review/verification, agent channel, agent bridge, or subagent channel. Do not load this full skill for ordinary chat, simple coding, casual G1/product mentions, user-agent explanations, or human brain/脑子 self-reports unless the message primarily refers to this Super Brain system.
 ---
+
 ## Installed Root Markers
 
-When installed under ZCode/Codex, this skill directory may contain only `SKILL.md`, `package-root.txt`, and `memory-root.txt`. Treat `package-root.txt` as the full package root for `scripts/`, `manifest.json`, `CURRENT_BASELINE.md`, and package docs. Treat `memory-root.txt` as the active memory root for NexSandglass runtime/data. Do not assume `memory/` or `scripts/` live beside this installed `SKILL.md`.
+When installed under ZCode/Codex, this skill directory may contain only
+`SKILL.md`, `package-root.txt`, and `memory-root.txt`.
 
-Memory mode convention: global shared mode uses `<package-root>/memory/shared`; split/private agent mode uses `<package-root>/memory/agents/<agent-name>`; custom shared groups use `<package-root>/memory/groups/<group-name>`. Legacy `%USERPROFILE%\.neurobase`, `<package-root>/memory-zcode`, `<package-root>/memory-codex`, and `<package-root>/memory-<agent-name>` are fallback/migration sources only, not current targets.
+- Read `package-root.txt` for the full package root.
+- Read `memory-root.txt` for the active NexSandglass memory root.
+- Do not assume `scripts/`, `manifest.json`, `references/`, or `memory/` live
+  beside the installed skill copy.
 
-Default sharing rule: installed skills use global shared memory in `<package-root>/memory/shared` by default. If a specific agent needs isolation, switch that agent explicitly to private memory in `memory/agents/<agent-name>` or to a named group in `memory/groups/<group-name>` before writing agent-only durable memory. Do not silently move an agent from shared memory to private/group memory without user intent.
+Memory roots:
 
-Shared memory provenance rule: any durable shared-memory entry or task checkpoint must carry platform, agent, session/task code, timestamp, status, source, and evidence. Before executing a confirmed multi-step task, write an active checkpoint; after verification, clear or supersede that checkpoint with the completed state and next action so shared memory remains traceable across agents and sessions.
+- Shared default: `<package-root>/memory/shared`.
+- Private agent mode: `<package-root>/memory/agents/<agent-name>`.
+- Named shared group: `<package-root>/memory/groups/<group-name>`.
 
-
-# Super Memory Brain
-
-`super-memory-brain` is the unified default entry skill for 超级大脑. It is the startup entry point and coordinator, not a replacement for the three underlying modules.
-
-## Bundle
-
-- `skill-orchestrator`: route and task selection.
-- `plusunm-g1`: memory governance and durability decisions.
-- `nexsandglass-dedicated-memory`: local deep memory, search, decision particles, and MCP storage.
+Current user instruction, visible context, live files, and verified tool output
+beat older memory.
 
 ## Core Rule
 
-Safety invariants: Super Brain optimization must not damage overall function, remove existing capability, or introduce logic/function breakpoints. Slimming may defer loading, shorten default summaries, and reduce optional checks, but must preserve recall, status, learn, session-restore, hook, verification, continuation recovery, and hot-refresh paths.
-
-Use a short always-on router, not full memory injection:
+Use Super Memory Brain as a short router, not as full memory injection.
 
 ```text
-Memory Router: memory:auto by default; decide recall/write need from keyword + semantic triggers
-→ plusunm-g1 / G1 governs memory policy, confidence, privacy, and conflicts
-→ skill-orchestrator / ORC routes task skills only when needed
-→ nexsandglass-dedicated-memory / Hybrid Recall retrieves Sandglass + graph + state + recent candidates top_k=3 within max_tokens=1200 only when recall helps
-→ domain skill or direct answer
+classify intent
+-> decide whether Super Brain/G1/ORC/recall is needed
+-> read the smallest hot entry
+-> use references/index.md for cold paths
+-> avoid user-visible routing noise unless it affects the next action
 ```
 
-Memory modes:
+Ordinary chat, simple code, direct explanations, and casual mentions stay on the
+host path. Do not show a `G1` prefix or run memory scripts unless the user
+explicitly asks for memory/status/continuity or the answer depends on prior
+state.
 
-- `memory:auto`: default; load only the short router and lightweight state pointers first, then retrieve/write only when keyword/semantic trigger and G1 policy justify it. `memory:auto` is silent by default: if no state, memory, recall, or Super Brain evidence is actually used, answer normally and do not show the visible `G1` prefix.
-- `memory:force`: user explicitly asks to remember, learn, restore, or recall; still block secrets unless confirmed.
-- `memory:off`: do not proactively retrieve or write memory; use visible context unless the user explicitly asks for memory/status.
+Safety invariant: slimming may shorten or defer loading, but must not remove
+recall, status, continuation recovery, privacy gating, Agent Bridge, install,
+verification, hot-refresh, or rollback paths.
 
-Learning and session restore protocols:
+GPT-5 Anti-Degradation Guard: keep senior-engineer execution quality active by default. Read the code/context before changing it, avoid lazy generic answers, prefer the smallest reversible implementation, preserve user changes, verify before closeout, keep outputs compact and evidence-based, and load the full base-instructions reference only when drift, degraded behavior, frontend quality, review discipline, or instruction recovery requires it. Full source: `references/base-instructions/gpt-5.5-base-instructions.md`.
 
-- **Learn protocol**: when the user says `学一下`, `记住这个`, `以后按这个`, or clearly asks Super Brain to learn, extract a stable summary, classify it as profile/project/decision/task/session/experience, reject secrets or raw noise unless confirmed, write through `scripts\learn-memory.ps1`, and report the compact learned item instead of storing the full chat.
-- **New-session restore protocol**: keep cold start lightweight. Use `scripts\session-restore.ps1` or equivalent state reads to load only version, last state, active checkpoint, last snapshot, and memory/experience index previews within a small token budget. Retrieve memory正文 only after user/semantic triggers such as `继续`, `上次`, `还记得`, `按我的习惯`, `学一下`, another-session questions, unclear project direction, or repeated repairs.
-- **Token budget rule**: default restore budget is summary-first and evidence-card-first; ordinary startup should stay around a few hundred tokens and must not inject raw long memory. Deep recall requires `memory:force`, `-Deep`, or a continuity-sensitive task.
-- **Status-card cache rule**: prefer the compact `memory\workspace\status-card.json` for repeated status/version/health answers when it is fresh; fall back to `super-brain-state.json`, `last-*.json`, `CURRENT_BASELINE.md`, `manifest.json`, and `CHANGELOG.md` only when the card is missing, stale, failed, or the user asks for detailed verification.
-- **Alias normalization rule**: before Hybrid Recall scoring, normalize common intent aliases so equivalent user wording hits the same memories without deep recall: `超级大脑/大脑/脑子/Super Brain/G1`, `不回复/没反应/不在/断了/坏了`, `GitHub/公开版/分享包/release/zip`, and `还记得/上次/之前/另一个会话/继续`.
+## Wake And Route Triggers
 
-Recall confidence:
+Load this skill first for explicit Super Brain control:
 
-- `>= 0.6`: inject concise memory evidence automatically.
-- `0.2..0.6`: retrieve only titles/summaries or a tiny packet.
-- `< 0.2`: do not retrieve memory正文.
+- `超级大脑`, `启动超级大脑`, `刷新超级大脑`, `Super Brain`, standalone `G1`.
+- Super Brain/G1 status, health, version, refresh, repair, install, restore.
+- `任务状态`, current progress, next step, where are we, current checkpoint.
+- Stateful continuation: `继续` only when it depends on the current visible task
+  or explanation; `上次`, `之前`, `还记得`, `另一个会话`, previous/last-time wording
+  signals possible historical recovery.
+- `记住`, remember preference, recall memory, learning, durable rule update.
+- Subagent execution/review/verification requests such as letting a subagent modify, test, audit, or produce evidence.
+- Legacy/manual Agent Bridge channel commands: `agent channel`, `subagent channel`, `agent bridge`, `子agent通道`, open/connect/send/read/close channel.
 
-Hybrid Recall output uses `text`, `source`, `sourceType`, `layer`, `tags`, `score`, `confidence`, `reason`, and `tokenEstimate`. Prefer `CURRENT_BASELINE.md` / `manifest.json` / `CHANGELOG.md` state anchors for status/version/progress questions, graph/ADR edges for decisions, Sandglass for long-term memory, and recent fallback only when candidates are sparse.
+Negative triggers:
 
-Keyword triggers include `上次`, `之前`, `记住`, `我的偏好`, `历史`, `这个项目`, `继续`, `还记得`. Semantic triggers include continuity phrases like `按我的习惯来`, `照之前方案继续`, `还是那个项目`, `接着做`, or any request clearly depending on past context.
+- Ordinary greeting or chat.
+- Simple coding request with enough visible context.
+- `user agent` explanation.
+- Product/game/model names containing `G1`.
+- Human brain/脑子 phrases such as "my brain is confused".
+- Generic `agent` meaning unless paired with channel/open/connect/send/bridge intent.
 
-Bare Super Brain trigger rule: if the user message is exactly or primarily `超级大脑`, `Super Brain`, `super brain`, `G1`, `刷新超级大脑`, `启动超级大脑`, or asks whether Super Brain/G1 is present/optimized/working, load this `super-memory-brain` skill first and answer through the G1 path. Treat `大脑` and `脑子` as Super Brain wake words only when the context clearly points to the assistant/Super Brain system, not ordinary human or casual language. A non-bare incidental mention of `G1` inside ordinary prose does not by itself require the visible G1 path. Do not treat these bare wake words as ordinary greeting/chat. Explicit skill links such as `[$super-memory-brain](...)` are not required for this trigger.
+## Route Map
 
-Plan/Explore/Tool thresholds:
+Prefer `route-map.json` for machine-readable route names and `capabilities.json`
+for capability ownership. Use `references/index.md` as the one-hop cold-path
+navigation table.
 
-- Direct answer: visible context is enough and the task is low-risk.
-- Plan mode: multi-file/architecture/user-facing/high-risk/unclear requirements.
-- Explore agent: only for broad cross-directory discovery or independent research.
-- Tools: call only when live evidence/action is required; do not call tools just for reassurance.
+Hot route summary:
 
-## Commander Team Memory
+| Route | Use When | First Read |
+| --- | --- | --- |
+| `bare_wake` | explicit Super Brain/G1 wake | this file only |
+| `current_task_status` | current task/progress/next step | `references/status-recovery.md` |
+| `system_status` | Super Brain health/version/system state | lightweight state/status card/last-verify summary |
+| `current_session_continue` | continue visible task/explanation | visible context/checklist |
+| `historical_recovery` | previous/last/another session | `references/status-recovery.md` |
+| `privacy_memory_gate` | remember/store secret or sensitive data | `references/memory-governance.md` |
+| `memory_write_candidate` | stable preference/rule/decision | `references/memory-governance.md` |
+| `automatic_evolution_learning` | post-task bounded learning closeout | `references/automatic-evolution-policy.md` |
+| `anti_degradation_guard` | GPT-5 execution quality drift or instruction recovery | `references/base-instructions/gpt-5.5-base-instructions.md` |
+| `single_agent_subagent_workflow` | subagent execution/review/verification inside one agent | `references/single-agent-subagent-workflow.md` |
+| `agent_bridge_channel` | explicit legacy channel open/connect/send/read/close | `references/agent-bridge.md` |
+| `maintenance_hot_refresh` | refresh/install/repair | `references/install-refresh.md` |
+| `maintenance_release` | release/share/package/privacy review | `references/maintenance-release.md` |
+| `orc_complex_routing` | complex multi-domain task | `references/orc-routing.md` |
 
-Keep Commander Team Memory off the cold-start path. The public entry only loads Commander Team Memory when the user explicitly asks for team/subagent/`review_board`/code-capable delegation.
+Do not route `system_status` to install/refresh docs by default. Read
+`references/install-refresh.md` only for explicit refresh, repair, install,
+hot-refresh, hook, or maintenance action.
 
-For ordinary startup, simple `继续`, direct coding/chat, status, recall, optimization, and memory questions, do not load team templates, inspect team-task state, run dispatch scoring, or mention subagents. If broad/high-risk work might benefit from delegation, ORC may recommend asking the user first, but Commander Team Memory stays unloaded until explicit approval.
+Single-hop rule: after `references/index.md` selects a file, read that file and
+stop. Follow a second reference only when the first file explicitly says the
+route is blocked without it.
 
-When explicitly triggered, Super Brain remains the Commander: ORC routes, G1 governs memory, NexSandglass provides evidence, and subagents report findings only. `不能瞎写代码和逻辑`. Findings without evidence are assumptions. Agent Team templates in private `memory/workspace/agent-teams.json` are advisory role sets and do not grant edit authority. Code-capable subagents still require explicit Commander authorization with allowed files, forbidden files, success criteria, verification commands, rollback notes, and drift-guard review.
+## Memory Modes
 
-Memory reference style: when memory is used, say it briefly, e.g. `我按你之前的偏好处理`; do not narrate long memory lookup process.
+- `memory:auto`: default. Retrieve or write only when keyword/semantic triggers
+  and G1 policy justify it.
+- `memory:force`: user explicitly asks to remember/recall. Privacy still wins.
+- `memory:off`: no proactive retrieval or durable writes; use visible context.
 
-Response discipline:
+G1 owns memory governance. NexSandglass is storage/search, not authority. ORC
+owns task routing, not memory admission.
 
-- Visible `G1` prefix is explicit-only. Start the final visible answer with a standalone `G1` line only when the current user message explicitly invokes Super Brain/G1, asks Super Brain status/version/progress/optimization, requests memory/recall/learning/session restore, says `继续`/resume in a stateful task, or reports a Super Brain/system fault. Do not show `G1` for ordinary acknowledgements (`好的`, `ok`, `收到`, `没问题`), normal chat/coding answers, incidental non-bare `G1` mentions, or dormant `memory:auto` routing. Do not add `G1` to interim progress updates, tool preambles, thinking/status notes, or repeated messages. Skip this prefix for strict-format outputs such as JSON, code-only blocks, command-only output, patches, commit messages, or user-requested exact text.
-- Use the START rule silently by default before substantive answers: Scope the request, Think through evidence, Act with the needed tool/code steps, Report with structure, Track completion status. Do not print the START checklist unless the user asks for the reasoning format or status protocol.
-- Prevent logic breakpoints: before any long-running, multi-step, or tool-heavy task, keep an up-to-date short-term todo/goal state with current step, completed steps, next action, and blockers. If the session is interrupted, network stops, tool execution halts, or the user says `继续`, first restore position from visible context, todo/goal state, recent tool results, and package state files; then state where work stopped and continue from the next concrete action instead of restarting blindly or asking the user to reconstruct context.
-- Stability memory rule: for stateful repairs, repeated failures, regressions, UI/install/share flows, architecture decisions, long-context work, large multi-turn goals, unclear project direction, or any task where the direction may drift, Super Brain must actively retrieve relevant prior decisions, baselines, recent state, requirements, and lessons before changing course. It is a decision-stabilizing system, not just passive storage; use memory to preserve the accepted line, prevent logic breakpoints, and avoid making unrelated or divergent changes.
-- Autonomous recall rule: Super Brain may proactively start memory search when it helps complete the process safely, especially before decisions that depend on prior accepted requirements, active checkpoints, repeated failures, conflicts, or rule/architecture/memory mechanism changes. Long replies, long context, or ordinary follow-up confirmations do not by themselves justify recall or a visible `G1` prefix. Use a three-layer gate: (1) lightweight state recall first through `super-brain-state.json`, `last-*.json`, `CURRENT_BASELINE.md`, `manifest.json`, and `CHANGELOG.md`; (2) stability recall through current decisions, user requirements, and `experience-index.md` when direction/constraints/accepted goals may matter; (3) deep recall only for long-running goals, repeated failures, conflicts, or rule/architecture/memory mechanism changes. Inject only compact evidence needed for the next action, and report conflicts before changing direction.
-- Tool schema discipline: before using optional workflow tools such as TodoWrite, match the current tool schema exactly. If inputSchema validation fails, do not retry the same arguments; inspect the schema/result, correct the fields, or skip the optional tool and continue the main task without blocking progress.
-- Keep answers framework-based and evidence-grounded; do not answer randomly or from vague memory when live state is required.
-- After you explain the current step or status, continue executing immediately instead of stopping for extra confirmation.
-- If there is no new material progress to report, do not interrupt the user with a progress update.
-- For task-completion requests, explicitly say when the task is completed. If unfinished, provide a checklist of what is done, what remains, and any blockers.
-- Delivery rule for UI/script/install/import/share/cleanup work: do not hand off work that leaves the user guessing whether it succeeded, why it failed, or where output files are. Before reporting completion, provide visible and durable result feedback such as `last-*.json`, a persistent UI result panel, success path or failure reason, and an open-output/result-location action; verify the actual user path, not just logs or temporary popups.
-- Hot-refresh rule: after changing Super Brain skill files, routing rules, memory policy, install UI behavior, or bundled runtime files, proactively run `scripts\hot-refresh-skills.ps1 -AllKnown` before reporting completion so installed ZCode/Codex and other known Agent skill copies receive the latest brain quickly. Hot refresh updates skill files, package/memory root markers, and memory runtime files; if an agent caches skill content, tell the user to open a new session.
+Use confidence gates:
 
-## Short Memory Policy
+- High confidence: inject a compact memory packet.
+- Medium confidence: use summary/title/evidence only.
+- Low confidence: skip memory body and say what is missing if needed.
 
-`G1审记，ORC调度，沙漏只存稳态；不存秘密、噪音、猜测、长原文。`
+## State And Continuation Priority
 
-## Package-Local Memory
+For status, continuation, and recovery:
 
-Default memory root for the distributable package:
+1. Current user message and visible conversation.
+2. Current plan/checklist/checkpoint/recent tool result.
+3. Active task index or status card.
+4. Lightweight Super Brain state.
+5. Summary recall.
+6. Deep recall only when explicit previous/another-session context requires it.
+
+Task status is not system health. Do not answer `任务状态`, "where are we", or
+"next step" by running doctor, CI, package verification, or system dashboard
+unless the user asks for system health or the task requires it.
+
+Bare `continue` is current-session-first. Upgrade to historical recovery only
+when the user says previous, last time, another session, `上次`, `之前`, or the
+visible context is insufficient.
+
+Compaction/resume priority: after context compression, use visible context,
+compressed summary/records, checkpoints, ledgers, and recent tool results before
+long-term memory. Stale memory never overrides newer visible context.
+
+## Privacy And Durable Memory
+
+Never store:
+
+- API keys, tokens, passwords, cookies, bearer strings, private credentials.
+- Raw transcripts, full payloads, full SSE streams, full image objects, base64.
+- Large logs, guesses, noise, rejected variants, stale conflicts.
+- Sensitive personal data unless explicitly required and approved.
+
+Store only compact durable facts:
+
+- Stable user preference.
+- Accepted decision and supersession.
+- Current task state, blocker, next action.
+- Verified reusable workflow.
+- Rollback/version evidence when useful.
+
+Before a durable write, prune stale/conflicting memory and summarize. Shared
+memory writes must use package locking/atomic helpers; do not add raw
+`WriteAllText`, `Set-Content`, `Add-Content`, or bare append paths.
+
+## Single-Agent Subagent Workflow
+
+For complex work where the user asks a subagent to modify, inspect, test, review, verify, or produce evidence, prefer `single_agent_subagent_workflow` and read `references/single-agent-subagent-workflow.md`. The controller remains user-facing; internal executor/reviewer subagents return structured result/audit cards. Do not use channel/inbox/wait/ack for this default workflow.
+
+post-task closeout may run bounded automatic evolution through Ponytail gate; full policy in `references/automatic-evolution-policy.md`.
+
+## Legacy Agent Bridge Entry
+
+Agent Bridge channel is legacy/manual-only compatibility for explicit cross-agent channel commands, not the default subagent workflow.
+
+Route to `agent_bridge_channel` only when the user explicitly asks to open, connect, send to, read from, or close an agent/subagent channel, including mixed Chinese/English phrasing.
+
+Rules:
+
+- Open creates a fresh local channel unless the user supplies a channel id.
+- Do not launch nested host agents/workers/explorers/helpers to open a channel.
+- `WaitConnect` and `WaitInbox` idle means quiet waiting, not failure.
+- After one reply, keep waiting for the next message until explicit close.
+- No durable memory write by default.
+
+Read `references/agent-bridge.md` for full channel behavior.
+
+## ORC And Capability Routing
+
+Use ORC only when complexity justifies it: multi-domain work, broad search,
+staged implementation, tests, release, design plus code, or agent coordination.
+
+Do not load ORC for simple answers, small code snippets, ordinary explanations,
+or casual chat.
+
+When ORC is needed, read `capabilities.json` and `references/orc-routing.md`.
+Select the smallest useful skill/tool set. Avoid load-all-skills behavior.
+
+## Maintenance And Install
+
+For refresh/install/repair/hot-refresh, read `references/install-refresh.md`.
+For release/share/package review, read `references/maintenance-release.md`.
+
+Safe defaults:
+
+- Prefer dry-run/report mode before writes.
+- Ask before destructive cleanup, hook/global rewrite, broad overwrite, private
+  memory handling, or external publishing.
+- Report what changed, verification result, and rollback path.
+
+## Baseline And Regression
+
+Current Phase 2 route regression files:
+
+- `tests/route-regression-cases.json`
+- `scripts/route-regression.ps1`
+- `tests/powershell/RouteRegression.Tests.ps1`
+
+Expected during Phase 3/4 draft and slimming:
+
+- Non-strict regression: `ok=true`, `total=28`, `failed=0`.
+- Strict regression: `failed <= 17`, and every failure must be
+  `known_baseline_gap` with `mustFixBeforePhase6=true`.
+
+Expected at Phase 6 acceptance:
+
+- Strict regression: `ok=true`, `failed=0`.
+
+Do not treat known gaps as accepted final behavior. They are must-fix before
+Phase 6 strict acceptance.
+
+## Dispatch Checklist
+
+Before answering a Super Brain-triggered request, run this mental checklist:
+
+1. Is this explicit Super Brain/G1/memory/status/continuation/Agent Bridge
+   intent, or ordinary chat with a tempting keyword?
+2. If ordinary chat, answer directly and do not load cold paths.
+3. If status, decide task status vs system status before reading files.
+4. If continuation, decide current session vs historical recovery before recall.
+5. If memory write, run the privacy gate before any storage/search action.
+6. If subagent execution/review/verification is requested, use single-agent workflow before generic team dispatch.
+7. If explicit channel/open/connect/send/read/close is requested, choose legacy Agent Bridge.
+8. If ORC, confirm complexity justifies it and choose the smallest route.
+9. If maintenance, check approval and rollback requirements before writes.
+
+Known baseline gaps must not be hidden by looser wording. Preserve the stricter
+target behavior in this draft even when current scripts still observe a weaker
+route. Phase 6 strict regression is the acceptance gate for those fixes.
+
+## Compatibility Regression Markers
+
+Keep these compact markers until the full Pester suite is updated to read
+`route-map.json` and references directly:
+
+- Product-manager intent gate.
+- Current-session task status rule.
+- Execution-state checkpoint rule.
+- OCR/log/code noise isolation rule.
+- Cross-agent/session task identity index rule.
+- compact task status table.
+- sessionName.
+- agentId.
+- Cognitive execution loop rule.
+- cognitive-preflight.ps1.
+- cognitive-enforce.ps1.
+- runtime-drift-checkpoint.ps1.
+- reflection-promotion.ps1.
+- semantic memory.
+- episodic memory.
+- procedural memory.
+- working memory.
+- DRIFT_DETECTED.
+- Self-learning loop rule.
+- Unfinished-task progress-only rule.
+
+## Output Style
+
+For functional tasks, keep answers compact:
 
 ```text
-super-memory-brain-package\memory
+State:
+- ...
+Action:
+- ...
+Evidence:
+- ...
+Next:
+- ...
 ```
 
-Runtime scripts live under:
-
-```text
-super-memory-brain-package\memory\scripts
-```
-
-This keeps the skill package and its memory together for easy discovery. Do not share the `memory/` folder with others unless you intentionally want to share private local memory.
-
-## System Duties
-
-- **Mandatory entry loading for recall/status questions and bare wake words**: When the user asks about Super Brain status, version, progress, previous sessions, remembered rules, `还记得吗`, `另一个会话`, or sends a bare wake word such as `超级大脑`, `Super Brain`, or exact/primary `G1`, the assistant must first load this `super-memory-brain` skill in read-only mode before answering. `大脑` / `脑子` trigger this only when the context clearly points to the assistant/Super Brain system. `只读` means no writes, mutations, installs, repairs, or heavy scripts; it does not block loading this skill.
-- **Startup self-check**: verify ORC loaded, G1 available, NexSandglass readable/writable, hook injection present, hook rule length stays short, hook path points to the current package, and startup/config files checked through `scripts\startup-check.ps1` when state/startup questions or verification requests require it. Do not run heavy checks on every startup.
-- **Automatic verification**: on first run, `继续`, state checks, suspected breakage, or startup questions, the assistant should read `memory\workspace\super-brain-state.json` first, then run `scripts\auto-check.ps1` only when state is missing/stale/failed; users should not have to manually send verification commands.
-- **Status view**: surface current state for ORC / G1 / NexSandglass / hook / recall trigger / last accepted rule; prefer `scripts\doctor.ps1` for a compact read-only diagnosis and `scripts\maintain.ps1` for maintenance planning.
-- **Recall trigger**: another session, remember, previous work, progress, accepted rules, Super Brain state, old decisions, repeated failures, regressions, multi-step repair drift, decision points, explicit continuity requests, or user requirement preservation that materially affects the next action must search Hybrid Recall evidence before answering or changing implementation direction. Long context or long replies alone are not enough; recall should run only when prior state, accepted decisions, active checkpoints, or repeated-failure lessons are needed.
-- **Autonomous stability recall**: Super Brain is allowed and expected to proactively search memory when recall reduces risk or helps finish the process correctly. Use a three-layer gate: lightweight state first, stability recall for decisions/requirements/experience titles when direction or accepted goals matter, and deep recall only for long-running goals, repeated failures, conflicts, or rule/architecture/memory mechanism changes. Keep retrieved evidence compact and directly tied to the next action; do not use broad memory search as noise or delay.
-- **Decision stability**: use G1 + Hybrid Recall as an active stabilizer for complex fixes. Before continuing after a failed repair, UI/share/install bug, or user correction that says the line is drifting, retrieve prior decisions and lessons, compare them with live evidence, then continue from the stable accepted direction instead of treating memory as a passive archive.
-- **ADR decisions**: architecture or long-lived policy decisions should use `write-decision.ps1 -Adr` fields so status, context, consequences, alternatives, owner, scope, supersedes, and superseded_by are searchable and auditable.
-- **Memory eval**: use `scripts\memory-eval.ps1 -Json` for read-only recall/decision quality checks and `scripts\memory-eval-report.ps1` when a durable `last-memory-eval.json` report is needed.
-- **Conflict handling**: when new memory conflicts with older memory, prefer latest user instruction and mark stale rules instead of duplicating them.
-- **Compression**: periodically report equivalent memories, keep the shortest accepted version, and prune exact duplicates only through explicit confirmation (`compact-apply.ps1 -Force`).
-- **Backup and migration**: preserve export/import/backup paths, use `backup-retention.ps1` for dry-run-first backup cleanup, and keep the stack movable between machines.
-- **Script safety tiers**: T0/T1 checks may run when appropriate; T2/T3 or manual-only scripts require explicit user intent, especially install, hook repair, memory mutation, private release, delete, apply, force, or fix flows.
-- **Versioning**: keep package version and change notes so installs can be compared.
-
-## Bundled Installation Notes
-
-To make this skill work on another machine, the install must include all three modules:
-
-- `skill-orchestrator`
-- `plusunm-g1`
-- `nexsandglass-dedicated-memory`
-
-And it must include NexSandglass runtime files under the package-local memory folder by default.
-
-If only this entry skill is copied alone, it will not provide the full system.
-
-## Optional Checks
-
-- Verify `session-start` injects the startup rule, entry skill, memory shortcut, recall trigger, startup auto-check rule, current package path, and a short startup rule length.
-- Use `repair-hook.ps1` to self-heal hook content after plugin updates or path moves.
-- Use `encoding-check.ps1` and `graph-normalize.ps1` during verification/maintenance, not during every startup.
-- Use `manifest.json` script tiers before running maintenance commands: T2/T3/manual-only scripts require explicit user intent.
-- Use `maintain.ps1` default mode for read-only maintenance planning; use `-ApplySafe` only for low-risk maintenance and `-ApplyConfirmed` only after explicit user confirmation.
-- Verify `sandglass_vault.search`, `sandglass_vault.recent`, and `sandglass_log.log_message` work from package-local `memory/`.
-- Verify `skill-orchestrator` still routes to `plusunm-g1` first.
-- Verify there is no duplicate stale rule in NexSandglass before writing a new one.
-
-## Current State Answer Priority
-
-When asked `现在改了什么`, `当前状态`, `还记得吗`, `另一个会话`, `超级大脑进度`, version/status/progress questions, or similar state/recall questions, answer in this order:
-
-0. Ensure this `super-memory-brain` skill has been loaded read-only for the current answer. Do not bypass the entry skill with direct file search.
-1. Read `memory\workspace\super-brain-state.json` for lightweight state when present.
-2. Read `memory\workspace\last-verify-package.json`; if missing, stale, or failed, run `scripts\auto-check.ps1` and fix failures before asking the user to run commands.
-3. Read `CURRENT_BASELINE.md` first.
-4. Read `manifest.json` for current version and module list.
-5. Read `CHANGELOG.md` for recent changes.
-6. Search package-local NexSandglass memory only after the files above.
-7. Verify live files if the answer affects action.
-
-Do not answer these questions from vague model memory alone.
-
-## Package Shape
-
-Distribution package:
-
-```text
-super-memory-brain-package/
-├─ super-memory-brain/
-├─ modules/
-│  ├─ skill-orchestrator/
-│  ├─ plusunm-g1/
-│  └─ nexsandglass-dedicated-memory/
-├─ vendor/
-│  └─ NexSandglass-Agent-DedicatedMemory/
-├─ memory/
-│  ├─ scripts/
-│  ├─ persona/
-│  ├─ archive/
-│  └─ sandglass.txt
-└─ scripts/
-   ├─ install.ps1
-   ├─ install.bat
-   ├─ health-check.ps1
-   ├─ status.ps1
-   ├─ backup.ps1
-   ├─ backup-retention.ps1
-   ├─ migrate.ps1
-   └─ compact.ps1
-```
+Mention memory or G1 only when it was explicitly requested or materially used.
+Never narrate long lookup or routing internals unless the user asks.

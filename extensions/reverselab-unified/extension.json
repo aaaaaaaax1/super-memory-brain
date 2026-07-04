@@ -1,0 +1,50 @@
+﻿{
+    "id":  "reverselab-unified",
+    "name":  "ReverseLab Unified",
+    "type":  "optional-extension",
+    "defaultEnabled":  false,
+    "sourceRepo":  "https://github.com/LING71671/open-reverselab + https://github.com/GeniusHu-tgty/Open-tgtylab",
+    "sourceCommit":  "external-install",
+    "license":  "external-repos-see-upstream",
+    "installNote":  "Provides a unified Super Brain skill plus one-click deployment scripts. Recipients can run scripts/reverselab-deploy.ps1 -Apply -Profile Full -RegisterCodexMcp to clone/configure the external ReverseLab repositories, sync MCP dependencies, run the upstream all-tools installer, and verify status/toolcheck results.",
+    "skills":  [
+                   {
+                       "name":  "reverselab-unified",
+                       "path":  "skills/reverselab-unified",
+                       "triggers":  [
+                                        "逆向",
+                                        "ReverseLab",
+                                        "open-reverselab",
+                                        "Open-tgtylab",
+                                        "reverse engineering",
+                                        "reversing",
+                                        "sample analysis",
+                                        "malware triage",
+                                        "PE reverse",
+                                        "APK reverse",
+                                        "CTF reverse",
+                                        "website API reverse",
+                                        "接口逆向",
+                                        "样本分析",
+                                        "APK 逆向",
+                                        "PE 逆向",
+                                        "一键部署逆向工具",
+                                        "装齐逆向工具"
+                                    ],
+                       "category":  "domain_execution",
+                       "role":  "reverse_engineering_router",
+                       "canDo":  [
+                                     "route reverse-engineering tasks to open-reverselab commands, Open-tgtylab MCP tools, or browser-act-skill-forge",
+                                     "detect whether both upstream ReverseLab repositories and MCP tools are available",
+                                     "run a one-click full deployment path for recipients when the external repositories or dependencies are missing",
+                                     "use local knowledge bases for PE/APK/CTF/website API reverse workflows"
+                                 ],
+                       "cannotDo":  [
+                                        "make external repositories available without cloning or bundling them",
+                                        "hide missing host-specific GUI/device setup from the final deploy report"
+                                    ],
+                       "setupRequired":  "Run scripts/reverselab-deploy.ps1 -Apply -Profile Full -RegisterCodexMcp for full setup. Requires Git, Python/uv, network access for upstream repos/tools, and host-specific confirmation for GUI/device tools when upstream cannot automate them."
+                   }
+               ],
+    "path":  "extensions/reverselab-unified"
+}

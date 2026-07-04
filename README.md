@@ -5,7 +5,7 @@
 ## 当前版本
 
 ```text
-0.5.43
+0.5.75
 ```
 
 版本信息见：
@@ -14,6 +14,24 @@
 manifest.json
 CHANGELOG.md
 ```
+
+## 扩展和技能能力中心
+
+超级大脑可以把扩展进来的技能/插件转成 ORC 可路由能力，不需要你每次手动指定技能名。
+
+常用命令：
+
+```powershell
+scripts\brain.ps1 skills
+scripts\brain.ps1 skills 浏览器
+scripts\brain.ps1 capability browser-act
+scripts\brain.ps1 extensions
+scripts\extension-ingest.ps1 -Action Inspect -Path <技能或插件目录> -Json
+scripts\extension-ingest.ps1 -Action Adopt -Path <技能或插件目录> -ExtensionId <id> -Json
+scripts\extension-ingest.ps1 -Action RebuildMap -Json
+```
+
+`skills` / `capability` 是查看和诊断入口；真正执行时仍由 ORC 根据意图、触发词、能力、适用阶段、setup 要求和验证证据自动路由。
 
 ## 目录结构
 
@@ -44,10 +62,18 @@ super-memory-brain-package/
 │  ├─ status.ps1                     # 状态面板
 │  ├─ doctor.ps1                     # 只读一键诊断
 │  ├─ maintain.ps1                   # 维护总入口：计划/安全维护/确认维护
+│  ├─ workspace-lifecycle-manager.ps1 # 工作区生命周期维护：会话绑定/AgentBridge/锁/tmp
+│  ├─ auto-hygiene-runner.ps1        # 自动记忆卫生：过长压缩/重复清理/隐私命中提示
+│  ├─ post-task-maintenance.ps1      # 任务后安全维护 hook
+│  ├─ self-improvement-queue.ps1     # 自改进候选队列
 │  ├─ summary.ps1                    # 一屏超级大脑状态摘要
 │  ├─ script-tiers.ps1               # 查看脚本安全分级
 │  ├─ memory-health.ps1              # 记忆健康摘要
-│  ├─ memory-eval.ps1                # 只读记忆评测 harness
+│  ├─ agent-bridge-channel.ps1           # 跨 Agent 共享会话通道；Open/Send/Inbox/Ack/Close/Status
+│  ├─ checkpoint-writer.ps1              # 写入 active checkpoint，并登记共享 agent/session/task 身份卡
+│  ├─ task-register.ps1                  # 轻量登记共享任务状态；不触碰 active checkpoint，不跑重检查
+│  ├─ task-index.ps1                     # 跨 Agent/会话任务索引；-Table 输出窄 Markdown 状态表
+│  ├─ memory-eval.ps1                    # 只读记忆评测 harness
 │  ├─ memory-eval-report.ps1         # 写入最近一次记忆评测报告
 │  ├─ backup.ps1                     # 备份脚本
 │  ├─ backup-retention.ps1           # 备份保留/清理候选报告
@@ -68,6 +94,7 @@ super-memory-brain-package/
 │  ├─ recall-search.ps1              # 搜索长期记忆
 │  ├─ recall-recent.ps1              # 查看最近记忆
 │  ├─ session-restore.ps1            # 新会话轻量恢复包：状态/断点/摘要/证据卡
+│  ├─ session-binding.ps1            # 临时会话绑定 evidence bundle：TTL/memory:off/版本/根路径/隐私守卫
 │  ├─ learn-memory.ps1               # “学一下/记住这个”治理写入协议
 │  ├─ profile-card.ps1                # 轻量用户偏好/画像卡，按需注入
 │  ├─ skill-sync-check.ps1           # 检查安装技能与包内技能是否同步
@@ -94,6 +121,22 @@ super-memory-brain-package/
    ├─ graph.jsonl                    # 包级 lineage / decision graph
    └─ scripts/                       # share 包 runtime 模板；实际运行时会复制到各记忆根
    └─ sandglass.db                   # 辅助索引数据库
+```
+
+
+## 可选扩展技能包
+
+`extensions/` 内置可选扩展，不默认常驻、不默认安装：
+
+- `karpathy-guidelines`：AI/ML、第一性原理、避免过度工程、代码验证习惯。
+- `mattpocock-skills`：TypeScript、React、TDD、PRD、triage、前端工程工作流；仅收 curated subset，排除 deprecated/in-progress/personal。
+
+启用方式示例：
+
+```powershell
+scripts\install.ps1 -Extensions karpathy-guidelines,mattpocock-skills
+scripts\hot-refresh-skills.ps1 -AllKnown -Extensions karpathy-guidelines,mattpocock-skills
+scripts\verify-extensions.ps1
 ```
 
 ## 核心功能
@@ -137,6 +180,19 @@ G1审记，ORC调度，沙漏只存稳态；隐私记忆需确认并标 [PRIVACY
 - NexSandglass 只保存稳定偏好、接受规则、关键决策、回滚点、复用命令/路径/流程、验证结果。
 - 不保存 API Key、密码、token、cookie、base64、完整 payload、SSE 流、临时噪音、长日志。
 
+
+### 3.6 自动维护与压缩续接
+
+0.5.73 起，超级大脑会把低风险本地维护当成默认职责：
+
+- `maintenance-policy.json` 定义哪些维护可自动做、哪些必须确认、哪些永不自动做。
+- `scripts\workspace-lifecycle-manager.ps1` 处理过期 `session-binding.json`、过期/关闭 Agent Bridge 临时通道、陈旧 active pointer、陈旧锁、生成型 tmp 文件。
+- `scripts\auto-hygiene-runner.ps1` 对过长记忆和精确重复记忆做证据归档后压缩/清理；隐私命中只提示确认，不自动删除。
+- `scripts\post-task-maintenance.ps1` 在任务验证后串起生命周期维护、记忆卫生、自改进队列、状态快照。
+- `scripts\self-improvement-queue.ps1` 把遗漏、自动化缺口、反复提醒、逻辑断点变成候选项；候选项默认不改技能、不发布、不越权。
+
+压缩/续接时的优先级固定为：可见上文 → 压缩摘要/记录 → checkpoint/status/ledger/最近工具结果 → 长期记忆补充。长期记忆不能覆盖更新的可见上下文。
+
 ### 5. 轻量记忆路由
 
 默认配置：
@@ -165,6 +221,40 @@ memory_mode: auto / force / off
 ```
 
 检索默认使用 Hybrid Recall：把 Sandglass 搜索、`memory\graph.jsonl` 决策/版本关系、`CURRENT_BASELINE.md` / `manifest.json` / `CHANGELOG.md` 状态锚点、最近记忆 fallback 统一成 `sourceType`、`score`、`confidence`、`reason`、`tokenEstimate` 候选，再按 `TopK` / `MaxTokens` 返回少量证据；过期、stale、负反馈记忆降权，不自动删除。用户说“不是这个 / 别按上次 / 不对 / 错了 / 以后不要”时写为负反馈，防止错误记忆反复出现。
+
+从 `0.5.72` 开始，超级大脑增加“目标路线锁”和“已验证模块集成一致性守卫”：`scripts/goal-route-lock.ps1` / `scripts/route-checkpoint.ps1` 负责记住用户已同意的主目标、路线、非目标和禁止漂移方向，发现偏航时输出 `ROUTE_DRIFT_DETECTED`；`scripts/verified-module-snapshot.ps1` / `scripts/integration-parity-check.ps1` 负责记录模块验证契约，并在接入主体时检查入口、参数、环境、依赖、状态、调用链和验收路径是否仍一致，发现变形时输出 `INTEGRATION_DRIFT_DETECTED`。完成标准拆分为 `module smoke OK`、`integration smoke OK`、`user-facing acceptance OK`，避免“模块测通但主体跑不通”。`scripts/causal-change-plan.ps1` 把结构化改动固定成因果计划：observed problem -> root cause -> known facts/prior changes -> proposed change -> expected optimization -> verification method -> residual risk；吸收 RCA、Theory of Change、Systems Thinking、OODA/PDCA/AAR、ADR 和 anti-overfitting lesson guard 的思路，要求先说明原因、假设、预期改善和验证方式，再修改和学习。
+
+从 `0.5.71` 开始，超级大脑增加受控自我学习闭环：`scripts/cognitive-enforce.ps1` 把高风险任务的认知预检变成强制门，`scripts/runtime-drift-checkpoint.ps1` 在执行中持久化 `DRIFT_DETECTED` / `unresolvedDrift` 状态，`scripts/reflection-promotion.ps1` 从用户纠正、失败、验证结果、复盘和漂移状态生成学习候选，并在证据、隐私、重复、冲突、置信度检查通过后，才通过 `learn-memory.ps1`、`write-experience.ps1` 或 `skill-evolution.ps1` 晋升为记忆/经验/技能演化候选。默认 Analyze/Preview 不写长期记忆，避免把聊天噪音、秘密或一次性事故当成规则。
+
+从 `0.5.70` 开始，超级大脑从“存储/检索系统”升级为“记忆驱动的执行控制系统”：新增 `scripts/cognitive-preflight.ps1`，在重要执行前生成认知约束卡，汇总用户硬规则、已接受约束、相似经验、领域反射、`mustPreserve` 与 `driftGuards`。记忆被分层使用：semantic memory 保存稳定事实/偏好/项目知识，episodic memory 保存历史任务轨迹/失败/修复，procedural memory 保存可复用流程/检查表，working memory 保存当前目标/约束/证据/假设/下一步。执行中如违反记忆约束必须触发 `DRIFT_DETECTED`，回到已接受约束后再继续。
+
+从 `0.5.69` 开始，Agent Bridge 子 agent 通道短命令禁止创建嵌套智能体：`开启子agent通道` 中的 `子agent` 指当前受控目标会话本身，必须在当前 Codex/ZCode 会话内本地运行 `agent-bridge-channel.ps1 -Action Open`，不得再启动 Tesla/worker/explorer/helper 之类的二级 agent。
+
+从 `0.5.68` 开始，Agent Bridge 子 agent 的等待超时语义改为 quiet idle：`WaitConnect` / `WaitInbox` 没有连接或没有消息时返回 `idle_waiting_connect` / `idle_waiting_message`，并带有 `notBlocked`、`noProgressReportRequired`，表示通道仍开着且不需要继续刷状态；这不是 blocked、paused、failed 或 completed。
+
+从 `0.5.67` 开始，Agent Bridge 子 agent 短命令更严格：`开启子agent通道` / `Open` 在没有显式传入 channelId 时必须为当前子会话创建新通道，不得复用旧 active/last 通道；子 agent 收到一条消息并回复后也不得宣布 `Goal completed` / `目标完成`，必须继续保持 target-mode 等待下一条消息，直到主 agent 或用户显式关闭。
+
+从 `0.5.66` 开始，全局启动规则增加硬兜底：任何包含 ASCII `agent` 且混有 CJK/非英文字符的用户短语，都应优先路由到 Super Memory Brain Agent Bridge，而不是宿主默认的 explorer/worker/default agent 角色帮助；除非用户明确是在询问角色帮助或指定 explorer/worker/default。
+
+从 `0.5.65` 开始，全局启动规则会把 Agent Bridge 通道短语优先路由到 Super Memory Brain：新 ZCode/Codex 会话遇到 `开启agent通道`、`开启子agent通道`、`连接子agent通道`、`agent通道`、`agent bridge`、`subagent channel` 应先加载/读取 `super-memory-brain`，避免被宿主默认 agent/worker/explorer 帮助拦截。
+
+从 `0.5.64` 开始，Agent Bridge 支持自然语言短命令协议：子 Agent 会话里只说 `开启子agent通道` 就应自动进入 `Open -> WaitConnect -> WaitInbox` 目标模式；开启成功不是任务完成，而是持续等待主 Agent 连接/发消息的状态，不得因为返回 channelId、等待超时、无消息或回复结束而自动关闭。主 Agent 侧可用 `连接子agent通道：chan-xxxx，别名 子agent`、`向子agent发送信息：你好`、`读取子agent通道回复`、`关闭子agent通道` 完成连接、发送、读取和显式关闭。
+
+从 `0.5.63` 开始，Agent Bridge 子 Agent 目标等待状态更明确：子 Agent `Open` 后只报告一次 `waiting_connect` 和 channelId，不再反复输出等待连接；主 Agent `Connect` 后子 Agent 可用 `WaitConnect` 得到一次 `connected` 通知，然后通过 `WaitInbox` 进行有边界的静默消息等待，看到消息才回复，且不会因超时、已发 channelId 或无消息而自动 `Close`。
+
+从 `0.5.62` 开始，Agent Bridge 通道支持主从目标模式：被控/子 Agent 先 `Open` 通道等待，主/操作 Agent `Connect` 一次后把 alias、目标 Agent、目标会话和 last sent/received 写入 `active-agent-bridge-channel.json`；之后用户可直接说“向子agent发送信息：...”，主 Agent 通过 `SendAndWait` 使用已连接通道发送并在限定时间内等待回复，直到用户明确 `Close` 才结束。
+
+从 `0.5.61` 开始，超级大脑新增 Agent Bridge 共享会话通道：`agent-bridge-channel.ps1` 以 Open/Send/Inbox/Ack/Close/Status 管理 `memory/workspace/agent-bridge/channels` 下的隔离通道，支持 `target-session` 路由；Agent1 可以作为发送/接收代理向 Agent2 目标会话发消息，并从同一个通道读取 Agent2 回复。通道内容默认只是 advisory，不写长期共享记忆，除非 Commander 明确 adopt。
+
+从 `0.5.60` 开始，超级大脑新增 `task-register.ps1` 轻量任务登记快路径：当 Codex/ZCode 只需要登记或更新共享任务状态时，它只写 `memory/shared` 下的 agent/session/task/link 身份卡，不触碰 `active-checkpoint.json`，也不运行 doctor、verify-package、hot-refresh、CI、dashboard、auto-check 或 recall。
+
+从 `0.5.59` 开始，超级大脑新增跨 Agent/跨会话任务身份索引：`checkpoint-writer.ps1` 会登记共享 agent/session/task 身份卡和 task-memory 链接，`task-index.ps1 -Table` 用窄 Markdown 表显示全部 Agent、指定 Agent 或指定会话的未完成任务；未登记会话会显示“未知，不等于没有任务”，避免把索引缺失误判为没有任务。
+
+从 `0.5.58` 开始，超级大脑进一步增强为可靠任务执行系统：`task-index.ps1` 可列出当前/暂停/完成/候选任务；`intent-gate.ps1` 把只计划、只状态、执行、澄清脚本化；`recovery-e2e.ps1` 覆盖恢复端到端场景；`step-ledger.ps1` 细粒度记录步骤证据、验证、阻塞和下一步；任务候选按 active checkpoint、active task、paused/blocked、recent completed、status fallback 排序；`host-cache-check.ps1` 检测安装副本和宿主缓存风险。
+
+从 `0.5.58` 开始，超级大脑还把当前任务状态和免粘贴恢复固定为默认规则：普通“任务状态/进度/下一步”优先回答当前会话任务，不当成系统健康检查；冷启动/压缩/中断恢复先读可见上下文、active checkpoint、step ledger、status-card 和最近验证，不要求用户粘贴大段旧回复；多个候选任务时给编号让用户选择；ZCode 会话默认不用 TodoWrite，除非用户明确要求。
+
+从 `0.5.54` 开始，超级大脑还把冷启动主导权固定为默认规则：普通聊天、普通代码、普通 `继续` 优先走状态卡/可见上下文/Light dashboard，不自动唤醒 deep recall、team dispatch、full dashboard 或 full verify。可以用 `scripts\cold-start-audit.ps1 -Json` 验证这些负例仍然保持轻量。
 
 从 `0.5.41` 开始，学习和画像恢复更稳：
 
@@ -560,7 +650,7 @@ T2 = 修改记忆、hook、图谱或安装目录，需要明确意图
 T3 = 删除、覆盖、私人导出、清理备份等高影响操作，必须手动确认
 ```
 
-分享包由 `prepare-share.ps1` 按 manifest 复制脚本，并只复制 NexSandglass 必要运行文件；不会带内部 Python helper、`.git`、zip、demo、`__pycache__`、`.pyc`、私人记忆、`memory\shared`、`memory\agents`、`memory\groups`、共享策略或本机状态缓存。`prepare-share.ps1` 会保护目标路径，避免误删包根、父目录、用户目录或磁盘根目录；覆盖已有分享目录时要求目标带分享包标记，未标记目录需显式 `-Force`。公开/GitHub 分享包会自动生成根级 `.gitignore`，排除本地记忆、marker、缓存、日志、生成包和密钥文件，并把已知本机绝对路径替换为 `<package-root>` / `<memory-root>` / `<user-home>` 等占位符。`verify-share.ps1` 会验证瘦身规则、分享包标记、`.gitignore`、通配隐私文件、敏感文本模式和本机路径残留。当前默认分享包目录是同级 `super-memory-brain-package-share*`。
+分享包由 `prepare-share.ps1` 按 manifest 复制脚本、核心技能和可选 `extensions/`，并只复制 NexSandglass 必要运行文件；不会带内部 Python helper、`.git`、zip、demo、`__pycache__`、`.pyc`、私人记忆、`memory\shared`、`memory\agents`、`memory\groups`、共享策略或本机状态缓存。`prepare-share.ps1` 会保护目标路径，避免误删包根、父目录、用户目录或磁盘根目录；覆盖已有分享目录时要求目标带分享包标记，未标记目录需显式 `-Force`。公开/GitHub 分享包会自动生成根级 `.gitignore`，排除本地记忆、marker、缓存、日志、生成包和密钥文件，并把已知本机绝对路径替换为 `<package-root>` / `<memory-root>` / `<user-home>` 等占位符。`verify-share.ps1` 会验证瘦身规则、扩展目录/技能文件、分享包标记、`.gitignore`、通配隐私文件、敏感文本模式和本机路径残留。当前默认分享包目录是同级 `super-memory-brain-package-share*`。
 
 ### Hybrid Recall 辅助
 

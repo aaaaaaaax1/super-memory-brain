@@ -160,6 +160,10 @@ $required = @(
   'README.md','QUICK_START.md','COMMANDS.md','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json',
   'tests\memory-recall-tests.json','tests\memory-eval-tests.json',
   'super-memory-brain\SKILL.md',
+  'references\index.md',
+  'references\single-agent-subagent-workflow.md',
+  'references\automatic-evolution-policy.md',
+  'references\base-instructions\gpt-5.5-base-instructions.md',
   'modules\skill-orchestrator\SKILL.md',
   'modules\plusunm-g1\SKILL.md',
   'modules\nexsandglass-dedicated-memory\SKILL.md',
@@ -175,6 +179,48 @@ foreach ($rel in $required) {
 $manifestScripts = @($manifest.scripts)
 $duplicates = @($manifestScripts | Group-Object | Where-Object { $_.Count -gt 1 })
 if ($duplicates.Count -eq 0) { Pass 'manifest scripts unique' } else { Fail ('duplicate manifest scripts ' + (($duplicates | ForEach-Object { $_.Name }) -join ',')) }
+
+$manifestExtensions = @($manifest.extensions)
+if ($manifestExtensions.Count -gt 0) { Pass 'manifest extensions present' } else { Fail 'manifest extensions missing' }
+foreach ($extension in $manifestExtensions) {
+  $extensionId = [string]$extension.id
+  $extensionPathText = ([string]$extension.path).Replace('/', '\')
+  if ([string]::IsNullOrWhiteSpace($extensionId)) {
+    Fail 'manifest extension id missing'
+    continue
+  }
+  if ([string]::IsNullOrWhiteSpace($extensionPathText)) {
+    Fail "extension path missing $extensionId"
+    continue
+  }
+
+  $extensionPath = Join-Path $Destination $extensionPathText
+  if (Test-Path $extensionPath) { Pass "extension dir $extensionId" } else { Fail "missing extension dir $extensionId"; continue }
+
+  $extensionManifestPath = Join-Path $extensionPath 'extension.json'
+  if (Test-Path $extensionManifestPath) {
+    Pass "extension manifest $extensionId"
+    try { $extensionManifest = Get-Content -LiteralPath $extensionManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch { Fail "extension manifest parse $extensionId"; $extensionManifest = $null }
+  } else {
+    Fail "missing extension manifest $extensionId"
+    $extensionManifest = $null
+  }
+
+  if ($extensionManifest -and [string]$extensionManifest.id -eq $extensionId) { Pass "extension id match $extensionId" } else { Fail "extension id mismatch $extensionId" }
+  $extensionSkills = if ($extensionManifest) { @($extensionManifest.skills) } else { @($extension.skills) }
+  if (@($extensionSkills).Count -gt 0) { Pass "extension skills listed $extensionId" } else { Fail "extension skills missing $extensionId" }
+  foreach ($skill in $extensionSkills) {
+    $skillName = [string]$skill.name
+    $skillPathText = ([string]$skill.path).Replace('/', '\')
+    if ([string]::IsNullOrWhiteSpace($skillName) -or [string]::IsNullOrWhiteSpace($skillPathText)) {
+      Fail "extension skill metadata missing $extensionId"
+      continue
+    }
+    $skillFile = Join-Path (Join-Path $extensionPath $skillPathText) 'SKILL.md'
+    if (Test-Path $skillFile) { Pass "extension skill $extensionId/$skillName" } else { Fail "missing extension skill $extensionId/$skillName" }
+  }
+}
 
 foreach ($script in $manifestScripts) {
   $path = Join-Path (Join-Path $Destination 'scripts') $script

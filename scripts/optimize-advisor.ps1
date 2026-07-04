@@ -67,6 +67,7 @@ function Add-Advice([object[]]$List, [string]$Priority, [string]$Code, [string]$
 $doctor = Invoke-JsonTool 'doctor.ps1' @('-Json')
 $quality = Invoke-JsonTool 'memory-quality-fixer.ps1' @('-Json')
 $eval = Invoke-JsonTool 'memory-eval.ps1' @('-Json')
+$toolHealth = Invoke-JsonTool 'tool-health.ps1' @('-Json')
 $retention = Invoke-TextTool 'backup-retention.ps1' @()
 $lastCi = Read-WorkspaceJson 'last-ci.json'
 $lastHotRefresh = Read-WorkspaceJson 'last-hot-refresh.json'
@@ -83,6 +84,13 @@ if (-not $doctor.ok -or $null -eq $doctor.data -or $doctor.data.ok -ne $true) {
   }
 }
 
+if ($doctor.data -and $doctor.data.lockHealth -and [int]$doctor.data.lockHealth.staleCount -gt 0) {
+  $advice = Add-Advice $advice 'high' 'stale_memory_locks' "Resolve $($doctor.data.lockHealth.staleCount) stale memory locks" 'scripts\doctor.ps1 -Json' 'Stale locks can block or reveal interrupted shared-memory writes.' 'doctor.lockHealth'
+}
+
+if ($toolHealth.ok -and $toolHealth.data -and $toolHealth.data.warningFresh -eq $true) {
+  $advice = Add-Advice $advice 'medium' 'optional_tool_schema_warning' 'Inspect recent optional tool schema warning' 'Review memory\workspace\last-tool-schema-warning.json and keep using checkpoint/status fallback if the host tool drifts.' 'Optional workflow tools should not block core task execution, but recurring schema drift should be visible.' 'tool-health.ps1'
+}
 if ($quality.ok -and $quality.data) {
   $tooLong = @($quality.data.actions | Where-Object { $_.type -eq 'too_long' })
   $untagged = @($quality.data.actions | Where-Object { $_.type -eq 'untagged' })
@@ -137,6 +145,8 @@ $result = [pscustomobject]@{
     doctorOk = ($doctor.ok -and $doctor.data.ok -eq $true)
     doctorRisks = if ($doctor.data) { [int]$doctor.data.riskSummary.total } else { $null }
     memoryQualityActions = if ($quality.data) { [int]$quality.data.actionCount } else { $null }
+    staleLockCount = if ($doctor.data -and $doctor.data.lockHealth) { [int]$doctor.data.lockHealth.staleCount } else { $null }
+    toolWarningFresh = if ($toolHealth.data) { $toolHealth.data.warningFresh } else { $null }
     memoryEvalOk = ($eval.ok -and $eval.data.ok -eq $true)
     memoryEvalPassed = if ($eval.data) { "$($eval.data.passed)/$($eval.data.total)" } else { $null }
     lastCiOk = if ($lastCi) { $lastCi.ok } else { $null }

@@ -34,12 +34,23 @@ foreach ($line in $nonEmpty) {
 }
 
 $tooLong = @($nonEmpty | Where-Object { $_.Length -gt [int]$policy.maxMemoryChars }).Count
+function Test-PrivatePatternHit([string]$Line, [string]$Pattern) {
+  $lowerLine = $Line.ToLowerInvariant()
+  $lowerPattern = $Pattern.ToLowerInvariant()
+  if (-not $lowerLine.Contains($lowerPattern)) { return $false }
+  if ($lowerPattern -eq 'token') {
+    return ($Line -match '(?i)(access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|bearer\s+[A-Za-z0-9._-]{12,}|token\s*[:=]\s*[A-Za-z0-9._-]{12,})')
+  }
+  if ($lowerPattern -eq 'secret') {
+    return ($Line -match '(?i)(client[_-]?secret|secret\s*[:=]\s*\S{8,}|BEGIN .*PRIVATE KEY)')
+  }
+  return $true
+}
+
 $privateHits = 0
 foreach ($line in $nonEmpty) {
-  $lower = $line.ToLowerInvariant()
   foreach ($pattern in @($policy.privatePatterns)) {
-    if ($lower.Contains($pattern.ToLowerInvariant())) {
-      if ($pattern -eq 'token' -and $line -match 'token cache buckets|token bucket|cache bucket|usage reports|cache token|token cost|token usage|context tokens|fragmentation|responses route|cache metric|cache work|warm.*gap|baseline.*cache') { continue }
+    if (Test-PrivatePatternHit $line ([string]$pattern)) {
       $privateHits += 1
       break
     }

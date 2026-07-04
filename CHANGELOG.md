@@ -1,5 +1,198 @@
 # Changelog
 
+## 0.5.75
+
+- Added the Super Brain extension/skill ingestion hub: `extension-ingest.ps1` lists, inspects, adopts, and rebuilds routable extension capabilities.
+- Added `extension-capability-map.ps1` and upgraded `skill-capability-map.ps1` with merged core+extension list/search/detail views so ORC can auto-route user-added skills/plugins by role, triggers, setup notes, and provenance.
+- Added `brain.ps1 skills`, `brain.ps1 capability <name>`, and `brain.ps1 extensions` so users can call up the skill list and inspect each skill's capabilities without turning routing into a manual-only menu.
+
+## 0.5.74
+
+- Hardened `current-task-context.ps1` with freshness/expiry checks so stale, cleared, or version-mismatched task context cannot satisfy current-task completion through global `last-*` fallback state.
+- Expanded the ORC skill capability map and completion skill audit to cover current-task guards, real user path verification, version/changelog records, host cache freshness, and skill proficiency learning evidence.
+- Added concrete real-user-path acceptance metadata to integration/task verification so module smoke, integration smoke, and user-facing acceptance remain separate before completion.
+
+## 0.5.73
+
+- Added bounded automatic maintenance: `workspace-lifecycle-manager.ps1`, `auto-hygiene-runner.ps1`, `post-task-maintenance.ps1`, and `self-improvement-queue.ps1`.
+- Added `maintenance-policy.json` to separate safe local automatic hygiene from confirmation-required destructive, private, external, broad, hook/install/global, or ambiguous-risk actions.
+- Wired safe post-task maintenance into task verification so expired workspace state, overlong memory, stale bridge pointers, and improvement candidates are handled proactively instead of waiting for user reminders.
+- Hardened compaction continuation priority: visible conversation, compressed records, checkpoints/status/ledger, and recent tool results win before long-term memory, which is supplemental only.
+
+## 0.5.72
+
+- Added Goal Route Lock: `goal-route-lock.ps1` and `route-checkpoint.ps1` preserve accepted goals, routes, non-goals, route hashes, and emit `ROUTE_DRIFT_DETECTED` when execution drifts from the user-approved line.
+- Added Verified Integration Guard: `verified-module-snapshot.ps1` records verified module contracts and `integration-parity-check.ps1` separates `module smoke OK`, `integration smoke OK`, and `user-facing acceptance OK`, emitting `INTEGRATION_DRIFT_DETECTED` on contract/context drift.
+- Added procedure cards for goal-route locking, verified integration, and causal change planning; cognitive preflight now exposes `procedureExpectations`, a structural causal reasoning frame, and `causal-change-plan.ps1` as the concrete change-plan script.
+- Added `causal-change-plan.ps1` to capture observed problem, root cause, known facts, prior changes, proposed intervention, expected optimization, verification method, residual risk, and research-derived reasoning patterns from RCA / Theory of Change / Systems Thinking / OODA / PDCA / AAR / ADR / anti-overfitting lesson guards.
+- Extended reflection promotion with `gap` and `logic_breakpoint` candidate generation for missing route locks, integration drift, missing acceptance paths, stale preflight, scattered assembly, and guard-not-applied issues.
+- Updated completion guard and task verification to surface route drift, integration parity, and three-layer acceptance evidence.
+
+## 0.5.71
+
+- Added `scripts/cognitive-enforce.ps1` as a hard pre-action gate so high-risk work cannot skip fresh cognitive preflight, `mustPreserve`, and `driftGuards`.
+- Added `scripts/runtime-drift-checkpoint.ps1` to persist `DRIFT_DETECTED` / `unresolvedDrift` state across execution phases and block completion when drift remains unresolved.
+- Added `scripts/reflection-promotion.ps1` as a governed self-learning pipeline: Analyze/Preview by default, Apply only after evidence, privacy, duplicate, confidence, and reusable-scope checks, routing through existing learning/experience/skill-evolution gates.
+- Added a first-class AgentBridge procedure memory card under `memory/workspace/procedure-cards/agent-bridge-channel.json` and wired cognitive preflight to reuse it.
+- Updated smart-next, completion guard, retrospective output, manifest, baseline docs, and regression guards for the 0.5.71 self-learning loop.
+
+## 0.5.70
+
+- Added `scripts/cognitive-preflight.ps1` as a memory-driven execution-control preflight that produces compact cognitive cards with user hard rules, accepted constraints, similar experiences, domain reflexes, `mustPreserve`, and `driftGuards` before acting.
+- Upgraded Super Brain rules from passive storage/search toward layered cognition: semantic memory for stable facts, episodic memory for prior task traces/failures, procedural memory for reusable workflows/checklists, and working memory for current goal/constraints/evidence/assumptions/next action.
+- Added drift-control rules: matching prior failures must stop on `DRIFT_DETECTED`, live files/tool results override stale memory, and significant user corrections/failures/verification outcomes should trigger reflection and reusable lesson promotion.
+- Wired cognitive preflight into manifest, smart-next guidance, baseline docs, README, and regression guards.
+
+## 0.5.69
+
+- Hardened Agent Bridge short-command semantics so `开启子agent通道` means the current controlled target conversation opens a local fresh channel; it must not launch a nested agent/worker/explorer/helper/Tesla to open the channel.
+- Updated `super-memory-brain`, `agent-bridge`, global startup bootstrap, smart-next guidance, and regression guards with the no-nested-agent rule.
+
+## 0.5.68
+
+- Changed Agent Bridge subordinate wait semantics so `WaitConnect` / `WaitInbox` no-connection/no-message results become `idle_waiting_connect` / `idle_waiting_message` with `notBlocked` and `noProgressReportRequired`, instead of timeout-like states that host goal systems may treat as blocked or worth repeated status output.
+- Updated short-command guidance to use longer silent waits and to stay quiet on idle waits rather than repeatedly reporting channel status.
+- Extended global startup, Agent Bridge skill wording, and regression guards so target-mode idle waits are not marked blocked/paused/failed/completed.
+
+## 0.5.67
+
+- Fixed Agent Bridge short-command open behavior so `开启子agent通道` / `Open` creates a fresh channel by default instead of resolving the operator's old active/last channel when no channel id is explicitly supplied.
+- Hardened sub-agent target mode so receiving one message and sending one reply is not treated as `Goal completed` / `目标完成`; the sub-agent must keep waiting for the next inbox message until explicit close.
+- Added global startup and regression guards for the fresh-channel/no-goal-completion target-mode behavior.
+
+## 0.5.66
+
+- Added a harder global startup guard: any user phrase containing ASCII `agent` together with CJK/non-English characters should route to Super Brain Agent Bridge instead of host default explorer/worker/default agent role help, unless the user explicitly asks for role help.
+- Strengthened global startup verification so installed AGENTS/CLAUDE/GEMINI bootstrap blocks must contain the Agent Bridge hard guard and CJK/non-English fallback.
+
+## 0.5.65
+
+- Fixed global startup bootstrap routing so new ZCode/Codex conversations load/read `super-memory-brain` first for Agent Bridge channel phrases such as `开启agent通道`, `开启子agent通道`, `连接子agent通道`, `agent通道`, `agent bridge`, and `subagent channel`; added an ASCII fallback rule for any phrase containing `agent` plus channel/open/connect/send/bridge/communication intent so encoding glitches do not route to host default agent/worker help.
+- Added a rule that any future changes to Super Brain startup triggers, short-router behavior, Agent Bridge entry phrases, Browser Route, or global bootstrap wording must update `scripts\common.ps1`, run `hot-refresh-skills.ps1 -AllKnown`, and verify installed global startup files so users do not need to remind each agent manually.
+- Hardened installed global startup verification so AGENTS/CLAUDE/GEMINI bootstrap blocks must include Agent Bridge channel triggers, preventing host default agent/worker routing from stealing `开启agent通道`.
+
+## 0.5.64
+
+- Added Agent Bridge natural-language short-command routing for `开启子agent通道`, `连接子agent通道`, `向<alias>发送信息：...`, `读取<alias>通道回复`, and `关闭<alias>通道`.
+- Hardened sub-agent target mode: `开启子agent通道` maps to `Open -> WaitConnect -> WaitInbox`; Open success is a persistent wait state, not task completion, and must not auto-close.
+- Updated intent/smart-next routing so channel short commands recommend `agent-bridge-channel.ps1` actions instead of team/review workflows, and only explicit close wording recommends `Close`.
+
+## 0.5.63
+
+- Added subordinate wait-state actions to `agent-bridge-channel.ps1`: `WaitConnect` reports the main/operator connection once, and `WaitInbox` waits for messages with bounded silent polling.
+- Changed `Open` channel output to return `waiting_connect` plus close-only-by-user guard fields so sub-agents report the channel id once instead of repeatedly saying they are waiting.
+- `Connect` now writes connection metadata into the channel file (`connectedAt`, operator/target ids, alias) while keeping connection notification out of the chat message queue.
+
+## 0.5.62
+
+- Upgraded `agent-bridge-channel.ps1` to the main/sub-agent target-mode workflow: controlled agent opens first, operator connects once, active channel state is remembered, and later sends can use the active alias without repeating channel/session ids.
+- Added `Connect`, `Active`, `WaitReply`, and `SendAndWait` with bounded wait semantics so Agent1 can send through the remembered channel and report Agent2 replies or timeout in one step.
+- Added `active-agent-bridge-channel.json` state with alias, operator/target ids, target session, last sent/received message ids, TTL, max-turn guards, and user-close-clears-active behavior.
+
+## 0.5.61
+
+- Added `agent-bridge-channel.ps1` for isolated shared channel conversations between agent sessions with Open/Send/Inbox/Ack/Close/Status and `target-session` routing.
+- Agent1 can now act as a send/receive proxy for Agent2 through a compact workspace channel; Agent2 target mode reads `Inbox`, replies with `Send`, and Agent1 reads replies from the same channel.
+- Channel state stays under `memory/workspace/agent-bridge/channels` and remains advisory unless Commander explicitly adopts a result.
+
+## 0.5.60
+
+- Added `task-register.ps1` as a lightweight shared task-status registration fast path for Codex/ZCode sessions.
+- Status-only registration now writes shared agent/session/task/link identity cards without touching `active-checkpoint.json` and without running doctor, verify-package, hot-refresh, CI, dashboard, auto-check, or recall.
+- Documented the split between `task-register.ps1` for cross-agent status broadcast and `checkpoint-writer.ps1` for execution checkpoint lifecycle.
+
+## 0.5.59
+
+- Added cross-agent/session task identity indexing: checkpoint writes now maintain shared agent, session, task, and task-memory link cards while keeping legacy checkpoint fallback compatible.
+- Upgraded `task-index.ps1` with shared task-card/session-card discovery, `-Agent`, `-SessionId`, `-IncludeCompleted`, and compact Markdown task status tables that avoid wide horizontal layouts.
+- Hardened task-status rules so unregistered sessions report `未知，不等于没有任务` instead of being mistaken for no active task.
+
+## 0.5.58
+
+- Added Agent Bridge dispatch and resilience extras: target-agent/new-session handoff packet generation, role permission checks, lightweight queue relay, dry-run team-task archival, and clearer host-session cache limitation prompts.
+
+## 0.5.57
+
+- Added isolated `agent-bridge` module and `agent-bridge.ps1` for controlled multi-agent dialogue, task handoff, heartbeat, failover, Commander-only adoption, and interruption-safe continuation under `memory/workspace/agent-bridge/` without polluting shared memory by default.
+
+## 0.5.56
+
+- Added reliable task execution system upgrades: task indexing, scriptable intent/permission gate, recovery E2E suite, detailed step ledger, ranked resume candidates, and host cache/version freshness checks.
+
+## 0.5.55
+
+- Added current-task status and paste-free resume hardening: plain `任务状态` now means current conversation task status first, recovery reads compact state anchors instead of requiring pasted old replies, ambiguous resumes ask for a numbered task choice, and ZCode sessions avoid TodoWrite unless explicitly requested.
+
+## 0.5.54
+
+- Added cold-start dominance and output suppression hardening: auto-check no longer runs full verify by default when stale, dashboard has Light/Full/Team modes, smart-next avoids dispatch learning outside team intent, plain continue avoids recall by itself, and Super Brain/ORC rules suppress accidental skill wakeups and verbose output.
+
+## 0.5.53
+
+- Added crash-resume task lifecycle hardening to `project-continuity.ps1` with `CompleteTask`, `ArchiveTask`, and `ClearTask`, plus completed-task and task-archive workspace records.
+- Enhanced `status-snapshot-writer.ps1` and `task-verification.ps1` so status snapshots include compact continuity, impact, and codegraph summaries for damaged-session recovery.
+- Reduced codegraph dynamic-call false positives by detecting `Invoke-Expression` / `iex` through PowerShell `CommandAst.GetCommandName()` instead of plain text scanning.
+
+## 0.5.52
+
+- Upgraded `codegraph-index.ps1` to v2 with dynamic PowerShell call edges (`script_call_joinpath`, `script_call_runstep`, `script_call_variable`, `script_call_dynamic_unknown`) and lightweight workspace JSON read/write/reference dataflow.
+- Added `impact-advisor.ps1`, which reports changed files, direct callers/callees, affected workspace files, affected scripts, risk level, blockers, and recommended verification commands.
+- Connected impact advice to Project Graph Continuity, `verify-package.ps1`, Pester regression guards, and CI so codegraph output now drives practical change-risk decisions.
+
+## 0.5.51
+
+- Added `codegraph-index.ps1`, a lightweight PowerShell script/function/parameter/call graph index that writes `codegraph-index.json` and `last-codegraph-index.json` for impact analysis.
+- Connected codegraph indexing to Project Graph Continuity, structure baseline required checks, `verify-package.ps1`, Pester regression guards, and CI.
+- Indexed script metadata such as tier, manual-only status, dangerous switches, mutation markers, parse errors, functions, params, and literal `.ps1` call edges.
+
+## 0.5.50
+
+- Expanded Project Graph Continuity into a task/finding continuity layer with `task-graph.json`, `agent-findings\*.json`, `StartTask`, `SkipStep`, `AddFinding`, `AdmitFinding`, and `RejectFinding` actions.
+- Strengthened step-ledger completion guards so open steps, skipped-step reasons, candidate findings, and current task verification remain explicit before completion claims.
+- Upgraded structure baseline and project graph relations to keep subagent findings candidate-only until Commander/G1 governed admission.
+
+## 0.5.49
+
+- Added Project Graph Continuity foundations: `project-continuity.ps1`, `project-graph.json`, `structure-baseline.json`, and `step-ledger.json` to anchor structure, steps, and current route decisions against memory drift.
+- Added `evidence-freshness.ps1` and evidence freshness gate rules so stale logs/snapshots cannot be treated as live truth.
+- Added long-context safe learning via `learn-memory.ps1 -TextFile`, plus rules for compact learning drafts when chat context is too large or unstable.
+- Added multi-agent memory isolation rules: helper/subagent findings remain advisory/private until Commander/G1 admission through governed scripts.
+- Added `继续 #sess_xxx` / `接上 #sess_xxx` Fast Session Resume routing: explicit session-id continuation now binds `session-binding.json`, skips default deep recall, and falls back to status/checkpoint state for rapid crash-safe continuation.
+- Added extension install smoke coverage, installed-skill collision reporting, and extension status in health summary.
+- Removed default session-restore `snippet` tails while preserving recall evidence metadata; `-Deep` still exposes snippets when detailed recall is explicitly needed.
+- Reduced default session-restore evidence cards to 2 and compacted active checkpoint restore output to prevent recurring continuation tails without weakening automatic memory triggers.
+- Added privacy-token false-positive regression coverage and Todo/checkpoint fallback guidance.
+- Tightened privacy detection so cache/token accounting terms do not trigger secret-risk warnings.
+
+## 0.5.48
+
+- Added optional extension packs under `extensions/`: `karpathy-guidelines` and curated `mattpocock-skills`, with pinned source commits, license evidence, and NOTICE files.
+- Added extension-aware install/hot-refresh helpers and `verify-extensions.ps1` for read-only extension manifest/SKILL/provenance validation.
+- Kept external skills opt-in only so Super Brain core startup and routing remain lightweight.
+
+## 0.5.47
+
+- Added compression-recovery guardrails so context-compression/continuation flows prefer fresh status cards, snapshots, visible context, and active checkpoints over stale task summaries.
+- Hardened `auto-continuation.ps1` to mark `last-task-verification.json` stale when its version differs from `manifest.json` or it predates the latest package verification, preventing old summaries from becoming current task truth.
+- Extended `session-restore.ps1` with compact `statusCard` restore data and added a memory-eval regression case for stale-summary anti-hallucination behavior.
+
+## 0.5.46
+
+- Added proactive long-memory compression rule: when status/optimization/doctor finds hidden memory bloat, compress the entry without losing key facts, anchors, scope, decisions, or graph/ADR evidence.
+- Added proactive experience learning rule: after substantial features, long projects, repeated repairs, releases, or verified workflow improvements, learn reusable methods and user preference patterns so the user does not need to re-teach them.
+- Compressed the Atoapi horizontal history audit memory below the memory length budget while preserving the full decision anchors through ADR/graph evidence.
+
+## 0.5.45
+
+- Added temporary session-binding memory via `scripts/session-binding.ps1`, storing compact current-task evidence bundles in `memory/workspace/session-binding.json` without writing raw chat to durable shared memory.
+- Integrated session binding with session restore, Hybrid Recall, status, and doctor diagnostics, including TTL, `memory:off`, package-version, active memory-root, stale/expired, and private-content guards.
+- Added the Avoidable Issue Elimination Rule so preventable issues must be handled across requirement, design, implementation, verification, release, and hot-refresh stages.
+
+## 0.5.44
+
+- Added a version iteration review rule: future updates must include before/after comparison, changed-item checklist, test evidence, and positive/neutral/negative optimization classification before release.
+- Added a detail-control rule requiring meticulous handling of version/release/architecture/tooling changes to prevent large mistakes and keep outcomes high quality.
+
 ## 0.5.43
 
 - Hardened `learn-memory.ps1` CLI handling for repeated string-array values by accepting remaining arguments and routing extra `[TAG]` values into tags instead of failing positional binding.

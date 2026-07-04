@@ -145,7 +145,7 @@ Write-Utf8NoBom (Join-Path $Destination $MarkerName) "super-memory-brain-share`n
 
 $manifest = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
-$items = @('README.md','QUICK_START.md','COMMANDS.md','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','super-memory-brain','modules','tests')
+$items = @('README.md','QUICK_START.md','COMMANDS.md','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','super-memory-brain','modules','references','tests','extensions')
 foreach ($item in $items) {
   $src = Join-Path $Root $item
   if (Test-Path $src) {

@@ -8,20 +8,133 @@ function Get-NormalizedSuperBrainRoot([string]$Root = $SuperBrainRoot) {
   return ([System.IO.Path]::GetFullPath($Root)).TrimEnd('\','/')
 }
 
+function Get-SuperBrainLockPath([string]$Path) {
+  $full = [System.IO.Path]::GetFullPath($Path)
+  return $full + '.lock'
+}
+
+function Invoke-SuperBrainFileLock([string]$Path, [scriptblock]$Body, [int]$TimeoutMs = 15000, [int]$StaleAfterSeconds = 120) {
+  $lockPath = Get-SuperBrainLockPath $Path
+  $lockDir = Split-Path -Parent $lockPath
+  if (-not [string]::IsNullOrWhiteSpace($lockDir) -and -not (Test-Path $lockDir)) {
+    New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
+  }
+
+  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+  $lockStream = $null
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+      if (Test-Path $lockPath) {
+        try {
+          $age = (Get-Date) - (Get-Item -LiteralPath $lockPath).LastWriteTime
+          if ($age.TotalSeconds -gt $StaleAfterSeconds) { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue }
+        } catch {}
+      }
+      $lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      $lockInfo = [System.Text.Encoding]::UTF8.GetBytes("pid=$PID acquiredAt=$((Get-Date).ToString('o')) path=$Path")
+      $lockStream.Write($lockInfo, 0, $lockInfo.Length)
+      $lockStream.Flush()
+      break
+    } catch [System.IO.IOException] {
+      Start-Sleep -Milliseconds 40
+    }
+  }
+
+  if ($null -eq $lockStream) {
+    throw "MEMORY_LOCK_TIMEOUT path=$Path lock=$lockPath timeoutMs=$TimeoutMs"
+  }
+
+  try {
+    return & $Body
+  } finally {
+    try { $lockStream.Dispose() } catch {}
+    try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue } catch {}
+  }
+}
+
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
   $dir = Split-Path -Parent $Path
   if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path $dir)) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
   }
-  [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+  Invoke-SuperBrainFileLock $Path {
+    $tmp = "$Path.tmp.$PID.$([Guid]::NewGuid().ToString('N'))"
+    try {
+      [System.IO.File]::WriteAllText($tmp, $Content, [System.Text.UTF8Encoding]::new($false))
+      if (Test-Path $Path) {
+        Move-Item -LiteralPath $tmp -Destination $Path -Force
+      } else {
+        Move-Item -LiteralPath $tmp -Destination $Path
+      }
+    } finally {
+      if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+  } | Out-Null
+}
+
+function Add-Utf8LineLocked([string]$Path, [string]$Line) {
+  $dir = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path $dir)) {
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  }
+  Invoke-SuperBrainFileLock $Path {
+    $value = if ($Line.EndsWith("`n")) { $Line } else { $Line + "`n" }
+    [System.IO.File]::AppendAllText($Path, $value, [System.Text.UTF8Encoding]::new($false))
+  } | Out-Null
 }
 
 function Write-JsonUtf8NoBom([string]$Path, [object]$Value, [int]$Depth = 8) {
   Write-Utf8NoBom $Path ($Value | ConvertTo-Json -Depth $Depth)
 }
 
+function Get-SuperBrainFileLockStatus([string]$Path, [int]$StaleAfterSeconds = 120) {
+  $full = [System.IO.Path]::GetFullPath($Path)
+  $lockPath = Get-SuperBrainLockPath $full
+  $exists = Test-Path $lockPath
+  $ageSeconds = 0
+  $lastWriteTime = $null
+  $preview = ''
+  if ($exists) {
+    try {
+      $item = Get-Item -LiteralPath $lockPath
+      $lastWriteTime = $item.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')
+      $ageSeconds = [Math]::Round(((Get-Date) - $item.LastWriteTime).TotalSeconds, 2)
+      try { $preview = ([System.IO.File]::ReadAllText($lockPath, [System.Text.Encoding]::UTF8)).Trim() } catch {}
+      if ($preview.Length -gt 180) { $preview = $preview.Substring(0, 180) + '...' }
+    } catch {}
+  }
+  return [pscustomobject]@{
+    target = $full
+    lock = $lockPath
+    exists = $exists
+    ageSeconds = $ageSeconds
+    staleAfterSeconds = $StaleAfterSeconds
+    stale = ($exists -and $ageSeconds -gt $StaleAfterSeconds)
+    lastWriteTime = $lastWriteTime
+    preview = $preview
+  }
+}
+
+function Get-SuperBrainKnownLockStatuses([string]$Root = $SuperBrainRoot, [int]$StaleAfterSeconds = 120) {
+  $memoryBase = Get-SuperBrainMemoryBaseRoot $Root
+  $memoryRoot = Get-SuperBrainActiveMemoryRoot $Root
+  $workspace = Join-Path $memoryBase 'workspace'
+  $targets = @(
+    (Join-Path $memoryRoot 'sandglass.txt'),
+    (Join-Path $memoryRoot 'decision_particles.txt'),
+    (Join-Path $memoryBase 'graph.jsonl'),
+    (Join-Path $workspace 'active-checkpoint.json'),
+    (Join-Path $workspace 'status-card.json'),
+    (Join-Path $workspace 'last-status-snapshot.json'),
+    (Join-Path $workspace 'last-verify-package.json'),
+    (Join-Path $workspace 'last-ci.json'),
+    (Join-Path $workspace 'session-binding.json')
+  )
+  return @($targets | ForEach-Object { Get-SuperBrainFileLockStatus $_ $StaleAfterSeconds } | Where-Object { $_.exists })
+}
+
 function Get-SuperBrainSkillNames {
-  return @('super-memory-brain','skill-orchestrator','plusunm-g1','nexsandglass-dedicated-memory')
+  return @('super-memory-brain','skill-orchestrator','plusunm-g1','nexsandglass-dedicated-memory','skill-evolution-loop')
 }
 
 function Get-SuperBrainManifest([string]$Root = $SuperBrainRoot) {
@@ -34,7 +147,7 @@ function Get-SuperBrainRuntimeFiles([string]$Root = $SuperBrainRoot) {
     return @($manifest.runtimeFiles)
   }
   return @(
-    'sandglass_paths.py','sandglass_vault.py','sandglass_sqlite.py','sandglass_log.py','sandglass.py',
+    'sandglass_paths.py','sandglass_lock.py','sandglass_vault.py','sandglass_sqlite.py','sandglass_log.py','sandglass.py',
     'sandglass_think.py','sandglass_archive.py','sandglass_mcp.py','nexsandglass.py','nightwatch.py',
     'pulse.py','heartbeat.py','persona_l3.py','offset_l3.py','emotion_l3.py','scene_l3.py',
     'weave_l3.py','weavethread.py','l3_tasks.py','l3_persona_verify.py','l3_search_core.py',
@@ -138,13 +251,46 @@ function Read-SuperBrainMemoryRootMarker([string]$SkillDir) {
   return ([System.IO.File]::ReadAllText($markerPath, [System.Text.Encoding]::UTF8)).Trim()
 }
 
-function Get-SuperBrainSourceItems {
-  return @(
+function Get-SuperBrainExtensionManifests([string[]]$Extensions = @(), [string]$Root = $SuperBrainRoot) {
+  $extensionRoot = Join-Path $Root 'extensions'
+  if (-not (Test-Path $extensionRoot)) { return @() }
+  $manifests = @()
+  foreach ($manifestPath in @(Get-ChildItem -LiteralPath $extensionRoot -Filter 'extension.json' -Recurse -File -ErrorAction SilentlyContinue)) {
+    try {
+      $manifest = Get-Content -LiteralPath $manifestPath.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      $manifest | Add-Member -NotePropertyName manifestPath -NotePropertyValue $manifestPath.FullName -Force
+      $manifest | Add-Member -NotePropertyName extensionRoot -NotePropertyValue (Split-Path -Parent $manifestPath.FullName) -Force
+      if ($Extensions.Count -eq 0 -or ($Extensions -contains [string]$manifest.id)) { $manifests += $manifest }
+    } catch {}
+  }
+  return @($manifests)
+}
+
+function Get-SuperBrainExtensionItems([string[]]$Extensions = @(), [string]$Root = $SuperBrainRoot) {
+  $items = @()
+  foreach ($extension in @(Get-SuperBrainExtensionManifests $Extensions $Root)) {
+    foreach ($skill in @($extension.skills)) {
+      $source = Join-Path (Resolve-Path -LiteralPath $extension.extensionRoot).Path ([string]$skill.path)
+      $rootPath = (Get-NormalizedSuperBrainRoot $Root)
+      $sourcePath = (Get-NormalizedSuperBrainRoot $source)
+      $relativeSource = $sourcePath.Substring($rootPath.Length).TrimStart('\','/')
+      $items += @{ name=[string]$skill.name; source=$relativeSource; extensionId=[string]$extension.id; optional=$true }
+    }
+  }
+  return @($items)
+}
+
+function Get-SuperBrainSourceItems([string[]]$Extensions = @()) {
+  $items = @(
     @{ name='super-memory-brain'; source='super-memory-brain' },
     @{ name='skill-orchestrator'; source='modules\skill-orchestrator' },
     @{ name='plusunm-g1'; source='modules\plusunm-g1' },
-    @{ name='nexsandglass-dedicated-memory'; source='modules\nexsandglass-dedicated-memory' }
+    @{ name='nexsandglass-dedicated-memory'; source='modules\nexsandglass-dedicated-memory' },
+    @{ name='skill-evolution-loop'; source='modules\skill-evolution-loop' },
+    @{ name='agent-bridge'; source='modules\agent-bridge' }
   )
+  if ($Extensions.Count -gt 0) { $items += @(Get-SuperBrainExtensionItems $Extensions $SuperBrainRoot) }
+  return @($items)
 }
 
 function Write-SuperBrainMemoryScope([string]$MemoryRoot, [string]$Scope, [string[]]$Members = @(), [string]$Root = $SuperBrainRoot) {
@@ -179,6 +325,127 @@ function Write-SuperBrainMemoryRootMarker([string]$SkillDir, [string]$MemoryRoot
   Write-Utf8NoBom (Join-Path $SkillDir 'memory-root.txt') ((Get-NormalizedSuperBrainRoot $MemoryRoot) + "`n")
 }
 
+function Get-SuperBrainGlobalStartupBlock([string]$Root = $SuperBrainRoot) {
+  $packageRoot = Get-NormalizedSuperBrainRoot $Root
+  $memoryRoot = Get-NormalizedSuperBrainRoot (Get-SuperBrainSharedMemoryRoot $Root)
+  $lines = @(
+    '<!-- SUPER_MEMORY_BRAIN_BOOTSTRAP_START -->',
+    '## Super Memory Brain Short Router',
+    '',
+    'At the start of every new agent conversation, treat the Super Memory Brain short router as active even if the full `super-memory-brain` skill body has not been loaded yet.',
+    '',
+    '- Public entry: `super-memory-brain`; package root: `' + $packageRoot + '`; memory root: `' + $memoryRoot + '`.',
+    '- Keep startup lightweight: `memory:auto`, G1 governs memory decisions, ORC routes tasks, and NexSandglass/Hybrid Recall is used only when continuity, status, prior decisions, or evidence are needed.',
+    '- Load/read `super-memory-brain` first for explicit wake/control/status/recall/learning/restore/maintenance/agent-bridge phrases such as `超级大脑`, `启动超级大脑`, `刷新超级大脑`, `Super Brain`, `G1`, `任务状态`, `还记得`, `上次`, `另一个会话`, `开启agent通道`, `开启子agent通道`, `打开子agent通道`, `连接子agent通道`, `agent通道`, `子agent通道`, `agent bridge`, or `subagent channel`.',
+    '- Agent Bridge startup route: any mixed Chinese/English user phrase containing `agent` plus channel/open/connect/send/bridge/communication intent must load/read `super-memory-brain` first, not the host default agent/worker/explorer help. Short commands such as open agent channel, connect agent channel, send to agent, subagent channel, and agent bridge are Super Brain agent-bridge commands.',
+    '- Hard guard: any user phrase containing ASCII `agent` together with CJK/non-English characters should be treated as Super Brain Agent Bridge routing, not host default explorer/worker/default agent role help, unless the user explicitly asks for role help or says explorer/worker/default.',
+    '- Agent Bridge target-mode guard: `open agent channel` / `subagent channel` / mixed `agent` channel open commands must create a fresh channel in the current conversation unless a channel id is explicitly supplied. Do not launch nested agents/workers/explorers/helpers/Tesla to open the channel. `WaitConnect`/`WaitInbox` idle or timeout means quiet idle waiting, not blocked/paused/failed/completed; do not repeat status messages. After one reply, the sub-agent must not report Goal/target completion and must keep waiting for the next message until explicit close.',
+    '- Compaction/resume priority: after context compression, first use visible conversation, compressed summary/records, checkpoint/status/ledger/recent tool results; treat long-term memory as supplemental and never let stale memory override newer visible context.',
+    '- Maintenance autonomy: safe local hygiene may run automatically through workspace lifecycle, auto hygiene, post-task maintenance, and self-improvement queue; destructive deletion, private/raw-secret handling, external publishing, broad overwrites, hook/install/global rewrites, or unclear risk require confirmation.',
+    '- Shiroyama: Do not send optional commentary.',
+    '- Do not load full Super Brain, deep recall, team dispatch, or package verification for ordinary chat when visible context is enough.',
+    '',
+    '## Browser Route',
+    '',
+    'For browser operations, default to `browser-act` CLI, not Playwright.',
+    '',
+    '- Browser operations include opening URLs, clicking, typing, forms, screenshots, rendered/JavaScript page extraction, browser sessions, login-state workflows, and visible checkbox-style verification such as Cloudflare / I am human.',
+    '- `browser-act` is a CLI skill and may not appear as a dedicated MCP/tool button. If no browser-act tool is exposed, check PATH and then use the Windows CLI path: `<user-home>\AppData\Roaming\Python\Python312\Scripts\browser-act.exe`.',
+    '- Before the first browser-act command in a task, read `browser-act get-skills core --skill-version 2.0.2` or `& "<user-home>\AppData\Roaming\Python\Python312\Scripts\browser-act.exe" get-skills core --skill-version 2.0.2`.',
+    '- Use Playwright only when the user explicitly asks for Playwright, when writing/running Playwright tests, when browser-act CLI is unavailable and the user declines installation, or for a Playwright-specific devtools/test workflow.',
+    '- When the user asks to click a visible verification checkbox, treat it as authorized browser clicking of a visible control, not as bypassing or cracking hidden captcha. If solving hidden/third-party captcha, API key, payment, login credentials, submission, or sensitive action is required, ask first.',
+    '<!-- SUPER_MEMORY_BRAIN_BOOTSTRAP_END -->'
+  )
+  return ($lines -join "`r`n")
+}
+
+function Get-SuperBrainAgentHomeFromSkillRoot([string]$SkillRoot) {
+  if ([string]::IsNullOrWhiteSpace($SkillRoot)) { return '' }
+  $full = Get-FullPath $SkillRoot
+  $leaf = Split-Path -Leaf $full
+  if ($leaf -ieq 'skills') { return Split-Path -Parent $full }
+  return $full
+}
+
+function Get-SuperBrainGlobalStartupTargets([string]$SkillRoot) {
+  $agentHome = Get-SuperBrainAgentHomeFromSkillRoot $SkillRoot
+  if ([string]::IsNullOrWhiteSpace($agentHome)) { return @() }
+  $known = @('AGENTS.md','CLAUDE.md','GEMINI.md')
+  $existing = @()
+  foreach ($name in $known) {
+    $path = Join-Path $agentHome $name
+    if (Test-Path -LiteralPath $path) { $existing += $path }
+  }
+  if ($existing.Count -gt 0) { return @($existing | Select-Object -Unique) }
+  return @((Join-Path $agentHome 'AGENTS.md'))
+}
+
+function Write-SuperBrainGlobalStartup([string]$SkillRoot, [string]$Root = $SuperBrainRoot, [switch]$NoBackup) {
+  $targets = @(Get-SuperBrainGlobalStartupTargets $SkillRoot)
+  $written = @()
+  if ($targets.Count -eq 0) { return @() }
+  $block = Get-SuperBrainGlobalStartupBlock $Root
+  $pattern = '(?s)<!-- SUPER_MEMORY_BRAIN_BOOTSTRAP_START -->.*?<!-- SUPER_MEMORY_BRAIN_BOOTSTRAP_END -->'
+  $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  foreach ($path in $targets) {
+    $old = ''
+    if (Test-Path -LiteralPath $path) {
+      $old = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+      if (-not $NoBackup) { Copy-Item -LiteralPath $path -Destination "$path.bak-super-brain-bootstrap-$timestamp" -Force }
+    }
+    if ($old -match $pattern) {
+      $new = [regex]::Replace($old, $pattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $block }, 1)
+    } elseif ([string]::IsNullOrWhiteSpace($old)) {
+      $new = $block + "`r`n"
+    } else {
+      $new = $old.TrimEnd() + "`r`n`r`n" + $block + "`r`n"
+    }
+    Write-Utf8NoBom $path $new
+    $written += $path
+  }
+  return @($written)
+}
+
+function Test-SuperBrainGlobalStartup([string]$SkillRoot) {
+  $targets = @(Get-SuperBrainGlobalStartupTargets $SkillRoot)
+  $found = @()
+  foreach ($path in $targets) {
+    if (Test-Path -LiteralPath $path) {
+      $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+      if (($text -like '*SUPER_MEMORY_BRAIN_BOOTSTRAP_START*') -and ($text -like '*super-memory-brain*') -and ($text -like '*browser-act*') -and ($text -like '*Agent Bridge startup route*') -and ($text -like '*Hard guard*') -and ($text -like '*CJK/non-English*') -and ($text -like '*subagent channel*') -and ($text -like '*Agent Bridge target-mode guard*') -and ($text -like '*Compaction/resume priority*') -and ($text -like '*Maintenance autonomy*')) { $found += $path }
+    }
+  }
+  return [pscustomobject]@{ ok = ($found.Count -gt 0); paths = @($found); expected = @($targets) }
+}
+
+function Test-SuperBrainInstalledForPackage([string]$SkillRoot, [string]$Root = $SuperBrainRoot) {
+  if ([string]::IsNullOrWhiteSpace($SkillRoot)) { return $false }
+  $marker = Join-Path $SkillRoot 'super-memory-brain\package-root.txt'
+  if (-not (Test-Path -LiteralPath $marker)) { return $false }
+  try {
+    $actual = ([System.IO.File]::ReadAllText($marker, [System.Text.Encoding]::UTF8)).Trim()
+    return ((Get-NormalizedSuperBrainRoot $actual) -eq (Get-NormalizedSuperBrainRoot $Root))
+  } catch {
+    return $false
+  }
+}
+
+function Get-SuperBrainInstalledSkillRoots([string[]]$SeedRoots = @(), [string]$Root = $SuperBrainRoot) {
+  $roots = @()
+  foreach ($seed in @($SeedRoots)) {
+    if (-not [string]::IsNullOrWhiteSpace($seed) -and (Test-SuperBrainInstalledForPackage -SkillRoot $seed -Root $Root)) { $roots += (Get-FullPath $seed) }
+  }
+
+  $profile = $env:USERPROFILE
+  if (-not [string]::IsNullOrWhiteSpace($profile) -and (Test-Path -LiteralPath $profile)) {
+    foreach ($dir in @(Get-ChildItem -LiteralPath $profile -Force -Directory -ErrorAction SilentlyContinue)) {
+      $skillRoot = Join-Path $dir.FullName 'skills'
+      if (Test-SuperBrainInstalledForPackage -SkillRoot $skillRoot -Root $Root) { $roots += (Get-FullPath $skillRoot) }
+    }
+  }
+
+  return @($roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+}
 function Test-SuperBrainRootMarker([string]$SkillDir, [string]$MarkerName, [string]$ExpectedRoot = '', [string[]]$RequiredChildren = @()) {
   $markerPath = Join-Path $SkillDir $MarkerName
   $exists = Test-Path $markerPath
@@ -235,3 +502,5 @@ function Get-SuperBrainHookPath([string]$HookPath = '') {
 
   return Join-Path $hooksRoot '5.1.0\hooks\session-start'
 }
+
+

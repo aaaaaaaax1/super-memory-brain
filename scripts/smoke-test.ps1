@@ -1,7 +1,8 @@
 param(
   [string]$ZCodeSkills = "$env:USERPROFILE\.zcode\skills",
   [string]$CodexSkills = "$env:USERPROFILE\.codex\skills",
-  [string]$Neurobase = ""
+  [string]$Neurobase = "",
+  [string[]]$Extensions = @()
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -22,7 +23,7 @@ $installC = Join-Path $tmpRoot 'codex-skills'
 $tmpMemory = Join-Path $tmpRoot 'memory'
 
 try {
-  & (Join-Path $PSScriptRoot 'install.ps1') -ZCodeSkills $installZ -CodexSkills $installC -Neurobase $tmpMemory
+  & (Join-Path $PSScriptRoot 'install.ps1') -ZCodeSkills $installZ -CodexSkills $installC -Neurobase $tmpMemory -Extensions $Extensions
   if ($LASTEXITCODE -ne 0) { throw 'smoke install failed' }
 
   & (Join-Path $PSScriptRoot 'health-check.ps1') -ZCodeSkills $installZ -CodexSkills $installC -MemoryRoot $tmpMemory
@@ -31,6 +32,11 @@ try {
   $statusJson = & (Join-Path $PSScriptRoot 'status.ps1') -ZCodeSkills $installZ -CodexSkills $installC -MemoryRoot $tmpMemory -Json
   if ($LASTEXITCODE -ne 0) { throw 'smoke status failed' }
   $statusJson | ConvertFrom-Json | Out-Null
+
+  foreach ($item in @(Get-SuperBrainExtensionItems $Extensions $Root)) {
+    if (-not (Test-Path (Join-Path $installZ $item.name))) { throw "extension smoke zcode missing $($item.name)" }
+    if (-not (Test-Path (Join-Path $installC $item.name))) { throw "extension smoke codex missing $($item.name)" }
+  }
 
   $env:NEXSANDBASE_HOME = $tmpMemory
   $env:PYTHONPATH = Join-Path $tmpMemory 'scripts'

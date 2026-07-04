@@ -6,6 +6,8 @@ param(
   [string]$Tags = '[VERIFIED]'
 )
 
+. (Join-Path $PSScriptRoot 'common.ps1')
+
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Graph = Join-Path $Root 'memory\graph.jsonl'
@@ -19,5 +21,5 @@ $record = [ordered]@{
   evidence = $Evidence
   tags = $Tags
 }
-($record | ConvertTo-Json -Compress) | Add-Content -LiteralPath $Graph -Encoding UTF8
+Add-Utf8LineLocked $Graph ($record | ConvertTo-Json -Compress)
 Write-Host "GRAPH_ADD_OK $Graph"

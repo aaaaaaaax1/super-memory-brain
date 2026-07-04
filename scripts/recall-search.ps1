@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)]
   [string]$Query,
   [int]$Limit = 0,
@@ -344,8 +344,48 @@ function Get-PersonaSnippets([object[]]$Terms) {
   return @($snippets)
 }
 
+function Test-SessionBindingQuery([string]$Text, [object[]]$Terms) {
+  $lower = $Text.ToLowerInvariant()
+  foreach ($needle in @('session','bind','previous','continue','resume','remember','recall','binding','workspace')) {
+    if ($lower.Contains($needle.ToLowerInvariant())) { return $true }
+  }
+  foreach ($term in $Terms) {
+    if (@('session','bind','previous','continue','resume') -contains $term) { return $true }
+  }
+  return $false
+}
+
+function Get-SessionBindingSnippets([object[]]$Terms) {
+  $snippets = @()
+  if ($MemoryMode -eq 'off') { return @() }
+  if (-not (Test-SessionBindingQuery $Query $Terms) -and $Layer -ne 'session' -and $MemoryMode -ne 'force') { return @() }
+  $bindingPath = Join-Path (Join-Path $MemoryBase 'workspace') 'session-binding.json'
+  if (-not (Test-Path $bindingPath)) { return @() }
+  try { $binding = Get-Content -LiteralPath $bindingPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return @() }
+  if (-not $binding -or [string]$binding.status -ne 'active') { return @() }
+  $expired = $false
+  try { $expired = ([datetime]::Parse([string]$binding.expiresAt) -lt (Get-Date)) } catch { $expired = $true }
+  if ($expired) { return @() }
+  $manifestVersion = [string](Get-SuperBrainManifest $Root).version
+  if ([string]$binding.packageVersion -ne $manifestVersion) { return @() }
+  if (-not (Test-SuperBrainSamePath ([string]$binding.memoryRoot) $MemoryRoot)) { return @() }
+  $cards = @($binding.evidenceCards | Select-Object -First 3)
+  $cardText = ($cards | ForEach-Object { [string]$_.claim }) -join ' | '
+  $snippet = "[SESSION][CURRENT][VERIFIED][SUMMARY] session-binding.json bindingId=$($binding.bindingId) sessionId=$($binding.sessionId) taskId=$($binding.taskId) expiresAt=$($binding.expiresAt) nextAction=$($binding.nextAction) evidence=$cardText"
+  if ($snippet.Length -gt 900) { $snippet = $snippet.Substring(0, 900) + '...' }
+  $snippets += $snippet
+  return @($snippets)
+}
+
 $terms = @((Get-QueryTerms $Query) + (Get-AliasTerms $Query) | ForEach-Object { ([string]$_).ToLowerInvariant() } | Where-Object { $_.Length -ge 2 } | Select-Object -Unique)
 $candidates = @()
+
+foreach ($snippet in @(Get-SessionBindingSnippets $terms)) {
+  if (-not [string]::IsNullOrWhiteSpace($snippet)) {
+    $candidate = New-Candidate $snippet 'memory\workspace\session-binding.json' 'sessionBinding' 'temporary_session_binding' $terms
+    $candidates = Add-Candidate $candidates $candidate
+  }
+}
 
 $env:NEXSANDBASE_HOME = $MemoryRoot
 $env:PYTHONPATH = $MemoryScripts
@@ -420,10 +460,11 @@ if ($candidates.Count -lt $TopK -and [bool]$hybrid.fallbackRecentWhenBelowTopK) 
 }
 
 $summaryFirst = ([bool]$Policy.retrieval.summaryFirst -and -not $NoSummaryFirst)
+$isStateQuery = Test-StateQuery $Query $terms
 if ($summaryFirst) {
-  $candidates = @($candidates | Sort-Object @{ Expression = { -not ([string]$_.text).Contains('[SUMMARY]') } }, @{ Expression = 'score'; Descending = $true }, @{ Expression = 'confidence'; Descending = $true })
+  $candidates = @($candidates | Sort-Object @{ Expression = { [string]$_.sourceType -ne 'sessionBinding' } }, @{ Expression = { if ($isStateQuery) { [string]$_.reason -ne 'state_recall_priority' } else { $false } } }, @{ Expression = { -not ([string]$_.text).Contains('[SUMMARY]') } }, @{ Expression = 'score'; Descending = $true }, @{ Expression = 'confidence'; Descending = $true })
 } else {
-  $candidates = @($candidates | Sort-Object @{ Expression = 'score'; Descending = $true }, @{ Expression = 'confidence'; Descending = $true })
+  $candidates = @($candidates | Sort-Object @{ Expression = { [string]$_.sourceType -ne 'sessionBinding' } }, @{ Expression = { if ($isStateQuery) { [string]$_.reason -ne 'state_recall_priority' } else { $false } } }, @{ Expression = 'score'; Descending = $true }, @{ Expression = 'confidence'; Descending = $true })
 }
 
 $selected = @()

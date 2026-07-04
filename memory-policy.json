@@ -1,11 +1,43 @@
 {
-  "version": "0.5.16",
+  "version": "0.5.73",
   "memoryShortcut": "memory:auto；G1 governs, ORC routes, Sandglass hybrid recall only on semantic/keyword recall; stable state only; private memory requires confirmation and [PRIVACY].",
-  "memoryModes": ["auto", "force", "off"],
-  "provenanceRequired": ["platform", "agent", "sessionId", "taskId", "timestamp", "status", "source", "evidence"],
+  "memoryModes": [
+    "auto",
+    "force",
+    "off"
+  ],
+  "provenanceRequired": [
+    "platform",
+    "agent",
+    "sessionId",
+    "taskId",
+    "timestamp",
+    "status",
+    "source",
+    "evidence"
+  ],
   "checkpointLifecycle": {
     "preExecution": "write active checkpoint before long-running or pre-approved tasks with platform, agent, session/task code, timestamp, current step, and blockers",
     "completion": "clear or supersede the active checkpoint after verification and write a completed state with evidence and next action"
+  },
+  "preflight": {
+    "enabled": true,
+    "triggerBeforeCodeChange": true,
+    "defaultSilent": true,
+    "acceptedConstraintTags": [
+      "[CURRENT]",
+      "[VERIFIED]",
+      "[DECISION]",
+      "[ADR]",
+      "[TASK]"
+    ],
+    "acceptedAdrStatuses": [
+      "accepted"
+    ],
+    "maxConstraints": 6,
+    "maxClaimChars": 160,
+    "guardFailOnConflict": true,
+    "writeLastPreflight": true
   },
   "requiredTags": [
     "[CURRENT]",
@@ -29,7 +61,13 @@
     "[EVIDENCE]"
   ],
   "layers": {
-    "allowed": ["profile", "project", "decision", "task", "session"],
+    "allowed": [
+      "profile",
+      "project",
+      "decision",
+      "task",
+      "session"
+    ],
     "default": "project",
     "tagMap": {
       "profile": "[PROFILE]",
@@ -44,11 +82,38 @@
     "storage": "memory/workspace/team-tasks",
     "index": "memory/workspace/team-task-index.json",
     "defaultSharePolicy": "private_workspace_excluded",
-    "dispatchLevels": ["direct", "single_delegate", "team_parallel", "review_board"],
-    "requiredDelegationFields": ["role", "task", "status", "findings", "evidence", "assumptions", "unknowns", "risks", "recommendation"],
+    "dispatchLevels": [
+      "direct",
+      "single_delegate",
+      "team_parallel",
+      "review_board"
+    ],
+    "requiredDelegationFields": [
+      "role",
+      "task",
+      "status",
+      "findings",
+      "evidence",
+      "assumptions",
+      "unknowns",
+      "risks",
+      "recommendation"
+    ],
     "memoryAdmission": {
-      "allow": ["user_approved_rule", "verified_fact", "accepted_decision", "failed_verification_lesson", "reusable_workflow"],
-      "block": ["raw_speculation", "unverified_recommendation", "message_noise", "private_data_without_confirmation", "large_raw_log"]
+      "allow": [
+        "user_approved_rule",
+        "verified_fact",
+        "accepted_decision",
+        "failed_verification_lesson",
+        "reusable_workflow"
+      ],
+      "block": [
+        "raw_speculation",
+        "unverified_recommendation",
+        "message_noise",
+        "private_data_without_confirmation",
+        "large_raw_log"
+      ]
     },
     "codeCapable": {
       "defaultMode": "read-only",
@@ -79,10 +144,52 @@
     "aliasNormalization": {
       "enabled": true,
       "groups": [
-        ["超级大脑", "大脑", "脑子", "Super Brain", "G1", "super-memory-brain"],
-        ["不回复", "没反应", "不在", "断了", "坏了", "失灵", "fault", "broken", "not working"],
-        ["GitHub", "公开版", "分享包", "release", "zip", "上传", "发布"],
-        ["还记得", "上次", "之前", "另一个会话", "继续", "remember", "previous", "resume", "continue"]
+        [
+          "超级大脑",
+          "Super Brain",
+          "super-memory-brain",
+          "刷新超级大脑",
+          "启动超级大脑"
+        ],
+        [
+          "不回复",
+          "没反应",
+          "不在",
+          "断了",
+          "坏了",
+          "失灵",
+          "fault",
+          "broken",
+          "not working"
+        ],
+        [
+          "GitHub",
+          "公开版",
+          "分享包",
+          "release",
+          "zip",
+          "上传",
+          "发布"
+        ],
+        [
+          "还记得",
+          "上次",
+          "之前",
+          "另一个会话",
+          "继续",
+          "remember",
+          "previous",
+          "resume",
+          "continue"
+        ],
+        [
+          "大脑",
+          "脑子",
+          "G1",
+          "方向",
+          "目标",
+          "这个项目"
+        ]
       ]
     },
     "confidence": {
@@ -107,6 +214,7 @@
         "sandglass": 0.55,
         "graph": 0.7,
         "state": 0.75,
+        "sessionBinding": 0.78,
         "recent": 0.35,
         "persona": 0.62
       },
@@ -130,21 +238,119 @@
         "expired": 0.35,
         "untagged": 0.05
       },
-      "sources": ["sandglass", "graph", "state", "recent", "persona"],
+      "sources": [
+        "sandglass",
+        "graph",
+        "state",
+        "recent",
+        "persona"
+      ],
       "fallbackRecentWhenBelowTopK": true,
-      "stateTriggers": ["当前", "状态", "版本", "进度", "改到哪", "super-memory-brain", "baseline", "changelog", "manifest"],
-      "profileIntentTriggers": ["你觉得我是什么样的人", "我是什么样的人", "我的性格", "我的偏好", "按我的习惯来", "你还记得我吗", "还记得我", "我的经历", "我的风格", "我的习惯"],
-      "experienceIntentTriggers": ["我的经历", "之前踩过的坑", "以前怎么做", "按之前经验", "经验", "教训", "复盘"],
-      "personaIntentTriggers": ["你觉得我", "我的风格", "我的性格", "我通常怎么做"]
+      "stateTriggers": [
+        "当前",
+        "状态",
+        "版本",
+        "进度",
+        "改到哪",
+        "super-memory-brain",
+        "baseline",
+        "changelog",
+        "manifest"
+      ],
+      "profileIntentTriggers": [
+        "你觉得我是什么样的人",
+        "我是什么样的人",
+        "我的性格",
+        "我的偏好",
+        "按我的习惯来",
+        "你还记得我吗",
+        "还记得我",
+        "我的经历",
+        "我的风格",
+        "我的习惯"
+      ],
+      "experienceIntentTriggers": [
+        "我的经历",
+        "之前踩过的坑",
+        "以前怎么做",
+        "按之前经验",
+        "经验",
+        "教训",
+        "复盘"
+      ],
+      "personaIntentTriggers": [
+        "你觉得我",
+        "我的风格",
+        "我的性格",
+        "我通常怎么做"
+      ]
     },
-    "keywordTriggers": ["上次", "之前", "记住", "我的偏好", "历史", "这个项目", "继续", "还记得", "决策", "方向", "目标", "长上下文", "大目标", "连续失败", "越改越偏", "经验目录", "我的性格", "我的经历", "我的习惯"],
-    "semanticTriggers": ["按我的习惯来", "照之前方案继续", "还是那个项目", "接着做", "按已有约定", "项目有进度但方向不明确", "需要保持用户需求", "需要保持已接受决策", "连续一个大目标推进", "先查经验", "先按我的偏好来", "先想想我是什么风格"]
+    "keywordTriggers": [
+      "上次",
+      "之前",
+      "记住",
+      "我的偏好",
+      "历史",
+      "这个项目",
+      "继续",
+      "还记得",
+      "决策",
+      "方向",
+      "目标",
+      "长上下文",
+      "大目标",
+      "连续失败",
+      "越改越偏",
+      "经验目录",
+      "我的性格",
+      "我的经历",
+      "我的习惯"
+    ],
+    "semanticTriggers": [
+      "按我的习惯来",
+      "照之前方案继续",
+      "还是那个项目",
+      "接着做",
+      "按已有约定",
+      "项目有进度但方向不明确",
+      "需要保持用户需求",
+      "需要保持已接受决策",
+      "连续一个大目标推进",
+      "先查经验",
+      "先按我的偏好来",
+      "先想想我是什么风格"
+    ],
+    "continuationPriority": [
+      "visible_context",
+      "compression_summary_or_record",
+      "active_checkpoint",
+      "status-card.json",
+      "last-status-snapshot.json",
+      "step-ledger.json",
+      "recent_tool_results",
+      "long_term_memory_as_supplement_only"
+    ]
   },
   "adr": {
-    "statuses": ["proposed", "accepted", "deprecated", "superseded", "rejected"],
+    "statuses": [
+      "proposed",
+      "accepted",
+      "deprecated",
+      "superseded",
+      "rejected"
+    ],
     "defaultStatus": "accepted",
-    "requiredRelations": ["decides", "has_title", "has_status", "has_context", "has_consequence"],
-    "currentStatuses": ["proposed", "accepted"]
+    "requiredRelations": [
+      "decides",
+      "has_title",
+      "has_status",
+      "has_context",
+      "has_consequence"
+    ],
+    "currentStatuses": [
+      "proposed",
+      "accepted"
+    ]
   },
   "expiry": {
     "profileDays": 365,
@@ -154,7 +360,13 @@
     "sessionDays": 3
   },
   "feedback": {
-    "negativePatterns": ["不是这个", "别按上次", "不对", "错了", "以后不要"],
+    "negativePatterns": [
+      "不是这个",
+      "别按上次",
+      "不对",
+      "错了",
+      "以后不要"
+    ],
     "negativeTag": "[NEGATIVE_FEEDBACK]"
   },
   "logging": {
@@ -212,5 +424,24 @@
     "temporaryChatPenalty": -3,
     "privateNeedsConfirmation": 0,
     "tooLongPenalty": -2
+  },
+  "maintenance": {
+    "policy": "maintenance-policy.json",
+    "postTaskHook": "scripts/post-task-maintenance.ps1",
+    "workspaceLifecycle": "scripts/workspace-lifecycle-manager.ps1",
+    "autoHygiene": "scripts/auto-hygiene-runner.ps1",
+    "selfImprovementQueue": "scripts/self-improvement-queue.ps1",
+    "safeLocalHygieneAutomatic": true,
+    "confirmationRequiredFor": [
+      "external_publish_or_share",
+      "private_memory_export",
+      "raw_secret_or_private_pattern_body",
+      "delete_project_files",
+      "broad_overwrite",
+      "hook_or_global_startup_rewrite",
+      "install_or_hot_refresh",
+      "memory_mode_switch",
+      "unclear_risk_or_conflict"
+    ]
   }
 }

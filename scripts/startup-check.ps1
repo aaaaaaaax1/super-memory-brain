@@ -52,6 +52,21 @@ Add-Check 'Codex plusunm-g1 skill' (Join-Path $CodexSkills 'plusunm-g1\SKILL.md'
 Add-Check 'Codex nexsandglass skill' (Join-Path $CodexSkills 'nexsandglass-dedicated-memory\SKILL.md')
 Add-Check 'Package memory root' $MemoryRoot
 Add-Check 'Session-start hook' $HookPath
+$zcodeGlobalStartup = Test-SuperBrainGlobalStartup $ZCodeSkills
+if (-not $zcodeGlobalStartup.ok) { $script:ok = $false }
+$checks += [pscustomobject]@{ name='ZCode global startup bootstrap'; ok=$zcodeGlobalStartup.ok; path=($zcodeGlobalStartup.paths -join '; '); expected=($zcodeGlobalStartup.expected -join '; ') }
+$codexGlobalStartup = Test-SuperBrainGlobalStartup $CodexSkills
+if (-not $codexGlobalStartup.ok) { $script:ok = $false }
+$checks += [pscustomobject]@{ name='Codex global startup bootstrap'; ok=$codexGlobalStartup.ok; path=($codexGlobalStartup.paths -join '; '); expected=($codexGlobalStartup.expected -join '; ') }
+$installedStartupRoots = @(Get-SuperBrainInstalledSkillRoots -SeedRoots @($ZCodeSkills, $CodexSkills) -Root $Root)
+foreach ($skillRoot in $installedStartupRoots) {
+  if ((Get-NormalizedSuperBrainRoot $skillRoot) -eq (Get-NormalizedSuperBrainRoot $ZCodeSkills)) { continue }
+  if ((Get-NormalizedSuperBrainRoot $skillRoot) -eq (Get-NormalizedSuperBrainRoot $CodexSkills)) { continue }
+  $agentHome = Get-SuperBrainAgentHomeFromSkillRoot $skillRoot
+  $agentStartup = Test-SuperBrainGlobalStartup $skillRoot
+  if (-not $agentStartup.ok) { $script:ok = $false }
+  $checks += [pscustomobject]@{ name="Installed agent global startup bootstrap ($agentHome)"; ok=$agentStartup.ok; path=($agentStartup.paths -join '; '); expected=($agentStartup.expected -join '; ') }
+}
 
 foreach ($skillName in Get-SuperBrainSkillNames) {
   Add-MarkerCheck "ZCode $skillName package root" (Test-SuperBrainPackageRootMarker (Join-Path $ZCodeSkills $skillName) $Root)
@@ -98,3 +113,4 @@ if ($Json) {
 
 if (-not $ok) { exit 1 }
 exit 0
+

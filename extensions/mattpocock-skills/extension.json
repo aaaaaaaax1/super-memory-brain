@@ -1,0 +1,107 @@
+{
+  "id": "mattpocock-skills",
+  "name": "Matt Pocock Skills",
+  "type": "optional-extension",
+  "defaultEnabled": false,
+  "sourceRepo": "https://github.com/mattpocock/skills",
+  "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+  "license": "MIT",
+  "licenseEvidence": [
+    "LICENSE",
+    "package.json",
+    ".claude-plugin/plugin.json"
+  ],
+  "curatedFromPluginJson": true,
+  "excludedByDefault": [
+    "skills/deprecated",
+    "skills/in-progress",
+    "skills/personal"
+  ],
+  "skills": [
+    {
+      "name": "ask-matt",
+      "path": "skills/engineering/ask-matt",
+      "upstreamPath": "skills/engineering/ask-matt"
+    },
+    {
+      "name": "diagnosing-bugs",
+      "path": "skills/engineering/diagnosing-bugs",
+      "upstreamPath": "skills/engineering/diagnosing-bugs"
+    },
+    {
+      "name": "grill-with-docs",
+      "path": "skills/engineering/grill-with-docs",
+      "upstreamPath": "skills/engineering/grill-with-docs"
+    },
+    {
+      "name": "triage",
+      "path": "skills/engineering/triage",
+      "upstreamPath": "skills/engineering/triage"
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "path": "skills/engineering/improve-codebase-architecture",
+      "upstreamPath": "skills/engineering/improve-codebase-architecture"
+    },
+    {
+      "name": "setup-matt-pocock-skills",
+      "path": "skills/engineering/setup-matt-pocock-skills",
+      "upstreamPath": "skills/engineering/setup-matt-pocock-skills"
+    },
+    {
+      "name": "tdd",
+      "path": "skills/engineering/tdd",
+      "upstreamPath": "skills/engineering/tdd"
+    },
+    {
+      "name": "to-issues",
+      "path": "skills/engineering/to-issues",
+      "upstreamPath": "skills/engineering/to-issues"
+    },
+    {
+      "name": "to-prd",
+      "path": "skills/engineering/to-prd",
+      "upstreamPath": "skills/engineering/to-prd"
+    },
+    {
+      "name": "prototype",
+      "path": "skills/engineering/prototype",
+      "upstreamPath": "skills/engineering/prototype"
+    },
+    {
+      "name": "domain-modeling",
+      "path": "skills/engineering/domain-modeling",
+      "upstreamPath": "skills/engineering/domain-modeling"
+    },
+    {
+      "name": "codebase-design",
+      "path": "skills/engineering/codebase-design",
+      "upstreamPath": "skills/engineering/codebase-design"
+    },
+    {
+      "name": "grill-me",
+      "path": "skills/productivity/grill-me",
+      "upstreamPath": "skills/productivity/grill-me"
+    },
+    {
+      "name": "grilling",
+      "path": "skills/productivity/grilling",
+      "upstreamPath": "skills/productivity/grilling"
+    },
+    {
+      "name": "handoff",
+      "path": "skills/productivity/handoff",
+      "upstreamPath": "skills/productivity/handoff"
+    },
+    {
+      "name": "teach",
+      "path": "skills/productivity/teach",
+      "upstreamPath": "skills/productivity/teach"
+    },
+    {
+      "name": "writing-great-skills",
+      "path": "skills/productivity/writing-great-skills",
+      "upstreamPath": "skills/productivity/writing-great-skills"
+    }
+  ]
+}

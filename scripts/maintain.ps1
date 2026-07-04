@@ -60,6 +60,9 @@ if (-not $Json) { Write-Host 'MAINTAIN_PLAN_READ_ONLY' }
 if (-not (& $runner 'summary' 'read' { & (Join-Path $PSScriptRoot 'summary.ps1') })) { $ok = $false }
 if (-not (& $runner 'doctor' 'read' { & (Join-Path $PSScriptRoot 'doctor.ps1') })) { $ok = $false }
 if (-not (& $runner 'memory-health' 'read' { & (Join-Path $PSScriptRoot 'memory-health.ps1') })) { $ok = $false }
+if (-not (& $runner 'workspace-lifecycle-manager' 'read' { & (Join-Path $PSScriptRoot 'workspace-lifecycle-manager.ps1') })) { $ok = $false }
+if (-not (& $runner 'auto-hygiene-runner' 'read' { & (Join-Path $PSScriptRoot 'auto-hygiene-runner.ps1') })) { $ok = $false }
+if (-not (& $runner 'self-improvement-queue' 'read' { & (Join-Path $PSScriptRoot 'self-improvement-queue.ps1') })) { $ok = $false }
 if (-not (& $runner 'compact-report' 'read' { & (Join-Path $PSScriptRoot 'compact-report.ps1') })) { $ok = $false }
 if (-not (& $runner 'encoding-check' 'read' { & (Join-Path $PSScriptRoot 'encoding-check.ps1') })) { $ok = $false }
 if (-not (& $runner 'graph-normalize' 'read' { & (Join-Path $PSScriptRoot 'graph-normalize.ps1') })) { $ok = $false }
@@ -69,7 +72,10 @@ if ($ApplySafe) {
   if (-not $Json) { Write-Host 'MAINTAIN_APPLY_SAFE' }
   if (-not (& $runner 'encoding-check-fix' 'safe' { & (Join-Path $PSScriptRoot 'encoding-check.ps1') -Fix })) { $ok = $false }
   if (-not (& $runner 'graph-normalize-fix' 'safe' { & (Join-Path $PSScriptRoot 'graph-normalize.ps1') -Fix })) { $ok = $false }
-  if (-not (& $runner 'update-state' 'safe' { & (Join-Path $PSScriptRoot 'update-state.ps1') })) { $ok = $false }
+  if (-not (& $runner 'workspace-lifecycle-manager-apply' 'safe' { & (Join-Path $PSScriptRoot 'workspace-lifecycle-manager.ps1') -ApplySafe })) { $ok = $false }
+  if (-not (& $runner 'auto-hygiene-runner-apply' 'safe' { & (Join-Path $PSScriptRoot 'auto-hygiene-runner.ps1') -ApplySafe })) { $ok = $false }
+  if (-not (& $runner 'post-task-maintenance-apply' 'safe' { & (Join-Path $PSScriptRoot 'post-task-maintenance.ps1') -ApplySafe -Summary 'maintain ApplySafe automatic maintenance' })) { $ok = $false }
+  if (-not (& $runner 'update-state' 'safe' { & (Join-Path $PSScriptRoot 'update-state.ps1') -AllowStaleVerify })) { $ok = $false }
   if (-not (& $runner 'compact-apply-whatif' 'safe' { & (Join-Path $PSScriptRoot 'compact-apply.ps1') -WhatIfOnly })) { $ok = $false }
 }
 
@@ -81,7 +87,7 @@ if ($ApplyConfirmed) {
   if (-not (& $runner 'verify-package' 'confirmed' { & (Join-Path $PSScriptRoot 'verify-package.ps1') -Integration })) { $ok = $false }
 }
 
-$safeActions = @('encoding-check.ps1 -Fix','graph-normalize.ps1 -Fix','update-state.ps1','compact-apply.ps1 -WhatIfOnly')
+$safeActions = @('encoding-check.ps1 -Fix','graph-normalize.ps1 -Fix','workspace-lifecycle-manager.ps1 -ApplySafe','auto-hygiene-runner.ps1 -ApplySafe','post-task-maintenance.ps1 -ApplySafe','update-state.ps1','compact-apply.ps1 -WhatIfOnly')
 $confirmedActions = @('repair-hook.ps1','compact-apply.ps1 -Force','backup-retention.ps1 -Apply','verify-package.ps1 -Integration')
 $result = [pscustomobject]@{
   ok = $ok

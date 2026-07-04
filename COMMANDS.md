@@ -20,16 +20,23 @@ scripts\compact-report.ps1
 scripts\recall-recent.ps1 -Count 5
 scripts\profile-card.ps1 -Refresh -Json
 scripts\session-restore.ps1 -Query "继续上次" -Json
+scripts\session-restore.ps1 -Query "继续上次" -BindSession -SessionId sess-demo -Json
+scripts\session-binding.ps1 -Action Get -Json
+scripts\session-binding.ps1 -Action Clear -Json
 scripts\recall-search.ps1 -Query "super-memory-brain" -TopK 3 -MaxTokens 1200 -Layer all -Json
 scripts\decision-search.ps1 -Query "super-memory-brain"
 scripts\decision-search.ps1 -AdrOnly -Status accepted
 scripts\decision-audit.ps1
 scripts\memory-eval.ps1 -Json
+scripts\verify-extensions.ps1
 scripts\roadmap-manager.ps1 -Json
 scripts\memory-regression-checker.ps1 -Json
 scripts\task-state-reporter.ps1 -Json
 scripts\privacy-sentinel.ps1 -Json
 scripts\completion-guard.ps1 -Json -AllowPrivacyRisk
+scripts\cognitive-enforce.ps1 "开启子agent通道" -Json
+scripts\runtime-drift-checkpoint.ps1 -Phase BeforeAct -ObservedAction "open fresh AgentBridge target channel" -Json
+scripts\reflection-promotion.ps1 -Mode Preview -TriggerType completed_fix -Summary "verified reusable lesson" -Json
 scripts\super-brain-dashboard.ps1 -Json
 scripts\checkpoint-writer.ps1 -Action Get -Json
 scripts\checkpoint-writer.ps1 -Action Start -TaskId task-demo -SessionId sess-demo -CurrentStep "implement recall" -NextAction "continue recall changes" -Json
@@ -39,6 +46,9 @@ scripts\status-snapshot-writer.ps1 -Summary "checkpoint" -NextAction "continue f
 scripts\privacy-hit-locator.ps1 -Json
 scripts\memory-quality-fixer.ps1 -Json
 scripts\memory-quality-fixer.ps1 -ShowDetails -Json
+scripts\workspace-lifecycle-manager.ps1 -Json
+scripts\auto-hygiene-runner.ps1 -Json
+scripts\self-improvement-queue.ps1 -Json
 scripts\optimize-advisor.ps1
 scripts\optimize-advisor.ps1 -Json
 scripts\lesson-replay.ps1 -Query "install ui" -Json
@@ -72,12 +82,38 @@ scripts\team-task-new.ps1 -Goal "..." -DispatchLevel single_delegate -Json
 scripts\team-task-add-delegation.ps1 -TeamTaskId team-YYYYMMDD-HHMMSS -Role code-explorer -Task "..." -Evidence "path:line" -Json
 scripts\team-task-decision.ps1 -TeamTaskId team-YYYYMMDD-HHMMSS -Status accepted -Json
 scripts\team-task-index.ps1 -Json
+scripts\agent-bridge-channel.ps1 -Action Open -ChannelId chan-demo -FromAgentId codexid00002 -SessionId codex-session-demo -Alias "子agent" -Json
+scripts\agent-bridge-channel.ps1 -Action WaitConnect -ChannelId chan-demo -AgentId codexid00002 -WaitSeconds 120 -PollIntervalSeconds 2 -Json
+scripts\agent-bridge-channel.ps1 -Action Connect -ChannelId chan-demo -OperatorAgentId zcodeid00001 -OperatorName "main" -ToAgentId codexid00002 -Alias "子agent" -TargetSession codex-session-demo -Json
+scripts\agent-bridge-channel.ps1 -Action Active -Json
+scripts\agent-bridge-channel.ps1 -Action SendAndWait -Alias "子agent" -Summary "你好" -WaitSeconds 60 -PollIntervalSeconds 2 -Json
+scripts\agent-bridge-channel.ps1 -Action WaitInbox -ChannelId chan-demo -AgentId codexid00002 -SessionId codex-session-demo -WaitSeconds 300 -PollIntervalSeconds 2 -Json
+scripts\agent-bridge-channel.ps1 -Action Inbox -ChannelId chan-demo -AgentId codexid00002 -SessionId codex-session-demo -Json
+scripts\agent-bridge-channel.ps1 -Action Ack -ChannelId chan-demo -AgentId codexid00002 -MessageId msg-demo -Json
+scripts\task-register.ps1 -Platform codex -Agent codex -AgentId codexid00002 -SessionId codex-fast-test-001 -SessionTitle "任务状态快路径测试" -TaskId task-codex-fast-register-test -TaskName "Codex 快速任务登记测试" -Status active -CurrentStep "写入共享任务状态" -NextAction "ZCode 查询任务状态" -Json
+scripts\task-index.ps1 -Json
+scripts\task-index.ps1 -Table
+scripts\task-index.ps1 -Agent codex -Table
+scripts\task-index.ps1 -SessionId sess-demo -Table
 ```
+
+## Agent Bridge natural-language short commands
+
+```text
+开启子agent通道
+连接子agent通道：chan-xxxx，别名 子agent
+向子agent发送信息：你好
+读取子agent通道回复
+关闭子agent通道
+```
+
+`开启子agent通道` is enough in the sub-agent session: it maps to Open → WaitConnect → WaitInbox, reports `waiting_connect` once, treats Open success as a persistent target-mode wait state, and must not auto-close. Only explicit close wording maps to `Close`.
 
 ## T2 controlled mutation, explicit intent required
 
 ```powershell
 scripts\install.ps1
+scripts\install.ps1 -Extensions karpathy-guidelines,mattpocock-skills
 scripts\install.bat
 scripts\install.bat console
 scripts\install-ui.ps1 -SmokeTest
@@ -85,6 +121,7 @@ scripts\install-ui.vbs
 scripts\install-menu.ps1
 scripts\install-agent.ps1 -AgentName <agent-name> -SkillRoot <path-to-skills>
 scripts\hot-refresh-skills.ps1 -AllKnown
+scripts\hot-refresh-skills.ps1 -AllKnown -Extensions karpathy-guidelines,mattpocock-skills
 scripts\memory-mode.ps1 -Mode Shared
 scripts\memory-mode.ps1 -Mode SplitMemory
 scripts\memory-mode.ps1 -Mode Agent -AgentName <agent-name>
@@ -116,6 +153,8 @@ scripts\cleanup-install-backups.ps1 -Apply
 
 ## Notes
 
+- 0.5.73 automatic maintenance uses `maintenance-policy.json`: safe local hygiene can run automatically with evidence/archive, while destructive/private/external/broad/hook-install/global/unclear-risk actions require confirmation.
+- After context compression, resume from visible context, compressed summaries/records, checkpoint/status/ledger, and recent tool results before using long-term memory as supplemental evidence.
 - Use `scripts\recall-search.ps1 -Query "..." -Json` to get token-budgeted Hybrid Recall results with `evidenceCard` objects for compact prompt injection.
 - Use `scripts\brain.bat` to double-click open the Super Brain 控制台; the first tab aggregates status, natural-language intent, next action, release checks, no-memory share release, Agent scorecards, dispatch learning, full CI, and hot refresh.
 - Use `scripts\install.bat` for the Chinese native Windows skill injector UI; use `scripts\install.bat console` for the console fallback injector.
@@ -127,11 +166,19 @@ scripts\cleanup-install-backups.ps1 -Apply
 - Agent/subagent roadmap state is durable memory: `0.5.20` Agent Team templates, `0.5.21` code-capable authorization, `0.5.22` Drift Guard + Commander Review Gate, and `0.5.23` Team Memory Retrieval; update the roadmap ADR whenever the route advances.
 - Use `scripts\team-task-review-gate.ps1 -Json` to verify code-capable tasks cannot pass with missing authorization, unreviewed changes, drift guard failures, unfinished Commander decisions, or pending verification.
 - Use `scripts\team-memory-retrieval.ps1 -Query "..." -Json` to recall team-task progress, evidence, decisions, and remaining work from private workspace records.
-- Use `scripts\dispatch-learning.ps1 -Json` to summarize team-task history into dispatch recommendations, and `scripts\trigger-simulation.ps1 -Json` to verify common prompt scenarios route to expected dispatch levels/templates.
-- Use `scripts\brain.ps1 status`, `scripts\brain.ps1 next 继续`, `scripts\brain.ps1 optimize`, and `scripts\brain.ps1 release` as the unified Super Brain command surface.
+- Use `scripts\dispatch-learning.ps1 -Json` to summarize team-task history into dispatch recommendations, `scripts\trigger-simulation.ps1 -Json` to verify common prompt scenarios route to expected dispatch levels/templates, and `scripts\cold-start-audit.ps1 -Json` to prove ordinary continue/casual G1-brain mentions stay on the light path without waking recall/team/full verify.
+- Use `scripts\brain.ps1 status`, `scripts\brain.ps1 next 继续`, `scripts\brain.ps1 optimize`, `scripts\brain.ps1 release`, `scripts\brain.ps1 skills`, `scripts\brain.ps1 capability browser-act`, and `scripts\brain.ps1 extensions` as the unified Super Brain command surface.
+- Use `scripts\extension-ingest.ps1 -Action List -Json`, `-Action Inspect -Path <dir> -Json`, `-Action Adopt -Path <dir> -ExtensionId <id> -Json`, and `-Action RebuildMap -Json` to list, inspect, adopt, and route extension skills/plugins.
+- Use `scripts\extension-capability-map.ps1 -Json` and `scripts\skill-capability-map.ps1 -List -Json` to rebuild or inspect the merged core+extension capability map; this is visibility for ORC routing, not a manual-only skill menu.
 - Use `scripts\version-bump.ps1 -Version 0.5.37 -Summary "..." -Json` for dry-run version bump previews; add `-Apply` only when ready to write version files.
 - Use `scripts\intent-router.ps1 继续 -Json`, `scripts\smart-next.ps1 继续 -Json`, and `scripts\health-summary.ps1 -Json` as practical Super Brain entrances for intent, next action, and current readiness.
 - Use `scripts\agent-scorecard.ps1 -Json` to inspect Agent Team suitability and `scripts\release-readiness.ps1 -Json` before sharing packages externally.
 - Agent Team templates live in private `memory\workspace\agent-teams.json`; template scripts select role sets only and do not grant code-write permission.
 - Future code-capable subagents require explicit Commander authorization, file boundaries, verification commands, rollback notes, and drift-guard review.
 - Use `scripts\script-tiers.ps1` for the authoritative script safety view from `manifest.json`.
+
+scripts\goal-route-lock.ps1 -Action Create -AcceptedGoal "accepted goal" -AcceptedRoute "route step" -NonGoals "non-goal" -Json
+scripts\route-checkpoint.ps1 -Phase BeforeAct -ObservedAction "next action" -Json
+scripts\verified-module-snapshot.ps1 -Action Create -Module "module-name" -VerifiedBehavior "behavior" -Entrypoint "entry" -VerificationCommand "command" -Evidence "evidence" -Json
+scripts\integration-parity-check.ps1 -Module "module-name" -CurrentEntrypoint "entry" -ModuleSmokeOk -IntegrationSmokeOk -UserAcceptanceOk -Json
+scripts\causal-change-plan.ps1 -Action Create -ObservedProblem "symptom" -RootCause "cause" -KnownFacts "known fact" -ProposedChange "change" -ExpectedOptimization "expected improvement" -VerificationMethod "test/check" -Json
