@@ -1,0 +1,29 @@
+{
+  "id": "karpathy-guidelines",
+  "name": "Karpathy Guidelines",
+  "type": "optional-extension",
+  "defaultEnabled": false,
+  "sourceRepo": "https://github.com/multica-ai/andrej-karpathy-skills",
+  "sourceCommit": "2c606141936f1eeef17fa3043a72095b4765b9c2",
+  "license": "MIT",
+  "licenseEvidence": [
+    "README.md",
+    ".claude-plugin/plugin.json",
+    "skills/karpathy-guidelines/SKILL.md"
+  ],
+  "skills": [
+    {
+      "name": "karpathy-guidelines",
+      "path": "skills/karpathy-guidelines",
+      "triggers": [
+        "AI",
+        "ML",
+        "coding mistakes",
+        "overengineering",
+        "surgical changes",
+        "verification",
+        "first principles"
+      ]
+    }
+  ]
+}

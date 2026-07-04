@@ -53,4 +53,6 @@ foreach ($item in Get-SuperBrainSourceItems) {
   Write-Host "AGENT_SKILL_INSTALLED agent=$agent skill=$($item.name) dest=$dest memory=$memoryRoot scope=$scope"
 }
 
+foreach ($path in @(Write-SuperBrainGlobalStartup $SkillRoot $Root -NoBackup:$NoBackup)) { Write-Host "AGENT_GLOBAL_STARTUP_WRITTEN agent=$agent path=$path" }
 Write-Host "AGENT_INSTALL_OK agent=$agent mode=$Mode skillRoot=$SkillRoot memory=$memoryRoot policy=$(Get-SuperBrainSharingPolicyPath $Root)"
+

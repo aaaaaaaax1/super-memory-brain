@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$ZCodeSkills = "$env:USERPROFILE\.zcode\skills",
   [string]$CodexSkills = "$env:USERPROFILE\.codex\skills",
   [string]$Neurobase = "",
@@ -6,7 +6,8 @@ param(
   [string]$MemoryMode = 'Shared',
   [switch]$SkipVerify,
   [switch]$NoBackup,
-  [int]$KeepBackups = 5
+  [int]$KeepBackups = 5,
+  [string[]]$Extensions = @()
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -93,16 +94,24 @@ try {
     Write-JsonUtf8NoBom (Get-SuperBrainSharingPolicyPath $Root) (Get-SuperBrainDefaultSharingPolicy $Root) 6
   }
 
-  Copy-Skill (Join-Path $Root 'super-memory-brain') 'super-memory-brain' $ZCodeSkills $ZCodeMemoryRoot
-  Copy-Skill (Join-Path $Root 'modules\skill-orchestrator') 'skill-orchestrator' $ZCodeSkills $ZCodeMemoryRoot
-  Copy-Skill (Join-Path $Root 'modules\plusunm-g1') 'plusunm-g1' $ZCodeSkills $ZCodeMemoryRoot
-  Copy-Skill (Join-Path $Root 'modules\nexsandglass-dedicated-memory') 'nexsandglass-dedicated-memory' $ZCodeSkills $ZCodeMemoryRoot
+  foreach ($item in @(Get-SuperBrainSourceItems)) {
+    Copy-Skill (Join-Path $Root $item.source) $item.name $ZCodeSkills $ZCodeMemoryRoot
+  }
 
-  Copy-Skill (Join-Path $Root 'super-memory-brain') 'super-memory-brain' $CodexSkills $CodexMemoryRoot
-  Copy-Skill (Join-Path $Root 'modules\skill-orchestrator') 'skill-orchestrator' $CodexSkills $CodexMemoryRoot
-  Copy-Skill (Join-Path $Root 'modules\plusunm-g1') 'plusunm-g1' $CodexSkills $CodexMemoryRoot
-  Copy-Skill (Join-Path $Root 'modules\nexsandglass-dedicated-memory') 'nexsandglass-dedicated-memory' $CodexSkills $CodexMemoryRoot
+  foreach ($item in @(Get-SuperBrainExtensionItems $Extensions $Root)) {
+    Copy-Skill (Join-Path $Root $item.source) $item.name $ZCodeSkills $ZCodeMemoryRoot
+  }
 
+  foreach ($item in @(Get-SuperBrainSourceItems)) {
+    Copy-Skill (Join-Path $Root $item.source) $item.name $CodexSkills $CodexMemoryRoot
+  }
+
+  foreach ($item in @(Get-SuperBrainExtensionItems $Extensions $Root)) {
+    Copy-Skill (Join-Path $Root $item.source) $item.name $CodexSkills $CodexMemoryRoot
+  }
+
+  foreach ($path in @(Write-SuperBrainGlobalStartup $ZCodeSkills $Root -NoBackup:$NoBackup)) { Write-Host "GLOBAL_STARTUP_WRITTEN agent=zcode path=$path" }
+  foreach ($path in @(Write-SuperBrainGlobalStartup $CodexSkills $Root -NoBackup:$NoBackup)) { Write-Host "GLOBAL_STARTUP_WRITTEN agent=codex path=$path" }
   & (Join-Path $PSScriptRoot 'repair-hook.ps1') -PackageRoot $Root
 
   Write-Host "Installed NexSandglass runtime/memory for ZCode: $ZCodeMemoryRoot"
@@ -130,3 +139,4 @@ try {
   }
   exit 1
 }
+

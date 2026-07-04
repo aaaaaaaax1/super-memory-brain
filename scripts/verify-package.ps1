@@ -38,25 +38,30 @@ function Read-Utf8([string]$RelativePath) {
 }
 
 $required = @(
-  'README.md','QUICK_START.md','COMMANDS.md','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json',
+  'README.md','QUICK_START.md','COMMANDS.md','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','maintenance-policy.json',
   'super-memory-brain\SKILL.md',
   'modules\skill-orchestrator\SKILL.md',
   'modules\plusunm-g1\SKILL.md',
   'modules\nexsandglass-dedicated-memory\SKILL.md',
   'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_log.py',
+  'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_lock.py',
   'memory\shared\scripts\sandglass_log.py',
+  'memory\shared\scripts\sandglass_lock.py',
   'memory\shared\scripts\sandglass_vault.py',
   'memory\graph.jsonl',
   'memory\workspace\session-notes.md',
   'memory\workspace\team-task-index.json',
   'memory\workspace\agent-teams.json',
   'tests\memory-recall-tests.json','tests\memory-eval-tests.json',
+  'scripts\workspace-lifecycle-manager.ps1','scripts\auto-hygiene-runner.ps1','scripts\post-task-maintenance.ps1','scripts\self-improvement-queue.ps1',
   'scripts\install.ps1','scripts\install.bat','scripts\install-ui.ps1','scripts\install-ui.vbs','scripts\brain.bat','scripts\brain-ui.vbs','scripts\check-install-ui-paths.ps1','scripts\status.ps1','scripts\doctor.ps1','scripts\maintain.ps1','scripts\summary.ps1','scripts\script-tiers.ps1','scripts\memory-health.ps1','scripts\write-memory.ps1','scripts\write-experience.ps1','scripts\audit-memory.ps1',
   'scripts\baseline-update.ps1','scripts\prepare-share.ps1','scripts\compact.ps1','scripts\compact-report.ps1','scripts\compact-apply.ps1','scripts\backup.ps1','scripts\backup-retention.ps1',
-  'scripts\verify-package.ps1','scripts\auto-check.ps1','scripts\startup-check.ps1','scripts\update-state.ps1','scripts\state.ps1','scripts\recall-search.ps1','scripts\recall-recent.ps1','scripts\session-restore.ps1','scripts\learn-memory.ps1','scripts\profile-card.ps1','scripts\skill-sync-check.ps1','scripts\memory-mode.ps1','scripts\install-agent.ps1','scripts\hot-refresh-skills.ps1','scripts\install-menu.ps1','scripts\cleanup-legacy-memory.ps1','scripts\cleanup-install-backups.ps1','scripts\migrate-memory-layout.ps1','scripts\repair-hook.ps1','scripts\encoding-check.ps1','scripts\graph-normalize.ps1','scripts\write-decision.ps1','scripts\decision-search.ps1','scripts\decision-audit.ps1','scripts\bootstrap.ps1','scripts\release-private.ps1','scripts\release-share.ps1','scripts\graph-add.ps1','scripts\graph-search.ps1','scripts\extract-facts.ps1',
-  'scripts\optimize-advisor.ps1',
-  'scripts\checkpoint-writer.ps1',
-  'scripts\test-recall.ps1','scripts\memory-eval.ps1','scripts\memory-eval-report.ps1','scripts\tag-legacy-memory.ps1','scripts\ci.ps1','scripts\lint.ps1','scripts\test-pester.ps1','scripts\task-verification.ps1','scripts\team-dispatch-check.ps1','scripts\team-template-list.ps1','scripts\team-template-select.ps1','scripts\team-task-new.ps1','scripts\team-task-add-delegation.ps1','scripts\team-task-authorize.ps1','scripts\team-task-review.ps1','scripts\team-task-audit.ps1','scripts\team-task-decision.ps1','scripts\team-task-status.ps1','scripts\team-task-index.ps1','scripts\smoke-test.ps1','scripts\common.ps1','scripts\session-compact.ps1','scripts\verify-share.ps1','scripts\release.ps1'
+  'scripts\verify-package.ps1','scripts\auto-check.ps1','scripts\startup-check.ps1','scripts\update-state.ps1','scripts\state.ps1','scripts\recall-search.ps1','scripts\recall-recent.ps1','scripts\session-restore.ps1','scripts\session-binding.ps1','scripts\learn-memory.ps1','scripts\profile-card.ps1','scripts\skill-sync-check.ps1','scripts\memory-mode.ps1','scripts\install-agent.ps1','scripts\hot-refresh-skills.ps1','scripts\install-menu.ps1','scripts\cleanup-legacy-memory.ps1','scripts\cleanup-install-backups.ps1','scripts\migrate-memory-layout.ps1','scripts\repair-hook.ps1','scripts\encoding-check.ps1','scripts\graph-normalize.ps1','scripts\write-decision.ps1','scripts\decision-search.ps1','scripts\decision-audit.ps1','scripts\bootstrap.ps1','scripts\release-private.ps1','scripts\release-share.ps1','scripts\graph-add.ps1','scripts\graph-search.ps1','scripts\extract-facts.ps1',
+  'scripts\optimize-advisor.ps1','scripts\tool-health.ps1','scripts\skill-capability-map.ps1',
+  'scripts\accepted-constraints-preflight.ps1',
+  'scripts\goal-route-lock.ps1','scripts\route-checkpoint.ps1','scripts\verified-module-snapshot.ps1','scripts\integration-parity-check.ps1','scripts\causal-change-plan.ps1',
+  'scripts\checkpoint-writer.ps1','scripts\task-register.ps1',
+  'scripts\test-recall.ps1','scripts\memory-eval.ps1','scripts\memory-eval-report.ps1','scripts\tag-legacy-memory.ps1','scripts\ci.ps1','scripts\lint.ps1','scripts\test-pester.ps1','scripts\concurrency-smoke-test.ps1','scripts\task-verification.ps1','scripts\team-dispatch-check.ps1','scripts\team-template-list.ps1','scripts\team-template-select.ps1','scripts\team-task-new.ps1','scripts\team-task-add-delegation.ps1','scripts\team-task-authorize.ps1','scripts\team-task-review.ps1','scripts\team-task-audit.ps1','scripts\team-task-decision.ps1','scripts\team-task-status.ps1','scripts\team-task-index.ps1','scripts\smoke-test.ps1','scripts\common.ps1','scripts\session-compact.ps1','scripts\verify-share.ps1','scripts\release.ps1'
 )
 
 foreach ($rel in $required) {
@@ -162,12 +167,22 @@ if (@($memoryPolicy.feedback.negativePatterns).Count -gt 0 -and $memoryPolicy.fe
 if ($null -ne $memoryPolicy.expiry.profileDays -and $null -ne $memoryPolicy.expiry.sessionDays) { Mark-Ok 'memory policy expiry' } else { Mark-Fail 'memory policy expiry missing' }
 if (@($memoryPolicy.memoryModes) -contains 'auto' -and @($memoryPolicy.memoryModes) -contains 'force' -and @($memoryPolicy.memoryModes) -contains 'off') { Mark-Ok 'memory policy modes' } else { Mark-Fail 'memory policy modes missing' }
 if (@($memoryPolicy.requiredTags) -contains '[ADR]' -and $null -ne $memoryPolicy.adr.statuses) { Mark-Ok 'memory policy ADR schema' } else { Mark-Fail 'memory policy ADR schema missing' }
-if (@($memoryPolicy.provenanceRequired) -contains 'platform' -and @($memoryPolicy.provenanceRequired) -contains 'agent' -and @($memoryPolicy.provenanceRequired) -contains 'sessionId' -and @($memoryPolicy.provenanceRequired) -contains 'taskId' -and $null -ne $memoryPolicy.checkpointLifecycle.preExecution -and $null -ne $memoryPolicy.checkpointLifecycle.completion) { Mark-Ok 'memory policy provenance checkpoint schema' } else { Mark-Fail 'memory policy provenance checkpoint schema missing' }
+if (@($memoryPolicy.provenanceRequired) -contains 'platform' -and @($memoryPolicy.provenanceRequired) -contains 'agent' -and @($memoryPolicy.provenanceRequired) -contains 'sessionId' -and @($memoryPolicy.provenanceRequired) -contains 'taskId' -and $null -ne $memoryPolicy.checkpointLifecycle.preExecution -and $null -ne $memoryPolicy.checkpointLifecycle.completion -and $memoryPolicy.preflight.enabled -eq $true -and @($memoryPolicy.preflight.acceptedConstraintTags).Count -gt 0) { Mark-Ok 'memory policy provenance checkpoint preflight schema' } else { Mark-Fail 'memory policy provenance checkpoint preflight schema missing' }
 if ($memoryPolicy.retrieval.hybrid.enabled -eq $true -and $null -ne $memoryPolicy.retrieval.hybrid.sourceWeights -and $null -ne $memoryPolicy.retrieval.hybrid.boosts -and $null -ne $memoryPolicy.retrieval.hybrid.penalties) { Mark-Ok 'memory policy hybrid recall' } else { Mark-Fail 'memory policy hybrid recall missing' }
+if ($memoryPolicy.retrieval.hybrid.sourceWeights.PSObject.Properties['sessionBinding'] -and [double]$memoryPolicy.retrieval.hybrid.sourceWeights.sessionBinding -gt 0) { Mark-Ok 'memory policy session binding source weight' } else { Mark-Fail 'memory policy session binding source weight missing' }
 if ($memoryPolicy.retrieval.recency.enabled -eq $true -and $null -ne $memoryPolicy.retrieval.recency.halfLifeDays -and $null -ne $memoryPolicy.retrieval.recency.maxBoost -and @($memoryPolicy.retrieval.hybrid.profileIntentTriggers).Count -gt 0 -and @($memoryPolicy.retrieval.hybrid.experienceIntentTriggers).Count -gt 0 -and @($memoryPolicy.retrieval.hybrid.personaIntentTriggers).Count -gt 0) { Mark-Ok 'memory policy recency and persona intent schema' } else { Mark-Fail 'memory policy recency and persona intent schema missing' }
 if (@($memoryPolicy.writeAllowSignals) -contains '我的偏好' -and @($memoryPolicy.writeAllowSignals) -contains '我的性格' -and @($memoryPolicy.writeAllowSignals) -contains '我的经历') { Mark-Ok 'memory policy profile write signals' } else { Mark-Fail 'memory policy profile write signals missing' }
 if (@($memoryPolicy.requiredTags) -contains '[TEAM_TASK]' -and @($memoryPolicy.requiredTags) -contains '[COMMANDER]' -and @($memoryPolicy.requiredTags) -contains '[DELEGATION]' -and @($memoryPolicy.requiredTags) -contains '[EVIDENCE]' -and $memoryPolicy.teamTasks.enabled -eq $true -and @($memoryPolicy.teamTasks.dispatchLevels) -contains 'review_board' -and @($memoryPolicy.teamTasks.requiredDelegationFields) -contains 'evidence') { Mark-Ok 'memory policy team task schema' } else { Mark-Fail 'memory policy team task schema missing' }
 if ($memoryPolicy.teamTasks.codeCapable.requiresCommanderAuthorization -eq $true -and $memoryPolicy.teamTasks.codeCapable.requiresAllowedFiles -eq $true -and $memoryPolicy.teamTasks.codeCapable.requiresForbiddenFiles -eq $true -and $memoryPolicy.teamTasks.codeCapable.requiresVerificationCommands -eq $true -and $memoryPolicy.teamTasks.codeCapable.requiresReviewBeforeAcceptance -eq $true -and $memoryPolicy.teamTasks.codeCapable.patchApplication -eq 'reserved_not_automatic') { Mark-Ok 'memory policy code-capable schema' } else { Mark-Fail 'memory policy code-capable schema missing' }
+
+try {
+  $maintenancePolicy = Read-Utf8 'maintenance-policy.json' | ConvertFrom-Json
+  Mark-Ok 'maintenance-policy.json parse'
+} catch {
+  Mark-Fail "maintenance-policy.json parse $($_.Exception.Message)"
+  $maintenancePolicy = [pscustomobject]@{}
+}
+if ($maintenancePolicy.mode -eq 'bounded_auto' -and $maintenancePolicy.automaticActions.postTaskMaintenance.enabled -eq $true -and @($maintenancePolicy.requiresConfirmation).Count -gt 0 -and @($maintenancePolicy.continuationPriority)[0] -eq 'visible_context') { Mark-Ok 'maintenance policy bounded auto schema' } else { Mark-Fail 'maintenance policy bounded auto schema missing' }
 
 $runtimeFiles = @($manifest.runtimeFiles)
 if ($runtimeFiles.Count -gt 0) { Mark-Ok 'runtime files manifest present' } else { Mark-Fail 'runtime files manifest missing' }
@@ -248,6 +263,20 @@ $writeDecisionText = Read-Utf8 'scripts\write-decision.ps1'
 if ($writeDecisionText -like '*decision_particles*' -and $writeDecisionText -like '*[DECISION][CURRENT][VERIFIED]*' -and $writeDecisionText -like '*Add-GraphRecord*') { Mark-Ok 'write decision structured lifecycle' } else { Mark-Fail 'write decision structured lifecycle missing' }
 if ($writeDecisionText.Contains('[ADR]') -and $writeDecisionText.Contains('has_status') -and $writeDecisionText.Contains('has_context') -and $writeDecisionText.Contains('has_consequence') -and $writeDecisionText.Contains('superseded_by')) { Mark-Ok 'write decision ADR lifecycle' } else { Mark-Fail 'write decision ADR lifecycle missing' }
 
+$doctorText = Read-Utf8 'scripts\doctor.ps1'
+if ($doctorText -like '*session-binding.json*' -and $doctorText -like '*session_binding_expired*' -and $doctorText -like '*session_binding_version_mismatch*' -and $doctorText -like '*session_binding_memory_root_mismatch*' -and $doctorText -like '*session_binding_raw_content_risk*') { Mark-Ok 'doctor session binding risk visibility' } else { Mark-Fail 'doctor session binding risk visibility missing' }
+
+$checkpointWriterText = Read-Utf8 'scripts\checkpoint-writer.ps1'
+if ($checkpointWriterText -like '*AgentId*' -and $checkpointWriterText -like '*SessionName*' -and $checkpointWriterText -like '*TaskName*' -and $checkpointWriterText -like '*MemoryIds*' -and $checkpointWriterText -like '*session-task-links.json*' -and $checkpointWriterText -like '*task-memory-links.json*') { Mark-Ok 'checkpoint writer shared identity index' } else { Mark-Fail 'checkpoint writer shared identity index missing' }
+$taskRegisterText = Read-Utf8 'scripts\task-register.ps1'
+if ($taskRegisterText -like '*memory/shared/agents*' -and $taskRegisterText -like '*session-task-links.json*' -and $taskRegisterText -like '*task-memory-links.json*' -and $taskRegisterText -like '*Fast path only*' -and $taskRegisterText -like '*SessionTitle*' -and $taskRegisterText -like '*ConversationTitle*') { Mark-Ok 'task register fast identity path' } else { Mark-Fail 'task register fast identity path missing' }
+if ($taskRegisterText -notlike '*active-checkpoint.json*' -or $taskRegisterText -like '*never touches active-checkpoint.json*') { Mark-Ok 'task register avoids active checkpoint lifecycle' } else { Mark-Fail 'task register active checkpoint write risk' }
+if ($taskRegisterText -like '*doctor.ps1*' -or $taskRegisterText -like '*verify-package.ps1*' -or $taskRegisterText -like '*hot-refresh-skills.ps1*' -or $taskRegisterText -like '*ci.ps1*' -or $taskRegisterText -like '*super-brain-dashboard.ps1*' -or $taskRegisterText -like '*recall-search.ps1*') { Mark-Ok 'task register documents heavy-flow exclusions' } else { Mark-Fail 'task register heavy-flow exclusion markers missing' }
+$taskIndexText = Read-Utf8 'scripts\task-index.ps1'
+if ($taskIndexText.Contains('[switch]$Table') -and $taskIndexText.Contains('[string]$Agent') -and $taskIndexText.Contains('[string]$SessionId') -and $taskIndexText.Contains('sessionName') -and $taskIndexText.Contains('agentId') -and $taskIndexText.Contains('identityKey') -and $taskIndexText.Contains('未知，不等于没有任务') -and $taskIndexText.Contains('# | 来源 | 会话 / 状态 | 进度')) { Mark-Ok 'task-index shared identity compact table' } else { Mark-Fail 'task-index shared identity compact table missing' }
+$skillText = Read-Utf8 'super-memory-brain\SKILL.md'
+if ($skillText -like '*Cross-agent/session task identity index rule*' -and $skillText -like '*compact task status table*' -and $skillText -like '*sessionName*' -and $skillText -like '*agentId*' -and $skillText -like '*未知，不等于没有任务*') { Mark-Ok 'entry skill task identity table rule' } else { Mark-Fail 'entry skill task identity table rule missing' }
+
 $repairHookText = Read-Utf8 'scripts\repair-hook.ps1'
 if ($repairHookText -like '*MaxStartupRuleChars*' -and $repairHookText -like '*startup rule too long*') { Mark-Ok 'repair hook startup length guard' } else { Mark-Fail 'repair hook startup length guard missing' }
 if ($repairHookText -like '*load Skill super-memory-brain first*' -and $repairHookText -like '*explicit*' -and $repairHookText -like '*memory:auto silent*' -and $repairHookText -like '*visible G1*' -and $repairHookText -like '*no G1 for ok/chat/code*' -and $repairHookText -like '*light recall if state needed*' -and $repairHookText -like '*semantic/keyword recall*') { Mark-Ok 'repair hook silent explicit router rule' } else { Mark-Fail 'repair hook silent explicit router rule missing' }
@@ -263,9 +292,16 @@ if ($skillText.Contains('Visible `G1` prefix is explicit-only') -and $skillText.
 if ($skillText.Contains('START rule') -and $skillText.Contains('completion status') -and $skillText.Contains('what remains')) { Mark-Ok 'entry skill START response discipline' } else { Mark-Fail 'entry skill START response discipline missing' }
 if ($skillText.Contains('Commander Team Memory') -and $skillText.Contains('off the cold-start path') -and $skillText.Contains('only loads Commander Team Memory when the user explicitly asks') -and $skillText.Contains('Commander Team Memory stays unloaded until explicit approval') -and $skillText.Contains('Findings without evidence are assumptions')) { Mark-Ok 'entry skill Commander team explicit-only cold-start gate' } else { Mark-Fail 'entry skill Commander team explicit-only cold-start gate missing' }
 
+if ($skillText.Contains('Temporary session binding protocol') -and $skillText.Contains('session-binding.json') -and $skillText.Contains('raw full chat') -and $skillText.Contains('memory:off') -and $skillText.Contains('Avoidable Issue Elimination Rule')) { Mark-Ok 'entry skill session binding and avoidable issue rules' } else { Mark-Fail 'entry skill session binding or avoidable issue rules missing' }
 if ($skillText.Contains('Learn protocol') -and $skillText.Contains('session-restore.ps1') -and $skillText.Contains('Token budget rule') -and $skillText.Contains('learn-memory.ps1')) { Mark-Ok 'entry skill learn and session restore protocols' } else { Mark-Fail 'entry skill learn or session restore protocols missing' }
 
+if ($skillText.Contains('Version iteration review rule') -and $skillText.Contains('before/after comparison checklist') -and $skillText.Contains('positive optimization') -and $skillText.Contains('negative optimization/regression') -and $skillText.Contains('Detail-control rule') -and $skillText.Contains('large mistakes are prevented')) { Mark-Ok 'entry skill version iteration and detail-control rules' } else { Mark-Fail 'entry skill version iteration or detail-control rules missing' }
+if ($skillText.Contains('long-memory risk') -and $skillText.Contains('proactively inspect and compress') -and $skillText.Contains('ADR/graph evidence') -and $skillText.Contains('Experience learning rule') -and $skillText.Contains('user preference patterns')) { Mark-Ok 'entry skill proactive compression and experience learning rules' } else { Mark-Fail 'entry skill proactive compression or experience learning rules missing' }
+
 $orcText = Read-Utf8 'modules\skill-orchestrator\SKILL.md'
+if ($orcText.Contains('before/after comparison checklist') -and $orcText.Contains('positive optimizations') -and $orcText.Contains('negative optimizations/regressions') -and $orcText.Contains('meticulous detail control') -and $orcText.Contains('release assets')) { Mark-Ok 'ORC version iteration and detail-control rules' } else { Mark-Fail 'ORC version iteration or detail-control rules missing' }
+if ($orcText.Contains('Temporary session binding') -and $orcText.Contains('Avoidable Issue Elimination Rule') -and $orcText.Contains('expired, mismatched, `memory:off`, or privacy-risky') -and $orcText.Contains('preventable failures')) { Mark-Ok 'ORC session binding and avoidable issue rules' } else { Mark-Fail 'ORC session binding or avoidable issue rules missing' }
+if ($orcText.Contains('hidden long-memory risk') -and $orcText.Contains('proactively compress') -and $orcText.Contains('reusable experience') -and $orcText.Contains('user preference patterns')) { Mark-Ok 'ORC proactive compression and experience learning rules' } else { Mark-Fail 'ORC proactive compression or experience learning rules missing' }
 if ($orcText.Contains('Team Dispatch On Demand') -and $orcText.Contains('routing dormant by default') -and $orcText.Contains('Do not run dispatch scoring') -and $orcText.Contains('Load Commander Team Memory only when the user explicitly asks') -and $orcText.Contains('do not load templates, inspect team-task state, or run team dispatch scoring') -and $orcText.Contains('Code-capable subagents require explicit Commander authorization')) { Mark-Ok 'ORC team dispatch explicit-only on-demand rules' } else { Mark-Fail 'ORC team dispatch explicit-only on-demand rules missing' }
 
 $startupCheckText = Read-Utf8 'scripts\startup-check.ps1'
@@ -277,6 +313,7 @@ if ($startupCheckText -like '*Hook silent memory auto*' -and $startupCheckText -
 $statusText = Read-Utf8 'scripts\status.ps1'
 if ($statusText -like '*Hook mandatory skill load*' -and $statusText -like '*semantic/keyword recall*' -and $statusText -like '*Hook short router*') { Mark-Ok 'status hook short router check' } else { Mark-Fail 'status hook short router check missing' }
 if ($statusText -like '*exit 0*') { Mark-Ok 'status explicit success exit' } else { Mark-Fail 'status explicit success exit missing' }
+if ($statusText -like '*session-binding.json*' -and $statusText -like '*sessionBinding*' -and $statusText -like '*packageVersionMatch*' -and $statusText -like '*memoryRootMatch*') { Mark-Ok 'status session binding visibility' } else { Mark-Fail 'status session binding visibility missing' }
 
 $compactApplyText = Read-Utf8 'scripts\compact-apply.ps1'
 if ($compactApplyText.Contains('[switch]$Force') -and $compactApplyText.Contains('COMPACT_APPLY_CONFIRM_REQUIRED')) { Mark-Ok 'compact apply confirmation guard' } else { Mark-Fail 'compact apply confirmation guard missing' }
@@ -290,6 +327,7 @@ if ($recallSearchText -like '*TopK*' -and $recallSearchText -like '*MaxTokens*' 
 if ($recallSearchText -like '*sourceType*' -and $recallSearchText -like '*confidence*' -and $recallSearchText -like '*tokenEstimate*' -and $recallSearchText -like '*graph_decision_or_lineage*' -and $recallSearchText -like '*state_recall_priority*') { Mark-Ok 'recall search hybrid candidate schema' } else { Mark-Fail 'recall search hybrid candidate schema missing' }
 if ($recallSearchText -like '*Get-RecencyBoost*' -and $recallSearchText -like '*ageDays*' -and $recallSearchText -like '*recencyScore*' -and $recallSearchText -like '*Get-PersonaSnippets*' -and $recallSearchText -like '*profileIntentTriggers*') { Mark-Ok 'recall search recency and persona support' } else { Mark-Fail 'recall search recency and persona support missing' }
 if ($recallSearchText -like '*New-EvidenceCard*' -and $recallSearchText -like '*evidenceCard*' -and $recallSearchText -like '*contextBudget*' -and $recallSearchText -like '*maxEvidenceCards*' -and $recallSearchText -like '*cardSnippetTokens*') { Mark-Ok 'recall search context budget evidence card support' } else { Mark-Fail 'recall search context budget evidence card support missing' }
+if ($recallSearchText -like '*session-binding.json*' -and $recallSearchText -like '*sessionBinding*' -and $recallSearchText -like '*temporary_session_binding*' -and $recallSearchText -like '*Test-SuperBrainSamePath*' -and $recallSearchText -like '*expiresAt*') { Mark-Ok 'recall search session binding source support' } else { Mark-Fail 'recall search session binding source support missing' }
 
 $learnMemoryText = Read-Utf8 'scripts\learn-memory.ps1'
 if ($learnMemoryText -like '*write-memory.ps1*' -and $learnMemoryText -like '*write-experience.ps1*' -and $learnMemoryText -like '*last-learn-memory.json*' -and $learnMemoryText -like '*ConfirmPrivate*' -and $learnMemoryText -like '*Preview*' -and $learnMemoryText -like '*AllowDuplicate*' -and $learnMemoryText -like '*similarEvidenceCards*' -and $learnMemoryText -like '*profile-card.ps1*') { Mark-Ok 'learn memory preview duplicate profile support' } else { Mark-Fail 'learn memory preview duplicate profile support missing' }
@@ -298,11 +336,41 @@ if ($learnMemoryText -like '*ValueFromRemainingArguments*' -and $learnMemoryText
 $profileCardText = Read-Utf8 'scripts\profile-card.ps1'
 if ($profileCardText -like '*profile-card.json*' -and $profileCardText -like '*profileSummary*' -and $profileCardText -like '*evidenceCards*' -and $profileCardText -like '*MaxTokens*' -and $profileCardText -like '*recall-search.ps1*') { Mark-Ok 'profile card compact support' } else { Mark-Fail 'profile card compact support missing' }
 
+$sessionBindingText = Read-Utf8 'scripts\session-binding.ps1'
+if ($sessionBindingText -like '*session-binding.json*' -and $sessionBindingText -like '*bindingId*' -and $sessionBindingText -like '*expiresAt*' -and $sessionBindingText -like '*TtlMinutes*' -and $sessionBindingText -like '*MemoryMode*' -and $sessionBindingText -like '*memory:off*' -and $sessionBindingText -like '*Write-JsonUtf8NoBom*' -and $sessionBindingText -like '*Get-SuperBrainActiveMemoryRoot*' -and $sessionBindingText -like '*noRawChat*' -and $sessionBindingText -like '*currentUserInstructionWins*') { Mark-Ok 'session binding script schema and guards' } else { Mark-Fail 'session binding script schema or guards missing' }
+
 $sessionRestoreText = Read-Utf8 'scripts\session-restore.ps1'
-if ($sessionRestoreText -like '*last-session-restore.json*' -and $sessionRestoreText -like '*tokenBudget*' -and $sessionRestoreText -like '*evidenceCards*' -and $sessionRestoreText -like '*active-checkpoint.json*' -and $sessionRestoreText -like '*experience-index.md*' -and $sessionRestoreText -like '*recallTriggered*' -and $sessionRestoreText -like '*profileCard*' -and $sessionRestoreText -like '*profile-card.ps1*') { Mark-Ok 'session restore lightweight protocol script support' } else { Mark-Fail 'session restore lightweight protocol script support missing' }
+if ($sessionRestoreText -like '*last-session-restore.json*' -and $sessionRestoreText -like '*tokenBudget*' -and $sessionRestoreText -like '*evidenceCards*' -and $sessionRestoreText -like '*active-checkpoint.json*' -and $sessionRestoreText -like '*experience-index.md*' -and $sessionRestoreText -like '*recallTriggered*' -and $sessionRestoreText -like '*profileCard*' -and $sessionRestoreText -like '*profile-card.ps1*' -and $sessionRestoreText -like '*BindSession*' -and $sessionRestoreText -like '*session-binding.ps1*' -and $sessionRestoreText -like '*sessionBinding*' -and $sessionRestoreText -like '*TtlMinutes*') { Mark-Ok 'session restore lightweight protocol script support' } else { Mark-Fail 'session restore lightweight protocol script support missing' }
+
+$acceptedPreflightText = Read-Utf8 'scripts\accepted-constraints-preflight.ps1'
+if ($acceptedPreflightText -like '*last-accepted-constraints-preflight.json*' -and $acceptedPreflightText -like '*decision-search.ps1*' -and $acceptedPreflightText -like '*recall-search.ps1*' -and $acceptedPreflightText -like '*active-checkpoint.json*' -and $acceptedPreflightText -like '*session-binding.json*' -and $acceptedPreflightText -like '*mustPreserve*' -and $acceptedPreflightText -like '*mustNotViolate*' -and $acceptedPreflightText -like '*guardHash*' -and $acceptedPreflightText -like '*noTail*') { Mark-Ok 'accepted constraints preflight support' } else { Mark-Fail 'accepted constraints preflight support missing' }
+
+$projectContinuityText = Read-Utf8 'scripts\project-continuity.ps1'
+if ($projectContinuityText -like '*task-graph.json*' -and $projectContinuityText -like '*agent-findings*' -and $projectContinuityText -like '*SkipStep*' -and $projectContinuityText -like '*AdmitFinding*' -and $projectContinuityText -like '*RejectFinding*' -and $projectContinuityText -like '*candidate-only*' -and $projectContinuityText -like '*Commander admission*') { Mark-Ok 'project continuity task graph and findings isolation support' } else { Mark-Fail 'project continuity task graph and findings isolation support missing' }
+if ($projectContinuityText -like '*super-brain.project-graph.v2*' -and $projectContinuityText -like '*super-brain.structure-baseline.v2*' -and $projectContinuityText -like '*super-brain.step-ledger.v2*' -and $projectContinuityText -like '*open_steps*' -and $projectContinuityText -like '*candidate_findings_pending*') { Mark-Ok 'project continuity v2 status blockers support' } else { Mark-Fail 'project continuity v2 status blockers support missing' }
+
+if ($projectContinuityText -like '*CompleteTask*' -and $projectContinuityText -like '*ClearTask*' -and $projectContinuityText -like '*ArchiveTask*' -and $projectContinuityText -like '*last-completed-task-graph.json*' -and $projectContinuityText -like '*task-archive*') { Mark-Ok 'project continuity task lifecycle support' } else { Mark-Fail 'project continuity task lifecycle support missing' }
+
+$codegraphText = Read-Utf8 'scripts\codegraph-index.ps1'
+if ($codegraphText -like '*codegraph-index.json*' -and $codegraphText -like '*last-codegraph-index.json*' -and $codegraphText -like '*Parser]::ParseFile*' -and $codegraphText -like '*FunctionDefinitionAst*' -and $codegraphText -like '*script_call*' -and $codegraphText -like '*hasMutation*') { Mark-Ok 'codegraph index static support' } else { Mark-Fail 'codegraph index static support missing' }
+if ($codegraphText -like '*super-brain.codegraph-index.v2*' -and $codegraphText -like '*script_call_joinpath*' -and $codegraphText -like '*script_call_runstep*' -and $codegraphText -like '*script_call_variable*' -and $codegraphText -like '*script_call_dynamic_unknown*' -and $codegraphText -like '*workspace_read*' -and $codegraphText -like '*workspace_write*') { Mark-Ok 'codegraph index v2 dynamic call and workspace dataflow support' } else { Mark-Fail 'codegraph index v2 dynamic call and workspace dataflow support missing' }
+if ($codegraphText -like '*CommandAst*' -and $codegraphText -like '*GetCommandName*' -and $codegraphText -like '*Invoke-Expression*' -and $codegraphText -like '*script_call_dynamic_unknown*') { Mark-Ok 'codegraph ast dynamic unknown support' } else { Mark-Fail 'codegraph ast dynamic unknown support missing' }
+try {
+  $codegraphJsonText = & (Join-Path $PSScriptRoot 'codegraph-index.ps1') -Json -NoWrite
+  $codegraphJson = $codegraphJsonText | ConvertFrom-Json
+  if ([int]$codegraphJson.summary.scriptCount -gt 0 -and $codegraphJson.schema -eq 'super-brain.codegraph-index.v2') { Mark-Ok 'codegraph index json command' } else { Mark-Fail 'codegraph index json command missing scripts' }
+} catch { Mark-Fail "codegraph index json command $($_.Exception.Message)" }
+
+$impactAdvisorText = Read-Utf8 'scripts\impact-advisor.ps1'
+if ($impactAdvisorText -like '*last-impact-advisor.json*' -and $impactAdvisorText -like '*riskLevel*' -and $impactAdvisorText -like '*recommendedChecks*' -and $impactAdvisorText -like '*directCallers*' -and $impactAdvisorText -like '*directCallees*' -and $impactAdvisorText -like '*affectedWorkspaceFiles*') { Mark-Ok 'impact advisor static support' } else { Mark-Fail 'impact advisor static support missing' }
+try {
+  $impactJsonText = & (Join-Path $PSScriptRoot 'impact-advisor.ps1') -ChangedFiles 'scripts/codegraph-index.ps1' -Json
+  $impactJson = $impactJsonText | ConvertFrom-Json
+  if ($impactJson.schema -eq 'super-brain.impact-advisor.v1' -and -not [string]::IsNullOrWhiteSpace([string]$impactJson.riskLevel)) { Mark-Ok 'impact advisor json command' } else { Mark-Fail 'impact advisor json command missing riskLevel' }
+} catch { Mark-Fail "impact advisor json command $($_.Exception.Message)" }
 
 $checkpointWriterText = Read-Utf8 'scripts\checkpoint-writer.ps1'
-if ($checkpointWriterText -like '*active-checkpoint.json*' -and $checkpointWriterText -like '*Action = ''Get''*' -and $checkpointWriterText -like '*Start*' -and $checkpointWriterText -like '*Complete*' -and $checkpointWriterText -like '*Clear*' -and $checkpointWriterText -like '*platform*' -and $checkpointWriterText -like '*agent*' -and $checkpointWriterText -like '*sessionId*' -and $checkpointWriterText -like '*taskId*' -and $checkpointWriterText -like '*currentStep*' -and $checkpointWriterText -like '*nextAction*' -and $checkpointWriterText -like '*evidence*') { Mark-Ok 'checkpoint writer lifecycle support' } else { Mark-Fail 'checkpoint writer lifecycle support missing' }
+if ($checkpointWriterText -like '*active-checkpoint.json*' -and $checkpointWriterText -like '*Action = ''Get''*' -and $checkpointWriterText -like '*Start*' -and $checkpointWriterText -like '*Complete*' -and $checkpointWriterText -like '*Clear*' -and $checkpointWriterText -like '*platform*' -and $checkpointWriterText -like '*agent*' -and $checkpointWriterText -like '*sessionId*' -and $checkpointWriterText -like '*taskId*' -and $checkpointWriterText -like '*currentStep*' -and $checkpointWriterText -like '*nextAction*' -and $checkpointWriterText -like '*evidence*' -and $checkpointWriterText -like '*acceptedConstraints*' -and $checkpointWriterText -like '*guardHash*') { Mark-Ok 'checkpoint writer lifecycle constraint support' } else { Mark-Fail 'checkpoint writer lifecycle constraint support missing' }
 
 $autoContinuationText = Read-Utf8 'scripts\auto-continuation.ps1'
 if ($autoContinuationText -like '*active-checkpoint.json*' -and $autoContinuationText -like '*currentStep*' -and $autoContinuationText -like '*checkpointStatus*') { Mark-Ok 'auto continuation checkpoint support' } else { Mark-Fail 'auto continuation checkpoint support missing' }
@@ -311,13 +379,44 @@ $dashboardText = Read-Utf8 'scripts\super-brain-dashboard.ps1'
 if ($dashboardText -like '*active-checkpoint.json*' -and $dashboardText -like '*active_checkpoint_present*' -and $dashboardText -like '*activeCheckpoint*') { Mark-Ok 'dashboard checkpoint support' } else { Mark-Fail 'dashboard checkpoint support missing' }
 
 $completionGuardText = Read-Utf8 'scripts\completion-guard.ps1'
-if ($completionGuardText -like '*active-checkpoint*' -and $completionGuardText -like '*status=*' -and $completionGuardText -like '*none*') { Mark-Ok 'completion guard checkpoint support' } else { Mark-Fail 'completion guard checkpoint support missing' }
+if ($completionGuardText -like '*active-checkpoint*' -and $completionGuardText -like '*status=*' -and $completionGuardText -like '*none*' -and $completionGuardText -like '*last-accepted-constraints-preflight.json*' -and $completionGuardText -like '*accepted-constraints-preflight*') { Mark-Ok 'completion guard checkpoint constraint support' } else { Mark-Fail 'completion guard checkpoint constraint support missing' }
+if ($completionGuardText -like '*last-runtime-drift-checkpoint.json*' -and $completionGuardText -like '*runtime-drift-checkpoint*' -and $completionGuardText -like '*unresolvedDrift*') { Mark-Ok 'completion guard runtime drift support' } else { Mark-Fail 'completion guard runtime drift support missing' }
+if ($completionGuardText -like '*last-route-checkpoint.json*' -and $completionGuardText -like '*route-checkpoint*' -and $completionGuardText -like '*unresolvedRouteDrift*') { Mark-Ok 'completion guard route drift support' } else { Mark-Fail 'completion guard route drift support missing' }
+if ($completionGuardText -like '*last-integration-parity-check.json*' -and $completionGuardText -like '*integration-parity-check*' -and $completionGuardText -like '*unresolvedIntegrationDrift*' -and $completionGuardText -like '*moduleVerification*' -and $completionGuardText -like '*userAcceptanceVerification*') { Mark-Ok 'completion guard integration parity support' } else { Mark-Fail 'completion guard integration parity support missing' }
+
+$goalRouteText = Read-Utf8 'scripts\goal-route-lock.ps1'
+if ($goalRouteText -like '*super-brain.goal-route-lock.v1*' -and $goalRouteText -like '*goal-route-lock.json*' -and $goalRouteText -like '*acceptedGoal*' -and $goalRouteText -like '*acceptedRoute*' -and $goalRouteText -like '*mustNotDriftTo*' -and $goalRouteText -like '*routeHash*') { Mark-Ok 'goal route lock support' } else { Mark-Fail 'goal route lock support missing' }
+$routeCheckpointText = Read-Utf8 'scripts\route-checkpoint.ps1'
+if ($routeCheckpointText -like '*super-brain.route-checkpoint.v1*' -and $routeCheckpointText -like '*ROUTE_DRIFT_DETECTED*' -and $routeCheckpointText -like '*unresolvedRouteDrift*' -and $routeCheckpointText -like '*goal_route_drift*' -and $routeCheckpointText -like '*scope_creep*') { Mark-Ok 'route checkpoint support' } else { Mark-Fail 'route checkpoint support missing' }
+$moduleSnapshotText = Read-Utf8 'scripts\verified-module-snapshot.ps1'
+if ($moduleSnapshotText -like '*super-brain.verified-module-snapshot.v1*' -and $moduleSnapshotText -like '*verifiedBehavior*' -and $moduleSnapshotText -like '*entrypoint*' -and $moduleSnapshotText -like '*environment*' -and $moduleSnapshotText -like '*snapshotHash*') { Mark-Ok 'verified module snapshot support' } else { Mark-Fail 'verified module snapshot support missing' }
+$integrationParityText = Read-Utf8 'scripts\integration-parity-check.ps1'
+if ($integrationParityText -like '*super-brain.integration-parity-check.v1*' -and $integrationParityText -like '*INTEGRATION_DRIFT_DETECTED*' -and $integrationParityText -like '*module smoke OK*' -and $integrationParityText -like '*integration smoke OK*' -and $integrationParityText -like '*user-facing acceptance OK*' -and $integrationParityText -like '*scattered_assembly*' -and $integrationParityText -like '*module_context_changed*') { Mark-Ok 'integration parity guard support' } else { Mark-Fail 'integration parity guard support missing' }
+
+$cognitiveEnforceText = Read-Utf8 'scripts\cognitive-enforce.ps1'
+if ($cognitiveEnforceText -like '*super-brain.cognitive-enforce.v1*' -and $cognitiveEnforceText -like '*last-cognitive-enforce.json*' -and $cognitiveEnforceText -like '*AllowMissingPreflight*' -and $cognitiveEnforceText -like '*High-risk work must pass cognitive preflight*') { Mark-Ok 'cognitive enforce hard gate support' } else { Mark-Fail 'cognitive enforce hard gate support missing' }
+
+$runtimeDriftText = Read-Utf8 'scripts\runtime-drift-checkpoint.ps1'
+if ($runtimeDriftText -like '*super-brain.runtime-drift-checkpoint.v1*' -and $runtimeDriftText -like '*DRIFT_DETECTED*' -and $runtimeDriftText -like '*unresolvedDrift*' -and $runtimeDriftText -like '*BeforeCompletion*' -and $runtimeDriftText -like '*reply_as_goal_completed*') { Mark-Ok 'runtime drift checkpoint support' } else { Mark-Fail 'runtime drift checkpoint support missing' }
+
+$reflectionPromotionText = Read-Utf8 'scripts\reflection-promotion.ps1'
+if ($reflectionPromotionText -like '*super-brain.reflection-promotion.v1*' -and $reflectionPromotionText -like '*defaultNoDurableWrite*' -and $reflectionPromotionText -like '*privacyCheck*' -and $reflectionPromotionText -like '*duplicateCheck*' -and $reflectionPromotionText -like '*skill-evolution.ps1*' -and $reflectionPromotionText -like '*learn-memory.ps1*') { Mark-Ok 'reflection promotion self-learning support' } else { Mark-Fail 'reflection promotion self-learning support missing' }
+if ($reflectionPromotionText -like '*candidateType*' -and $reflectionPromotionText -like '*gap*' -and $reflectionPromotionText -like '*logic_breakpoint*' -and $reflectionPromotionText -like '*missing_route_lock*' -and $reflectionPromotionText -like '*integration_drift*' -and $reflectionPromotionText -like '*noDurableWriteWithoutApply*') { Mark-Ok 'reflection promotion gap and logic breakpoint candidates' } else { Mark-Fail 'reflection promotion gap and logic breakpoint candidates missing' }
+
+$procedureCardText = Read-Utf8 'memory\workspace\procedure-cards\agent-bridge-channel.json'
+if ($procedureCardText -like '*super-brain.procedure-card.v1*' -and $procedureCardText -like '*nested_agent_launch*' -and $procedureCardText -like '*idle_as_blocked*' -and $procedureCardText -like '*auto_close_without_explicit_close*') { Mark-Ok 'AgentBridge procedure memory card support' } else { Mark-Fail 'AgentBridge procedure memory card support missing' }
+$goalProcedureCardText = Read-Utf8 'memory\workspace\procedure-cards\goal-route-lock.json'
+if ($goalProcedureCardText -like '*super-brain.procedure-card.v1*' -and $goalProcedureCardText -like '*goal_route_drift*' -and $goalProcedureCardText -like '*scope_creep*' -and $goalProcedureCardText -like '*known facts -> cause*') { Mark-Ok 'goal route procedure memory card support' } else { Mark-Fail 'goal route procedure memory card support missing' }
+$integrationProcedureCardText = Read-Utf8 'memory\workspace\procedure-cards\verified-integration-guard.json'
+if ($integrationProcedureCardText -like '*super-brain.procedure-card.v1*' -and $integrationProcedureCardText -like '*module smoke OK*' -and $integrationProcedureCardText -like '*integration smoke OK*' -and $integrationProcedureCardText -like '*user-facing acceptance OK*' -and $integrationProcedureCardText -like '*scattered_assembly*') { Mark-Ok 'verified integration procedure memory card support' } else { Mark-Fail 'verified integration procedure memory card support missing' }
 
 $statusSnapshotWriterText = Read-Utf8 'scripts\status-snapshot-writer.ps1'
 if ($statusSnapshotWriterText -like '*ClearCheckpoint*' -and $statusSnapshotWriterText -like '*checkpoint-writer.ps1*') { Mark-Ok 'status snapshot checkpoint clearing support' } else { Mark-Fail 'status snapshot checkpoint clearing support missing' }
+if ($statusSnapshotWriterText -like '*last-project-continuity.json*' -and $statusSnapshotWriterText -like '*task-graph.json*' -and $statusSnapshotWriterText -like '*last-impact-advisor.json*' -and $statusSnapshotWriterText -like '*codegraph*' -and $statusSnapshotWriterText -like '*continuity*' -and $statusSnapshotWriterText -like '*impact*') { Mark-Ok 'status snapshot crash continuation summaries' } else { Mark-Fail 'status snapshot crash continuation summaries missing' }
 
 $taskVerificationText = Read-Utf8 'scripts\task-verification.ps1'
-if ($taskVerificationText -like '*checkpoint-writer.ps1*' -and $taskVerificationText -like '*Action Complete*') { Mark-Ok 'task verification checkpoint completion support' } else { Mark-Fail 'task verification checkpoint completion support missing' }
+if ($taskVerificationText -like '*checkpoint-writer.ps1*' -and $taskVerificationText -like '*Action Complete*' -and $taskVerificationText -like '*constraintPreflight*' -and $taskVerificationText -like '*constraintsPreserved*') { Mark-Ok 'task verification checkpoint constraint completion support' } else { Mark-Fail 'task verification checkpoint constraint completion support missing' }
+if ($taskVerificationText -like '*project-continuity.ps1*' -and $taskVerificationText -like '*CompleteTask*' -and $taskVerificationText -like '*status-snapshot-writer.ps1*' -and $taskVerificationText -like '*continuity*' -and $taskVerificationText -like '*impact*') { Mark-Ok 'task verification auto continuity snapshot support' } else { Mark-Fail 'task verification auto continuity snapshot support missing' }
 
 $decisionSearchText = Read-Utf8 'scripts\decision-search.ps1'
 if ($decisionSearchText -like '*TopK*' -and $decisionSearchText -like '*MaxTokens*') { Mark-Ok 'decision search budget support' } else { Mark-Fail 'decision search budget support missing' }
@@ -329,6 +428,8 @@ if ($memoryModeText -like '*Shared*' -and $memoryModeText -like '*SplitMemory*' 
 $commonText = Read-Utf8 'scripts\common.ps1'
 if ($commonText -like '*Get-SuperBrainSharedMemoryRoot*' -and $commonText -like '*Get-SuperBrainAgentMemoryRoot*' -and $commonText -like '*Get-SuperBrainGroupMemoryRoot*' -and $commonText -like '*memory-sharing-policy.json*' -and $commonText -like '*.memory-scope.json*') { Mark-Ok 'scoped memory layout helpers' } else { Mark-Fail 'scoped memory layout helpers missing' }
 if ($commonText.Contains("initialized = `$true") -and $commonText.Contains("mode = 'shared'") -and $commonText.Contains('Default installs use all-agent shared memory')) { Mark-Ok 'default shared memory policy' } else { Mark-Fail 'default shared memory policy missing' }
+
+if ($commonText -like '*Compaction/resume priority*' -and $commonText -like '*visible conversation*' -and $commonText -like '*Maintenance autonomy*' -and $commonText -like '*post-task maintenance*') { Mark-Ok 'global startup compaction and maintenance autonomy guards' } else { Mark-Fail 'global startup compaction or maintenance autonomy guards missing' }
 
 $installAgentText = Read-Utf8 'scripts\install-agent.ps1'
 if ($installAgentText -like '*AgentName*' -and $installAgentText -like '*SkillRoot*' -and $installAgentText.Contains("[string]`$Mode = 'Shared'") -and $installAgentText -like '*Get-SuperBrainAgentMemoryRoot*' -and $installAgentText -like '*Write-SuperBrainMemoryRootMarker*') { Mark-Ok 'generic agent install support' } else { Mark-Fail 'generic agent install support missing' }
@@ -414,6 +515,21 @@ if ($verifyPackageText -like '*.tmp-verify-package*' -and $verifyPackageText -li
 $smokeTestText = Read-Utf8 'scripts\smoke-test.ps1'
 if ($smokeTestText -like '*Get-SuperBrainSharingPolicyPath*' -and $smokeTestText -like '*$originalPolicy*' -and $smokeTestText -like '*Write-Utf8NoBom $policyPath $originalPolicy*' -and $smokeTestText -like '*Remove-Item -LiteralPath $policyPath -Force*') { Mark-Ok 'smoke test policy restoration guard' } else { Mark-Fail 'smoke test policy restoration guard missing' }
 
+$workspaceLifecycleText = Read-Utf8 'scripts\workspace-lifecycle-manager.ps1'
+if ($workspaceLifecycleText -like '*last-workspace-lifecycle.json*' -and $workspaceLifecycleText -like '*session-binding.json*' -and $workspaceLifecycleText -like '*agent-bridge*' -and $workspaceLifecycleText -like '*active-agent-bridge-channel.json*' -and $workspaceLifecycleText -like '*ApplySafe*' -and $workspaceLifecycleText -like '*requires_confirmation*') { Mark-Ok 'workspace lifecycle manager support' } else { Mark-Fail 'workspace lifecycle manager support missing' }
+
+$autoHygieneText = Read-Utf8 'scripts\auto-hygiene-runner.ps1'
+if ($autoHygieneText -like '*last-memory-hygiene.json*' -and $autoHygieneText -like '*compressed-memory-evidence*' -and $autoHygieneText -like '*compress_with_original_archive*' -and $autoHygieneText -like '*private_pattern*' -and $autoHygieneText -like '*requires_confirmation*') { Mark-Ok 'auto hygiene runner support' } else { Mark-Fail 'auto hygiene runner support missing' }
+
+$postTaskMaintenanceText = Read-Utf8 'scripts\post-task-maintenance.ps1'
+if ($postTaskMaintenanceText -like '*workspace-lifecycle-manager.ps1*' -and $postTaskMaintenanceText -like '*auto-hygiene-runner.ps1*' -and $postTaskMaintenanceText -like '*self-improvement-queue.ps1*' -and $postTaskMaintenanceText -like '*status-snapshot-writer.ps1*' -and $postTaskMaintenanceText -like '*last-post-task-maintenance.json*') { Mark-Ok 'post task maintenance hook support' } else { Mark-Fail 'post task maintenance hook support missing' }
+
+$selfImprovementQueueText = Read-Utf8 'scripts\self-improvement-queue.ps1'
+if ($selfImprovementQueueText -like '*self-improvement-queue.json*' -and $selfImprovementQueueText -like '*candidateOnly*' -and $selfImprovementQueueText -like '*noAutomaticSkillMutation*' -and $selfImprovementQueueText -like '*reflection-promotion.ps1*' -and $selfImprovementQueueText -like '*do not remind*') { Mark-Ok 'self improvement queue support' } else { Mark-Fail 'self improvement queue support missing' }
+
+$maintainText = Read-Utf8 'scripts\maintain.ps1'
+if ($maintainText -like '*workspace-lifecycle-manager*' -and $maintainText -like '*auto-hygiene-runner*' -and $maintainText -like '*post-task-maintenance*') { Mark-Ok 'maintain automatic maintenance integration' } else { Mark-Fail 'maintain automatic maintenance integration missing' }
+
 $lessonReplayText = Read-Utf8 'scripts\lesson-replay.ps1'
 if ($lessonReplayText -like '*experience-index.md*' -and $lessonReplayText -like '*Recall Query*' -and $lessonReplayText -like '*LESSON_REPLAY*') { Mark-Ok 'lesson replay support' } else { Mark-Fail 'lesson replay support missing' }
 
@@ -423,6 +539,9 @@ if ($dispatchLearningText -like '*team-task-index.json*' -and $dispatchLearningT
 $triggerSimulationText = Read-Utf8 'scripts\trigger-simulation.ps1'
 if ($triggerSimulationText -like '*team-dispatch-check.ps1*' -and $triggerSimulationText -like '*team-template-select.ps1*' -and $triggerSimulationText -like '*expectedLevel*' -and $triggerSimulationText -like '*expectedTemplate*') { Mark-Ok 'trigger simulation support' } else { Mark-Fail 'trigger simulation support missing' }
 if ($triggerSimulationText -like '*bare_superbrain_zh*' -and $triggerSimulationText -like '*bare_g1*' -and $triggerSimulationText -like '*superbrain_optimize*' -and $triggerSimulationText -like '*ack_ok_zh*' -and $triggerSimulationText -like '*incidental_g1_mention*' -and $triggerSimulationText -like '*human_brain_self_report*' -and $triggerSimulationText -like '*superbrain_fault*' -and $triggerSimulationText -like '*expectedSkill*' -and $triggerSimulationText -like '*requiresG1*' -and $triggerSimulationText -like '*bare_superbrain_wake_word*') { Mark-Ok 'trigger simulation explicit and negative Super Brain skill coverage' } else { Mark-Fail 'trigger simulation explicit and negative Super Brain skill coverage missing' }
+
+$coldStartAuditText = Read-Utf8 'scripts\cold-start-audit.ps1'
+if ($coldStartAuditText -like '*session-restore.ps1*' -and $coldStartAuditText -like '*smart-next.ps1*' -and $coldStartAuditText -like '*super-brain-dashboard.ps1*' -and $coldStartAuditText -like '*auto-check.ps1*' -and $coldStartAuditText -like '*trigger-simulation.ps1*' -and $coldStartAuditText -like '*recallTriggered*' -and $coldStartAuditText -like '*dashboardMode*' -and $coldStartAuditText -like '*verifySuggested*') { Mark-Ok 'cold-start audit support' } else { Mark-Fail 'cold-start audit support missing' }
 
 $intentRouterText = Read-Utf8 'scripts\intent-router.ps1'
 if ($intentRouterText -like '*intent*' -and $intentRouterText -like '*recommendedAction*' -and $intentRouterText -like '*dispatchHints*') { Mark-Ok 'intent router support' } else { Mark-Fail 'intent router support missing' }
@@ -447,6 +566,27 @@ if ($brainText -like '*health-summary.ps1*' -and $brainText -like '*smart-next.p
 
 $versionBumpText = Read-Utf8 'scripts\version-bump.ps1'
 if ($versionBumpText -like '*ValidateSet*' -or ($versionBumpText -like '*manifest.json*' -and $versionBumpText -like '*BASELINE_HISTORY.md*' -and $versionBumpText -like '*graph-add.ps1*' -and $versionBumpText -like '*Apply*')) { Mark-Ok 'version bump preview support' } else { Mark-Fail 'version bump preview support missing' }
+
+$agentBridgeText = Read-Utf8 'scripts\agent-bridge.ps1'
+if ($agentBridgeText -like '*memory/workspace/agent-bridge*' -and $agentBridgeText -like '*Failover*' -and $agentBridgeText -like '*Adopt*' -and $agentBridgeText -like '*bridge-heartbeat.json*') { Mark-Ok 'agent bridge core lifecycle support' } else { Mark-Fail 'agent bridge core lifecycle support missing' }
+
+$agentBridgeDispatchText = Read-Utf8 'scripts\agent-bridge-dispatch.ps1'
+if ($agentBridgeDispatchText -like '*Get-LastNextAction*' -and $agentBridgeDispatchText -like '*Recent cards*' -and $agentBridgeDispatchText -like '*handoffPrompt*' -and $agentBridgeDispatchText -like '*outputPath*' -and $agentBridgeDispatchText -like '*No active agent bridge state*') { Mark-Ok 'agent bridge dispatch packet support' } else { Mark-Fail 'agent bridge dispatch packet support missing' }
+
+$agentBridgeChannelText = Read-Utf8 'scripts\agent-bridge-channel.ps1'
+if ($agentBridgeChannelText -like '*Open*' -and $agentBridgeChannelText -like '*Connect*' -and $agentBridgeChannelText -like '*SendAndWait*' -and $agentBridgeChannelText -like '*WaitReply*' -and $agentBridgeChannelText -like '*Active*' -and $agentBridgeChannelText -like '*target-session*' -and $agentBridgeChannelText -like '*last-agent-bridge-channel.json*' -and $agentBridgeChannelText -like '*active-agent-bridge-channel.json*' -and $agentBridgeChannelText -like '*channel-log.jsonl*') { Mark-Ok 'agent bridge shared channel support' } else { Mark-Fail 'agent bridge shared channel support missing' }
+
+$agentBridgePermissionsText = Read-Utf8 'scripts\agent-bridge-permissions.ps1'
+if ($agentBridgePermissionsText -like '*code-suggester*' -and $agentBridgePermissionsText -like '*adopt-requester*' -and $agentBridgePermissionsText -like '*commander*' -and $agentBridgePermissionsText -like '*Operation is required for Check*') { Mark-Ok 'agent bridge permission role support' } else { Mark-Fail 'agent bridge permission role support missing' }
+
+$agentBridgeQueueText = Read-Utf8 'scripts\agent-bridge-queue.ps1'
+if ($agentBridgeQueueText -like '*Enqueue*' -and $agentBridgeQueueText -like '*Poll*' -and $agentBridgeQueueText -like '*Ack*' -and $agentBridgeQueueText -like '*bridge-queue.json*' -and $agentBridgeQueueText -like '*status=''pending''*') { Mark-Ok 'agent bridge queue relay support' } else { Mark-Fail 'agent bridge queue relay support missing' }
+
+$teamTaskArchiveText = Read-Utf8 'scripts\team-task-archive.ps1'
+if ($teamTaskArchiveText -like '*KeepRecent*' -and $teamTaskArchiveText -like '*-Apply*' -and $teamTaskArchiveText -like '*Dry run only*' -and $teamTaskArchiveText -like '*team-tasks-archive*') { Mark-Ok 'team task archival dry-run support' } else { Mark-Fail 'team task archival dry-run support missing' }
+
+$hostCacheCheckText = Read-Utf8 'scripts\host-cache-check.ps1'
+if ($hostCacheCheckText -like '*currentSessionCacheRisk*' -and $hostCacheCheckText -like '*loadedSkillLimitation*' -and $hostCacheCheckText -like '*newSessionPrompt*' -and $hostCacheCheckText -like '*hot-refresh-skills.ps1 -AllKnown*') { Mark-Ok 'host cache limitation prompt support' } else { Mark-Fail 'host cache limitation prompt support missing' }
 
 $cleanupLegacyText = Read-Utf8 'scripts\cleanup-legacy-memory.ps1'
 if ($cleanupLegacyText -like '*memory-zcode*' -and $cleanupLegacyText -like '*memory-codex*' -and $cleanupLegacyText -like '*Get-FileHash*' -and $cleanupLegacyText -like '*-Apply*') { Mark-Ok 'legacy memory cleanup support' } else { Mark-Fail 'legacy memory cleanup support missing' }
@@ -570,15 +710,25 @@ try {
   if ($null -ne $privacySentinelJson.privatePatternHits -and $null -ne $privacySentinelJson.shareSafe) { Mark-Ok 'privacy sentinel json' } else { Mark-Fail 'privacy sentinel fields missing' }
 } catch { Mark-Fail "privacy sentinel json parse $($_.Exception.Message)" }
 
-$completionGuardJsonText = & (Join-Path $PSScriptRoot 'completion-guard.ps1') -Json -AllowPrivacyRisk
-if ($LASTEXITCODE -eq 0) {
-  try {
-    $completionGuardJson = $completionGuardJsonText | ConvertFrom-Json
-    if ($completionGuardJson.ok -eq $true -and $null -ne $completionGuardJson.checks) { Mark-Ok 'completion guard json' } else { Mark-Fail 'completion guard fields missing' }
-  } catch { Mark-Fail "completion guard json parse $($_.Exception.Message)" }
-} else { Mark-Fail 'completion guard command' }
+$completionGuardTaskId = ''
+try {
+  $lastTaskForGuardPath = Join-Path $workspace 'last-task-verification.json'
+  if (Test-Path -LiteralPath $lastTaskForGuardPath) {
+    $lastTaskForGuard = Get-Content -LiteralPath $lastTaskForGuardPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($lastTaskForGuard -and -not [string]::IsNullOrWhiteSpace([string]$lastTaskForGuard.taskId)) { $completionGuardTaskId = [string]$lastTaskForGuard.taskId }
+  }
+} catch {}
+if (-not [string]::IsNullOrWhiteSpace($completionGuardTaskId)) {
+  $completionGuardJsonText = & (Join-Path $PSScriptRoot 'completion-guard.ps1') -TaskId $completionGuardTaskId -Json -AllowPrivacyRisk -AllowActiveCheckpoint
+} else {
+  $completionGuardJsonText = & (Join-Path $PSScriptRoot 'completion-guard.ps1') -Json -AllowPrivacyRisk -AllowActiveCheckpoint
+}
+try {
+  $completionGuardJson = $completionGuardJsonText | ConvertFrom-Json
+  if ($completionGuardJson.ok -eq $true -and $null -ne $completionGuardJson.checks) { Mark-Ok 'completion guard json' } else { Mark-Fail 'completion guard fields missing' }
+} catch { Mark-Fail "completion guard json parse $($_.Exception.Message)" }
 
-$dashboardJsonText = & (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') -Json -AllowStaleVerify
+$dashboardJsonText = & (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') -Json -AllowStaleVerify -AllowActiveCheckpoint
 if ($LASTEXITCODE -eq 0) {
   try {
     $dashboardJson = $dashboardJsonText | ConvertFrom-Json
@@ -641,6 +791,14 @@ if ($LASTEXITCODE -eq 0) {
   } catch { Mark-Fail "trigger simulation json parse $($_.Exception.Message)" }
 } else { Mark-Fail 'trigger simulation command' }
 
+$coldStartAuditJsonText = & (Join-Path $PSScriptRoot 'cold-start-audit.ps1') -Json
+if ($LASTEXITCODE -eq 0) {
+  try {
+    $coldStartAuditJson = $coldStartAuditJsonText | ConvertFrom-Json
+    if ($coldStartAuditJson.ok -eq $true -and [int]$coldStartAuditJson.total -gt 0 -and [int]$coldStartAuditJson.failed -eq 0) { Mark-Ok 'cold-start audit json' } else { Mark-Fail 'cold-start audit fields missing' }
+  } catch { Mark-Fail "cold-start audit json parse $($_.Exception.Message)" }
+} else { Mark-Fail 'cold-start audit command' }
+
 $intentRouterJsonText = & (Join-Path $PSScriptRoot 'intent-router.ps1') '继续' -Json
 if ($LASTEXITCODE -eq 0) {
   try {
@@ -682,6 +840,38 @@ if ($LASTEXITCODE -eq 0) {
     if ($versionBumpJson.ok -eq $true -and $versionBumpJson.mode -eq 'preview') { Mark-Ok 'version bump preview json' } else { Mark-Fail 'version bump preview fields missing' }
   } catch { Mark-Fail "version bump preview json parse $($_.Exception.Message)" }
 } else { Mark-Fail 'version bump preview command' }
+
+$workspaceLifecycleJsonText = & (Join-Path $PSScriptRoot 'workspace-lifecycle-manager.ps1') -Json
+if ($LASTEXITCODE -eq 0) {
+  try {
+    $workspaceLifecycleJson = $workspaceLifecycleJsonText | ConvertFrom-Json
+    if ($workspaceLifecycleJson.ok -eq $true -and $workspaceLifecycleJson.schema -eq 'super-brain.workspace-lifecycle.v1') { Mark-Ok 'workspace lifecycle manager json' } else { Mark-Fail 'workspace lifecycle manager fields missing' }
+  } catch { Mark-Fail "workspace lifecycle manager json parse $($_.Exception.Message)" }
+} else { Mark-Fail 'workspace lifecycle manager command' }
+
+$autoHygieneJsonText = & (Join-Path $PSScriptRoot 'auto-hygiene-runner.ps1') -Json
+if ($LASTEXITCODE -eq 0) {
+  try {
+    $autoHygieneJson = $autoHygieneJsonText | ConvertFrom-Json
+    if ($autoHygieneJson.ok -eq $true -and $autoHygieneJson.schema -eq 'super-brain.auto-hygiene.v1') { Mark-Ok 'auto hygiene runner json' } else { Mark-Fail 'auto hygiene runner fields missing' }
+  } catch { Mark-Fail "auto hygiene runner json parse $($_.Exception.Message)" }
+} else { Mark-Fail 'auto hygiene runner command' }
+
+$postTaskMaintenanceJsonText = & (Join-Path $PSScriptRoot 'post-task-maintenance.ps1') -Summary 'verify-package post-task maintenance plan' -Json
+if ($LASTEXITCODE -eq 0) {
+  try {
+    $postTaskMaintenanceJson = $postTaskMaintenanceJsonText | ConvertFrom-Json
+    if ($postTaskMaintenanceJson.ok -eq $true -and $null -ne $postTaskMaintenanceJson.outputs) { Mark-Ok 'post task maintenance json' } else { Mark-Fail 'post task maintenance fields missing' }
+  } catch { Mark-Fail "post task maintenance json parse $($_.Exception.Message)" }
+} else { Mark-Fail 'post task maintenance command' }
+
+$selfImprovementQueueJsonText = & (Join-Path $PSScriptRoot 'self-improvement-queue.ps1') -Summary 'verify-package queue scan' -Json
+if ($LASTEXITCODE -eq 0) {
+  try {
+    $selfImprovementQueueJson = $selfImprovementQueueJsonText | ConvertFrom-Json
+    if ($selfImprovementQueueJson.ok -eq $true -and $null -ne $selfImprovementQueueJson.queuePath) { Mark-Ok 'self improvement queue json' } else { Mark-Fail 'self improvement queue fields missing' }
+  } catch { Mark-Fail "self improvement queue json parse $($_.Exception.Message)" }
+} else { Mark-Fail 'self improvement queue command' }
 
 $maintainJsonText = & (Join-Path $PSScriptRoot 'maintain.ps1') -Json
 if ($LASTEXITCODE -eq 0) {

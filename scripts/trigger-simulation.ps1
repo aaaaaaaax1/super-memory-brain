@@ -31,6 +31,9 @@ $zhSuperBrainFault = $zhSuperBrain + (U @(0x574F,0x4E86))
 $zhBrainSystemFault = $zhBrain + (U @(0x4E0D,0x5BF9))
 $zhBad = U @(0x574F,0x4E86)
 $zhNotRight = U @(0x4E0D,0x5BF9)
+$zhContinue = U @(0x7EE7,0x7EED)
+$zhConnect = U @(0x63A5,0x4E0A)
+$zhFastResume = (U @(0x5FEB,0x901F,0x7EED,0x63A5))
 
 $scenarios = @(
   [pscustomobject]@{ name='bare_superbrain_zh'; prompt=$zhSuperBrain; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
@@ -51,6 +54,10 @@ $scenarios = @(
   [pscustomobject]@{ name='human_brain_confused'; prompt=$zhHumanBrainConfused; kind='skill-negative'; expectedSkill=$null; expectedG1=$false },
   [pscustomobject]@{ name='superbrain_fault'; prompt=$zhSuperBrainFault; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
   [pscustomobject]@{ name='brain_system_fault'; prompt=$zhBrainSystemFault; kind='skill'; expectedSkill='super-memory-brain'; expectedG1=$true },
+  [pscustomobject]@{ name='fast_session_resume_zh'; prompt=($zhContinue + ' #sess_abc123'); kind='fast-session-resume'; expectedFastResume=$true },
+  [pscustomobject]@{ name='fast_session_resume_connect_zh'; prompt=($zhConnect + ' #sess_abc123'); kind='fast-session-resume'; expectedFastResume=$true },
+  [pscustomobject]@{ name='fast_session_resume_en'; prompt='continue #sess_abc123'; kind='fast-session-resume'; expectedFastResume=$true },
+  [pscustomobject]@{ name='fast_session_resume_negative_no_id'; prompt=$zhContinue; kind='fast-session-resume-negative'; expectedFastResume=$false },
   [pscustomobject]@{ name='simple_continue'; prompt='continue'; kind='dispatch'; flags='SimpleDirect'; expectedLevel='direct'; expectedTemplate=$null },
   [pscustomobject]@{ name='single_file_fast_fix'; prompt='known single-file fast fix'; kind='dispatch'; flags='KnownSingleFile,FastRequested,VerificationRequired'; expectedLevel='direct'; expectedTemplate=$null },
   [pscustomobject]@{ name='broad_project_search'; prompt='broad project search and understand implementation'; kind='dispatch'; flags='BroadSearch,Parallelizable,VerificationRequired'; expectedLevel='team_parallel'; expectedTemplate='explore-team' },
@@ -84,6 +91,22 @@ function Test-BareSuperBrainTrigger([string]$Prompt) {
   }
 }
 
+function Test-FastSessionResumeTrigger([string]$Prompt) {
+  $trimmed = ([string]$Prompt).Trim()
+  $normalized = $trimmed.ToLowerInvariant()
+  $hasSessionId = $normalized -match '#?sess[_-][a-z0-9._-]+'
+  $hasResumeIntent = ($trimmed -like "*$script:zhContinue*") -or ($trimmed -like "*$script:zhConnect*") -or ($trimmed -like "*$script:zhFastResume*") -or ($normalized -match '(^|\s)(continue|resume)(\s|$)')
+  $triggered = $hasSessionId -and $hasResumeIntent
+  [pscustomobject]@{
+    triggered = $triggered
+    requiresSkill = $triggered
+    skill = if ($triggered) { 'super-memory-brain' } else { $null }
+    bindSession = $triggered
+    deepRecall = $false
+    reason = if ($triggered) { 'fast_session_resume_session_id' } elseif (-not $hasSessionId) { 'missing_session_id' } else { 'missing_resume_intent' }
+  }
+}
+
 $results = @()
 foreach ($scenario in $scenarios) {
   if ($scenario.kind -eq 'skill' -or $scenario.kind -eq 'skill-negative') {
@@ -100,6 +123,24 @@ foreach ($scenario in $scenarios) {
       skill = $trigger.skill
       expectedG1 = $scenario.expectedG1
       requiresG1 = $trigger.requiresG1
+      reason = $trigger.reason
+    }
+    continue
+  }
+
+  if ($scenario.kind -eq 'fast-session-resume' -or $scenario.kind -eq 'fast-session-resume-negative') {
+    $trigger = Test-FastSessionResumeTrigger $scenario.prompt
+    $positiveOk = if ($scenario.kind -eq 'fast-session-resume') { $trigger.triggered } else { -not $trigger.triggered }
+    $results += [pscustomobject]@{
+      name = $scenario.name
+      prompt = $scenario.prompt
+      kind = $scenario.kind
+      ok = ($positiveOk -and ([bool]$trigger.triggered -eq [bool]$scenario.expectedFastResume))
+      expectedFastResume = $scenario.expectedFastResume
+      fastSessionResume = $trigger.triggered
+      skill = $trigger.skill
+      bindSession = $trigger.bindSession
+      deepRecall = $trigger.deepRecall
       reason = $trigger.reason
     }
     continue
@@ -153,6 +194,8 @@ if ($Json) {
   foreach ($item in @($results)) {
     if ($item.kind -like 'skill*') {
       Write-Host "TRIGGER_CASE name=$($item.name) ok=$($item.ok) kind=$($item.kind) skill=$($item.skill) g1=$($item.requiresG1) reason=$($item.reason)"
+    } elseif ($item.kind -like 'fast-session-resume*') {
+      Write-Host "TRIGGER_CASE name=$($item.name) ok=$($item.ok) kind=$($item.kind) fastSessionResume=$($item.fastSessionResume) bindSession=$($item.bindSession) deepRecall=$($item.deepRecall) reason=$($item.reason)"
     } else {
       Write-Host "TRIGGER_CASE name=$($item.name) ok=$($item.ok) kind=dispatch level=$($item.dispatchLevel) template=$($item.templateId)"
     }

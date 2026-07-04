@@ -2,6 +2,7 @@ param(
   [string]$ZCodeSkills = "$env:USERPROFILE\.zcode\skills",
   [string]$CodexSkills = "$env:USERPROFILE\.codex\skills",
   [string]$MemoryRoot = "",
+  [switch]$AllowStaleVerify,
   [switch]$Json
 )
 
@@ -37,7 +38,7 @@ if (Test-Path $lastVerifyPath) {
 }
 
 $state = [pscustomobject]@{
-  ok = (($startup.ok -eq $true) -and ($lastVerifyOk -eq $true))
+  ok = (($startup.ok -eq $true) -and (($lastVerifyOk -eq $true) -or ($AllowStaleVerify -eq $true)))
   version = $manifest.version
   packageRoot = $Root
   memoryRoot = $MemoryRoot

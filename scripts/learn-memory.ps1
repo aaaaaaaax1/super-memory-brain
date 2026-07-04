@@ -1,6 +1,6 @@
 param(
-  [Parameter(Mandatory=$true)]
-  [string]$Text,
+  [string]$Text = '',
+  [string]$TextFile = '',
   [ValidateSet('auto','force','off')]
   [string]$MemoryMode = 'force',
   [ValidateSet('profile','project','decision','task','session','experience')]
@@ -48,6 +48,14 @@ function Get-LearnDecision([string]$LayerName, [object[]]$SimilarItems, [bool]$D
   if ($LayerName -eq 'profile') { return 'profile_card_candidate' }
   if ($LayerName -eq 'experience') { return 'write_memory_and_experience' }
   return 'write_memory'
+}
+
+if (-not [string]::IsNullOrWhiteSpace($TextFile)) {
+  $resolvedTextFile = [System.IO.Path]::GetFullPath($TextFile)
+  if (-not (Test-Path -LiteralPath $resolvedTextFile)) { throw "TextFile not found: $resolvedTextFile" }
+  $fileText = Get-Content -LiteralPath $resolvedTextFile -Raw -Encoding UTF8
+  $Text = $fileText
+  if (@($Evidence).Count -eq 0) { $Evidence = @($resolvedTextFile) }
 }
 
 if ($MemoryMode -eq 'off') {
@@ -120,14 +128,14 @@ if ($Preview -or ($decision -eq 'update_or_skip_duplicate' -and -not $AllowDupli
   exit 0
 }
 
-$writeArgs = @(
-  '-Text', $memoryText,
-  '-MemoryMode', $MemoryMode,
-  '-Layer', $layerForWrite,
-  '-Summary'
-)
-if ($ConfirmPrivate) { $writeArgs += '-ConfirmPrivate' }
-$writeOutput = @(& (Join-Path $PSScriptRoot 'write-memory.ps1') @writeArgs 2>&1)
+$writeParams = @{
+  Text = $memoryText
+  MemoryMode = $MemoryMode
+  Layer = $layerForWrite
+  Summary = $true
+}
+if ($ConfirmPrivate) { $writeParams.ConfirmPrivate = $true }
+$writeOutput = @(& (Join-Path $PSScriptRoot 'write-memory.ps1') @writeParams 2>&1)
 $writeOk = ($LASTEXITCODE -eq 0)
 
 $experience = $null

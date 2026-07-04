@@ -71,7 +71,7 @@ function Add-GraphRecord([string]$Subject, [string]$Relation, [string]$Object, [
     evidence = $RecordEvidence
     tags = $RecordTags
   }
-  ($record | ConvertTo-Json -Compress) | Add-Content -LiteralPath $Graph -Encoding UTF8
+  Add-Utf8LineLocked $Graph ($record | ConvertTo-Json -Compress)
 }
 
 function Add-GraphIfValue([string]$Subject, [string]$Relation, [string]$Object, [string]$RecordEvidence, [string]$RecordTags) {

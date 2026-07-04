@@ -2,7 +2,7 @@
   {
     "question": "当前 super-memory-brain 版本是多少？",
     "sources": ["CURRENT_BASELINE.md", "manifest.json"],
-    "mustContain": ["0.5.43", "CURRENT_BASELINE.md"]
+    "mustContain": ["0.5.75", "CURRENT_BASELINE.md"]
   },
   {
     "question": "隐私记忆怎么写？",
@@ -73,5 +73,15 @@
     "question": "长任务开始前和完成后，断点状态应该怎么处理？",
     "sources": ["memory-policy.json", "scripts/checkpoint-writer.ps1", "scripts/auto-continuation.ps1", "scripts/completion-guard.ps1"],
     "mustContain": ["checkpointLifecycle", "active-checkpoint.json", "Start", "Complete", "currentStep", "nextAction"]
+  },
+  {
+    "question": "临时会话绑定如何防止记忆幻想？",
+    "sources": ["super-memory-brain/SKILL.md", "scripts/session-binding.ps1", "scripts/recall-search.ps1", "scripts/doctor.ps1"],
+    "mustContain": ["session-binding.json", "noRawChat", "temporary_session_binding", "session_binding_expired"]
+  },
+  {
+    "question": "结构化改动前应该怎么说明原因和验证？",
+    "sources": ["scripts/causal-change-plan.ps1", "super-memory-brain/SKILL.md", "README.md"],
+    "mustContain": ["causal-change-plan.ps1", "RootCause", "ExpectedOptimization", "VerificationMethod", "residual risk"]
   }
 ]

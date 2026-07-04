@@ -41,7 +41,16 @@ if ($LASTEXITCODE -ne 0) { Write-Host 'MISSING startup hook/config readiness'; $
 
 $env:NEXSANDBASE_HOME = $MemoryRoot
 $env:PYTHONPATH = $MemoryScripts
-python -c "from sandglass_vault import recent; print(recent(3))"
-if ($LASTEXITCODE -ne 0) { Write-Host 'MISSING NexSandglass python runtime'; $ok = $false }
+$recentCount = 0
+try {
+  $recentCountText = python -c "from sandglass_vault import recent; r=recent(3); print(len(r) if hasattr(r, '__len__') else 0)"
+  if ($LASTEXITCODE -ne 0) { Write-Host 'MISSING NexSandglass python runtime'; $ok = $false } else {
+    $recentCount = [int](([string]$recentCountText).Trim())
+    Write-Host "OK NexSandglass recent count=$recentCount rawSuppressed=True"
+  }
+} catch {
+  Write-Host "MISSING NexSandglass python runtime: $($_.Exception.Message)"
+  $ok = $false
+}
 
 if ($ok) { Write-Host 'HEALTH_CHECK_OK' } else { Write-Host 'HEALTH_CHECK_FAILED'; exit 1 }

@@ -11,6 +11,7 @@ NexSandglass 决策粒子 — 第三层通用燃料 V2
 import os, json, time, logging
 from datetime import datetime
 from sandglass_paths import _NB
+from sandglass_lock import MemoryLockTimeout, locked_file
 
 logger = logging.getLogger(__name__)
 
@@ -309,9 +310,13 @@ def _learn(tags: str, choice: str = "") -> None:
                 pass
         truly_new = [t for t in new_tags if t not in existing]
         if truly_new:
-            with open(_VOCAB, "a", encoding="utf-8") as f:
-                for t in truly_new:
-                    f.write(f"{t}\n")
+            try:
+                with locked_file(_VOCAB, timeout=15.0, stale_after=120.0):
+                    with open(_VOCAB, "a", encoding="utf-8") as f:
+                        for t in truly_new:
+                            f.write(f"{t}\n")
+            except MemoryLockTimeout as e:
+                logger.error(str(e))
 
 
 # ═══════════════════════════════════════════════
@@ -495,8 +500,12 @@ def _echo_spread(sentiment: str, options: str) -> None:
              "options": options,
              "spread_weight": 1.3 if sentiment == "正面" else 0.8}
     os.makedirs(os.path.dirname(_ECHO_WIND), exist_ok=True)
-    with open(_ECHO_WIND, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    try:
+        with locked_file(_ECHO_WIND, timeout=15.0, stale_after=120.0):
+            with open(_ECHO_WIND, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except MemoryLockTimeout as e:
+        logger.error(str(e))
 
 
 # ═══════════════════════════════════════════════
@@ -543,9 +552,14 @@ def log(question: str, choice: str, ts: str = "", chain: list = None) -> None:
         logger.debug('情绪检测失败', exc_info=True)
 
     os.makedirs(os.path.dirname(_PARTICLES), exist_ok=True)
-    with open(_PARTICLES, "a", encoding="utf-8") as f:
-        record = f"{options} | {resolved} | {direction} | {emotion_tag} | {tags}"
-        f.write(f"{ts} | {record}\n")
+    record = f"{options} | {resolved} | {direction} | {emotion_tag} | {tags}"
+    try:
+        with locked_file(_PARTICLES, timeout=15.0, stale_after=120.0):
+            with open(_PARTICLES, "a", encoding="utf-8") as f:
+                f.write(f"{ts} | {record}\n")
+    except MemoryLockTimeout as e:
+        logger.error(str(e))
+        return
 
     # 影子沙同步
     try:
@@ -575,8 +589,12 @@ def log(question: str, choice: str, ts: str = "", chain: list = None) -> None:
                         ow = set(rec.get("options", "").lower().split())
                         if len(qwords & ow) >= 2 and rec.get("sentiment"):
                             # 回音残留——追加到决策粒子
-                            with open(_PARTICLES, "a", encoding="utf-8") as af:
-                                af.write(f"{ts} | echo_wind | {rec['sentiment']}({rec.get('spread_weight',1.0)}) | echo | 回音折残留\n")
+                            try:
+                                with locked_file(_PARTICLES, timeout=15.0, stale_after=120.0):
+                                    with open(_PARTICLES, "a", encoding="utf-8") as af:
+                                        af.write(f"{ts} | echo_wind | {rec['sentiment']}({rec.get('spread_weight',1.0)}) | echo | 回音折残留\n")
+                            except MemoryLockTimeout as e:
+                                logger.error(str(e))
                             break
                     except (json.JSONDecodeError, KeyError, ValueError): pass
     except Exception: pass

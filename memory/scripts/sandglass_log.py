@@ -45,6 +45,7 @@ def _estimate_info_value(text: str) -> float:
 
 
 from sandglass_paths import _NB
+from sandglass_lock import MemoryLockTimeout, locked_file
 
 _SANDGLASS = os.path.join(_NB, "sandglass.txt")
 
@@ -61,37 +62,13 @@ def log_message(text: str, sender: str = "agent") -> bool:
         os.makedirs(os.path.dirname(_SANDGLASS), exist_ok=True)
         line = f"{datetime.now():%Y-%m-%d %H:%M:%S} | {sender} | {text}\n"
 
-        # 文件锁——指数退避：3次×5s=15s（V2.4.0修复：超时不裸写，重试+告警）
-        lock = _SANDGLASS + ".lock"
-        for attempt in range(3):
-            deadline = _time.time() + 5
-            while _time.time() < deadline:
-                try:
-                    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    os.close(fd)
-                    break
-                except FileExistsError:
-                    _time.sleep(0.01)
-            else:
-                continue  # 本轮超时，重试
-            break  # 获取锁成功
-        else:
-            # 3次重试全部超时——记录告警但继续写入
-            logger.error(f"落沙锁 3 次重试均超时（15s），强制写入（可能并发冲突）")
-
         try:
-            with open(_SANDGLASS, "a", encoding="utf-8") as f:
-                f.write(line)
-        finally:
-            try:
-                os.unlink(lock)
-            except OSError as e:
-                logger.warning(f"锁文件清理失败（可能残留，下次会超时自愈）: {e}")
-                try:
-                    if os.path.exists(lock):
-                        os.remove(lock)
-                except Exception as e:
-                    logger.warning(f"锁文件二次删除也失败: {e}")
+            with locked_file(_SANDGLASS, timeout=15.0, stale_after=120.0):
+                with open(_SANDGLASS, "a", encoding="utf-8") as f:
+                    f.write(line)
+        except MemoryLockTimeout as e:
+            logger.error(str(e))
+            return False
 
         # 影子沙——落沙后同步索引
         try:

@@ -51,6 +51,23 @@ Fast one-screen summary:
 scripts\summary.ps1
 ```
 
+Cross-agent/session task status table:
+
+```powershell
+scripts\task-register.ps1 -Platform codex -Agent codex -AgentId codexid00002 -SessionId codex-fast-test-001 -SessionTitle "任务状态快路径测试" -TaskId task-codex-fast-register-test -TaskName "Codex 快速任务登记测试" -Status active -CurrentStep "写入共享任务状态" -NextAction "ZCode 查询任务状态" -Json
+scripts\task-index.ps1 -Table
+scripts\task-index.ps1 -Agent codex -Table
+scripts\task-index.ps1 -SessionId sess-demo -Table
+```
+
+Cross-agent channel conversation:
+
+```powershell
+scripts\agent-bridge-channel.ps1 -Action Open -ChannelId chan-demo -FromAgentId codexid00002 -SessionId codex-session-demo -Alias "子agent" -Json
+scripts\agent-bridge-channel.ps1 -Action Connect -ChannelId chan-demo -OperatorAgentId zcodeid00001 -OperatorName "main" -ToAgentId codexid00002 -Alias "子agent" -TargetSession codex-session-demo -Json
+scripts\agent-bridge-channel.ps1 -Action SendAndWait -Alias "子agent" -Summary "你好" -WaitSeconds 60 -Json
+```
+
 Read-only maintenance plan:
 
 ```powershell
@@ -61,7 +78,13 @@ Safe low-risk maintenance:
 
 ```powershell
 scripts\maintain.ps1 -ApplySafe
+scripts\workspace-lifecycle-manager.ps1 -ApplySafe -Json
+scripts\auto-hygiene-runner.ps1 -ApplySafe -Json
+scripts\post-task-maintenance.ps1 -ApplySafe -Summary "task complete" -Json
+scripts\self-improvement-queue.ps1 -Json
 ```
+
+0.5.73 keeps safe local hygiene automatic: low-risk workspace/memory cleanup archives evidence first, while private, destructive, external, broad, hook/install/global, or unclear-risk actions require confirmation.
 
 Read-only diagnosis:
 
@@ -70,6 +93,14 @@ scripts\doctor.ps1
 scripts\doctor.ps1 -Json
 scripts\check-install-ui-paths.ps1
 scripts\check-install-ui-paths.ps1 -Json
+```
+
+Temporary session binding for cross-session continuity without raw chat:
+
+```powershell
+scripts\session-restore.ps1 -Query "继续上次" -BindSession -SessionId sess-demo -Json
+scripts\session-binding.ps1 -Action Get -Json
+scripts\session-binding.ps1 -Action Clear -Json
 ```
 
 Read-only Commander dispatch estimate for complex work:

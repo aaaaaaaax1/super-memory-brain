@@ -26,6 +26,26 @@ if ($lastCi -and $lastCi.ok -eq $true) { $lessons += 'Full CI evidence is the st
 if ($lastVerify -and $lastVerify.ok -eq $true) { $lessons += 'Package verification should remain the baseline before release or handoff.' }
 if ($lastTask -and @($lastTask.evidence).Count -gt 0) { $lessons += 'Task verification evidence is sufficient for continuation handoff.' }
 
+$lessonCandidates = @()
+foreach ($lesson in @($lessons)) {
+  $lessonCandidates += [pscustomobject]@{
+    target = 'experience'
+    summary = $lesson
+    evidence = @('last-task-verification.json','last-ci.json','last-verify-package.json')
+    confidence = 0.72
+    promotionHint = 'reflection-promotion.ps1 -Mode Preview can classify and promote this only after evidence/privacy/duplicate checks.'
+  }
+}
+if (-not [string]::IsNullOrWhiteSpace($Summary)) {
+  $lessonCandidates += [pscustomobject]@{
+    target = 'memory'
+    summary = $Summary
+    evidence = @('last-retrospective.json')
+    confidence = 0.65
+    promotionHint = 'Keep as a candidate unless it is reusable, verified, and non-private.'
+  }
+}
+
 $result = [pscustomobject]@{
   ok = $true
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
@@ -33,6 +53,12 @@ $result = [pscustomobject]@{
   didWell = @('Kept machine-readable status current','Verified before completion','Preserved privacy and memory-root state')
   improveNext = @('Prefer trigger simulation before changing dispatch priority','Keep release readiness separate from release execution','Record only concise lessons to avoid memory noise')
   lessons = @($lessons)
+  lessonCandidates = @($lessonCandidates)
+  selfLearning = [pscustomobject]@{
+    defaultPromotionMode = 'Preview'
+    promotionScript = 'reflection-promotion.ps1'
+    noDurableWriteWithoutApply = $true
+  }
   evidence = @('last-task-verification.json','last-ci.json','last-verify-package.json')
 }
 Write-JsonUtf8NoBom $path $result 8

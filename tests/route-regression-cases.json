@@ -1,0 +1,586 @@
+{
+    "schemaVersion":  1,
+    "phase":  "phase2-regression-cases",
+    "createdFrom":  "baseline-observed-route-results.json",
+    "strictRule":  "Default mode allows known_baseline_gap; Strict mode fails every gap and is required before Phase 6 completion.",
+    "cases":  [
+                  {
+                      "id":  "normal-chat-hello",
+                      "prompt":  "hello",
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "negative",
+                                   "ordinary_chat"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "false-trigger-game-g1",
+                      "promptUnicodeCodes":  [
+                                                 36825,
+                                                 20010,
+                                                 28216,
+                                                 25103,
+                                                 37324,
+                                                 26377,
+                                                 20010,
+                                                 32,
+                                                 71,
+                                                 49,
+                                                 32,
+                                                 35282,
+                                                 33394
+                                             ],
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "trigger-simulation",
+                      "triggerScenario":  "incidental_g1_mention",
+                      "tags":  [
+                                   "negative",
+                                   "g1",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "bare-superbrain-wake",
+                      "prompt":  "Super Brain",
+                      "expectedRoute":  "bare_wake",
+                      "observer":  "trigger-simulation",
+                      "triggerScenario":  "bare_superbrain_en",
+                      "tags":  [
+                                   "wake"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "zh-bare-superbrain-wake",
+                      "promptUnicodeCodes":  [
+                                                 36229,
+                                                 32423,
+                                                 22823,
+                                                 33041
+                                             ],
+                      "expectedRoute":  "bare_wake",
+                      "observer":  "trigger-simulation",
+                      "triggerScenario":  "bare_superbrain_zh",
+                      "tags":  [
+                                   "wake",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "zh-bare-g1-wake",
+                      "promptUnicodeCodes":  [
+                                                 71,
+                                                 49,
+                                                 32,
+                                                 22312,
+                                                 21527
+                                             ],
+                      "expectedRoute":  "bare_wake",
+                      "observer":  "trigger-simulation",
+                      "triggerScenario":  "bare_g1",
+                      "tags":  [
+                                   "wake",
+                                   "g1",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "current-task-status",
+                      "prompt":  "task status",
+                      "expectedRoute":  "current_task_status",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "status"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "system-status",
+                      "prompt":  "Super Brain status",
+                      "expectedRoute":  "system_status",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "status",
+                                   "system"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "zh-task-status",
+                      "promptUnicodeCodes":  [
+                                                 20219,
+                                                 21153,
+                                                 29366,
+                                                 24577
+                                             ],
+                      "expectedRoute":  "current_task_status",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "status",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "zh-where-now-status",
+                      "promptUnicodeCodes":  [
+                                                 29616,
+                                                 22312,
+                                                 20570,
+                                                 21040,
+                                                 21738,
+                                                 20102
+                                             ],
+                      "expectedRoute":  "current_task_status",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "status",
+                                   "zh",
+                                   "semantic"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "continue-current-explain",
+                      "prompt":  "continue explaining this concept",
+                      "expectedRoute":  "current_session_continue",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "continue"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "zh-continuation-current",
+                      "promptUnicodeCodes":  [
+                                                 32487,
+                                                 32493,
+                                                 35299,
+                                                 37322,
+                                                 36825,
+                                                 20010,
+                                                 27010,
+                                                 24565
+                                             ],
+                      "expectedRoute":  "current_session_continue",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "continue",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "continue-previous-task",
+                      "prompt":  "continue previous task from last time",
+                      "expectedRoute":  "historical_recovery",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "continue"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "zh-continuation-last",
+                      "promptUnicodeCodes":  [
+                                                 32487,
+                                                 32493,
+                                                 19978,
+                                                 27425,
+                                                 37027,
+                                                 20010,
+                                                 20219,
+                                                 21153
+                                             ],
+                      "expectedRoute":  "historical_recovery",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "continue",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "agent-bridge-open",
+                      "prompt":  "open agent channel",
+                      "expectedRoute":  "agent_bridge_channel",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "agent_bridge"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "zh-agent-bridge-open",
+                      "promptUnicodeCodes":  [
+                                                 25171,
+                                                 24320,
+                                                 32,
+                                                 97,
+                                                 103,
+                                                 101,
+                                                 110,
+                                                 116,
+                                                 32,
+                                                 99,
+                                                 104,
+                                                 97,
+                                                 110,
+                                                 110,
+                                                 101,
+                                                 108
+                                             ],
+                      "expectedRoute":  "agent_bridge_channel",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "agent_bridge",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "zh-subagent-bridge-open",
+                      "promptUnicodeCodes":  [
+                                                 24320,
+                                                 21551,
+                                                 23376,
+                                                 97,
+                                                 103,
+                                                 101,
+                                                 110,
+                                                 116,
+                                                 36890,
+                                                 36947
+                                             ],
+                      "expectedRoute":  "agent_bridge_channel",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "agent_bridge",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "zh-agent-bridge-connect",
+                      "promptUnicodeCodes":  [
+                                                 36830,
+                                                 25509,
+                                                 32,
+                                                 97,
+                                                 103,
+                                                 101,
+                                                 110,
+                                                 116,
+                                                 32,
+                                                 36890,
+                                                 36947
+                                             ],
+                      "expectedRoute":  "agent_bridge_channel",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "agent_bridge",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "false-trigger-user-agent",
+                      "prompt":  "what is user agent",
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "negative",
+                                   "agent"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "negative-agent-word-meaning",
+                      "promptUnicodeCodes":  [
+                                                 97,
+                                                 103,
+                                                 101,
+                                                 110,
+                                                 116,
+                                                 32,
+                                                 36825,
+                                                 20010,
+                                                 33521,
+                                                 25991,
+                                                 26159,
+                                                 20160,
+                                                 20040,
+                                                 24847,
+                                                 24605
+                                             ],
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "negative",
+                                   "agent",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "negative-user-agent-zh",
+                      "promptUnicodeCodes":  [
+                                                 20160,
+                                                 20040,
+                                                 26159,
+                                                 32,
+                                                 117,
+                                                 115,
+                                                 101,
+                                                 114,
+                                                 32,
+                                                 97,
+                                                 103,
+                                                 101,
+                                                 110,
+                                                 116
+                                             ],
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "negative",
+                                   "agent"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "negative-brain-confused",
+                      "promptUnicodeCodes":  [
+                                                 25105,
+                                                 30340,
+                                                 33041,
+                                                 23376,
+                                                 26377,
+                                                 28857,
+                                                 20081
+                                             ],
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "trigger-simulation",
+                      "triggerScenario":  "human_brain_confused",
+                      "tags":  [
+                                   "negative",
+                                   "brain",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "privacy-api-key-memory",
+                      "prompt":  "remember my API key is sk-redacted-example",
+                      "expectedRoute":  "privacy_memory_gate",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "privacy"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "zh-memory-privacy-api-key",
+                      "promptUnicodeCodes":  [
+                                                 35760,
+                                                 20303,
+                                                 25105,
+                                                 30340,
+                                                 32,
+                                                 65,
+                                                 80,
+                                                 73,
+                                                 32,
+                                                 107,
+                                                 101,
+                                                 121,
+                                                 32,
+                                                 26159,
+                                                 32,
+                                                 115,
+                                                 107,
+                                                 45,
+                                                 114,
+                                                 101,
+                                                 100,
+                                                 97,
+                                                 99,
+                                                 116,
+                                                 101,
+                                                 100
+                                             ],
+                      "expectedRoute":  "privacy_memory_gate",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "privacy",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "stable-preference-memory",
+                      "prompt":  "remember this preference: answer briefly",
+                      "expectedRoute":  "memory_write_candidate",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "preference"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "zh-memory-preference",
+                      "promptUnicodeCodes":  [
+                                                 35760,
+                                                 20303,
+                                                 36825,
+                                                 20010,
+                                                 20559,
+                                                 22909,
+                                                 65306,
+                                                 22238,
+                                                 31572,
+                                                 30701,
+                                                 19968,
+                                                 28857
+                                             ],
+                      "expectedRoute":  "memory_write_candidate",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "preference",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "direct-code-no-orc",
+                      "prompt":  "write a simple regex for digits",
+                      "expectedRoute":  "direct_answer",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "direct",
+                                   "budget"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "complex-multi-domain-orc",
+                      "prompt":  "plan a multi-step app migration with tests and release",
+                      "expectedRoute":  "orc_complex_routing",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "orc",
+                                   "budget"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "maintenance-hot-refresh",
+                      "prompt":  "refresh Super Brain hot-refresh install",
+                      "expectedRoute":  "maintenance_hot_refresh",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "maintenance"
+                               ],
+                      "knownBaselineGap":  true,
+                      "mustFixBeforePhase6":  true
+                  },
+                  {
+                      "id":  "single-agent-subagent-modify",
+                      "prompt":  "let a subagent modify the code and produce evidence",
+                      "expectedRoute":  "single_agent_subagent_workflow",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "subagent",
+                                   "single_agent_workflow"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "single-agent-subagent-review",
+                      "prompt":  "ask a reviewer subagent to audit this result",
+                      "expectedRoute":  "single_agent_subagent_workflow",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "subagent",
+                                   "review",
+                                   "single_agent_workflow"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "single-agent-subagent-tests",
+                      "prompt":  "dispatch an executor subagent to run tests and verify evidence",
+                      "expectedRoute":  "single_agent_subagent_workflow",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "subagent",
+                                   "tests",
+                                   "single_agent_workflow"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "legacy-agent-channel-open",
+                      "prompt":  "connect agent channel",
+                      "expectedRoute":  "agent_bridge_channel",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "agent_bridge",
+                                   "legacy"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "negative-agent-concept-design",
+                      "prompt":  "AI agent design patterns explained",
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "negative",
+                                   "agent"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  }
+              ]
+}

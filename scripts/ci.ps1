@@ -35,7 +35,10 @@ function Run-Step([string]$Name, [string]$ScriptPath, [string[]]$ArgumentList = 
 
 Run-Step 'lint' (Join-Path $PSScriptRoot 'lint.ps1')
 Run-Step 'pester' (Join-Path $PSScriptRoot 'test-pester.ps1')
+Run-Step 'concurrency-smoke-test' (Join-Path $PSScriptRoot 'concurrency-smoke-test.ps1')
 Run-Step 'verify-package' (Join-Path $PSScriptRoot 'verify-package.ps1')
+Run-Step 'codegraph-index' (Join-Path $PSScriptRoot 'codegraph-index.ps1') @('-Json')
+Run-Step 'impact-advisor' (Join-Path $PSScriptRoot 'impact-advisor.ps1') @('-ChangedFiles','scripts/codegraph-index.ps1','-Json')
 Run-Step 'super-brain-dashboard' (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') @('-Json')
 Run-Step 'auto-continuation' (Join-Path $PSScriptRoot 'auto-continuation.ps1') @('-Json')
 Run-Step 'status-snapshot-writer' (Join-Path $PSScriptRoot 'status-snapshot-writer.ps1') @('-Summary','CI status-card refresh','-NextAction','Continue from verified CI status card.','-Json')
@@ -44,6 +47,7 @@ Run-Step 'memory-quality-fixer' (Join-Path $PSScriptRoot 'memory-quality-fixer.p
 Run-Step 'lesson-replay' (Join-Path $PSScriptRoot 'lesson-replay.ps1') @('-Query','install ui','-Json')
 Run-Step 'dispatch-learning' (Join-Path $PSScriptRoot 'dispatch-learning.ps1') @('-Json')
 Run-Step 'trigger-simulation' (Join-Path $PSScriptRoot 'trigger-simulation.ps1') @('-Json')
+Run-Step 'cold-start-audit' (Join-Path $PSScriptRoot 'cold-start-audit.ps1') @('-Json')
 Run-Step 'intent-router' (Join-Path $PSScriptRoot 'intent-router.ps1') @('继续','-Json')
 Run-Step 'smart-next' (Join-Path $PSScriptRoot 'smart-next.ps1') @('继续','-Json')
 Run-Step 'health-summary' (Join-Path $PSScriptRoot 'health-summary.ps1') @('-Json')

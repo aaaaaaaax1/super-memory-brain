@@ -1,0 +1,115 @@
+{
+  "schema": "super-brain.reverselab-capability-regression.v1",
+  "phase": "Phase C1",
+  "description": "Regression cases for ReverseLab extension/skill capability discovery without cold-start bootstrap bloat.",
+  "positiveCases": [
+    {
+      "id": "apk-reverse-zh",
+      "query": "APK 逆向",
+      "expectedExtensionFirst": "reverselab-unified",
+      "expectedExtensionStrength": "strong",
+      "expectedSkillName": "reverselab-unified",
+      "minimumSkillScore": 1
+    },
+    {
+      "id": "pe-reverse-zh",
+      "query": "PE 逆向",
+      "expectedExtensionFirst": "reverselab-unified",
+      "expectedExtensionStrength": "strong",
+      "expectedSkillName": "reverselab-unified",
+      "minimumSkillScore": 1
+    },
+    {
+      "id": "reverselab-status",
+      "query": "ReverseLab 状态",
+      "expectedExtensionFirst": "reverselab-unified",
+      "expectedExtensionStrength": "strong",
+      "expectedSkillName": "reverselab-unified",
+      "minimumSkillScore": 1
+    },
+    {
+      "id": "one-click-reverse-tools-zh",
+      "query": "一键部署逆向工具",
+      "expectedExtensionFirst": "reverselab-unified",
+      "expectedExtensionStrength": "strong",
+      "expectedSkillName": "reverselab-unified",
+      "minimumSkillScore": 1
+    },
+    {
+      "id": "api-reverse-zh",
+      "query": "接口逆向",
+      "expectedExtensionFirst": "reverselab-unified",
+      "expectedExtensionStrength": "strong",
+      "expectedSkillName": "reverselab-unified",
+      "minimumSkillScore": 1
+    },
+    {
+      "id": "apk-reverse-en",
+      "query": "APK reverse",
+      "expectedExtensionFirst": "reverselab-unified",
+      "expectedExtensionStrength": "strong",
+      "expectedSkillName": "reverselab-unified",
+      "minimumSkillScore": 1
+    },
+    {
+      "id": "pe-reverse-en",
+      "query": "PE reverse",
+      "expectedExtensionFirst": "reverselab-unified",
+      "expectedExtensionStrength": "strong",
+      "expectedSkillName": "reverselab-unified",
+      "minimumSkillScore": 1
+    },
+    {
+      "id": "ctf-reverse-en",
+      "query": "CTF reverse",
+      "expectedExtensionFirst": "reverselab-unified",
+      "expectedExtensionStrength": "strong",
+      "expectedSkillName": "reverselab-unified",
+      "minimumSkillScore": 1
+    }
+  ],
+  "negativeCases": [
+    {
+      "id": "reverse-a-string",
+      "query": "reverse a string",
+      "blockedExtensionStrongName": "reverselab-unified",
+      "blockedSkillFirstName": "reverselab-unified",
+      "maximumSkillScore": 0
+    },
+    {
+      "id": "reverse-sort-zh",
+      "query": "反向排序",
+      "blockedExtensionStrongName": "reverselab-unified",
+      "blockedSkillFirstName": "reverselab-unified",
+      "maximumSkillScore": 0
+    },
+    {
+      "id": "reverse-thinking-zh",
+      "query": "逆向思维",
+      "blockedExtensionStrongName": "reverselab-unified",
+      "blockedSkillFirstName": "reverselab-unified",
+      "maximumSkillScore": 0
+    },
+    {
+      "id": "user-agent-zh",
+      "query": "user agent 是什么",
+      "blockedExtensionStrongName": "reverselab-unified",
+      "blockedSkillFirstName": "reverselab-unified",
+      "maximumSkillScore": 0
+    },
+    {
+      "id": "security-awareness-en",
+      "query": "what are common security awareness tips",
+      "blockedExtensionStrongName": "reverselab-unified",
+      "blockedSkillFirstName": "reverselab-unified",
+      "maximumSkillScore": 0
+    },
+    {
+      "id": "generic-security-talk-en",
+      "query": "generic security talk",
+      "blockedExtensionStrongName": "reverselab-unified",
+      "blockedSkillFirstName": "reverselab-unified",
+      "maximumSkillScore": 0
+    }
+  ]
+}
