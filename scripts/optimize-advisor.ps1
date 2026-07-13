@@ -65,6 +65,7 @@ function Add-Advice([object[]]$List, [string]$Priority, [string]$Code, [string]$
 }
 
 $doctor = Invoke-JsonTool 'doctor.ps1' @('-Json')
+$memoryHealth = Invoke-JsonTool 'memory-health.ps1' @('-Json')
 $quality = Invoke-JsonTool 'memory-quality-fixer.ps1' @('-Json')
 $eval = Invoke-JsonTool 'memory-eval.ps1' @('-Json')
 $toolHealth = Invoke-JsonTool 'tool-health.ps1' @('-Json')
@@ -86,6 +87,17 @@ if (-not $doctor.ok -or $null -eq $doctor.data -or $doctor.data.ok -ne $true) {
 
 if ($doctor.data -and $doctor.data.lockHealth -and [int]$doctor.data.lockHealth.staleCount -gt 0) {
   $advice = Add-Advice $advice 'high' 'stale_memory_locks' "Resolve $($doctor.data.lockHealth.staleCount) stale memory locks" 'scripts\doctor.ps1 -Json' 'Stale locks can block or reveal interrupted shared-memory writes.' 'doctor.lockHealth'
+}
+
+if ($memoryHealth.ok -and $memoryHealth.data -and $memoryHealth.data.memoryLifecycle) {
+  $budget = $memoryHealth.data.memoryLifecycle
+  if ([string]$budget.status -eq 'blocked') {
+    $advice = Add-Advice $advice 'high' 'memory_budget_exceeded' 'Archive selected low-value memory before further writes' 'Run scripts\auto-hygiene-runner.ps1 -Json, review candidates, then confirm selective archival.' "Memory budget is exceeded: lines=$($budget.currentLines)/$($budget.maxLines), chars=$($budget.currentChars)/$($budget.maxChars)." 'memory-health.ps1'
+  } elseif ([string]$budget.status -eq 'warning') {
+    $advice = Add-Advice $advice 'medium' 'memory_budget_near_limit' 'Review memory lifecycle pressure' 'Run scripts\auto-hygiene-runner.ps1 -Json and consolidate or archive low-value entries before the budget blocks new writes.' "Memory budget is near its limit: lines=$($budget.currentLines)/$($budget.maxLines), chars=$($budget.currentChars)/$($budget.maxChars)." 'memory-health.ps1'
+  }
+} elseif (-not $memoryHealth.ok) {
+  $advice = Add-Advice $advice 'medium' 'memory_health_unavailable' 'Run memory health diagnostics' 'scripts\memory-health.ps1 -Json' 'The memory lifecycle budget could not be evaluated.' 'memory-health.ps1'
 }
 
 if ($toolHealth.ok -and $toolHealth.data -and $toolHealth.data.warningFresh -eq $true) {
@@ -144,6 +156,9 @@ $result = [pscustomobject]@{
   signals = [pscustomobject]@{
     doctorOk = ($doctor.ok -and $doctor.data.ok -eq $true)
     doctorRisks = if ($doctor.data) { [int]$doctor.data.riskSummary.total } else { $null }
+    memoryBudgetStatus = if ($memoryHealth.data -and $memoryHealth.data.memoryLifecycle) { $memoryHealth.data.memoryLifecycle.status } else { $null }
+    memoryBudgetLines = if ($memoryHealth.data -and $memoryHealth.data.memoryLifecycle) { "$($memoryHealth.data.memoryLifecycle.currentLines)/$($memoryHealth.data.memoryLifecycle.maxLines)" } else { $null }
+    memoryBudgetChars = if ($memoryHealth.data -and $memoryHealth.data.memoryLifecycle) { "$($memoryHealth.data.memoryLifecycle.currentChars)/$($memoryHealth.data.memoryLifecycle.maxChars)" } else { $null }
     memoryQualityActions = if ($quality.data) { [int]$quality.data.actionCount } else { $null }
     staleLockCount = if ($doctor.data -and $doctor.data.lockHealth) { [int]$doctor.data.lockHealth.staleCount } else { $null }
     toolWarningFresh = if ($toolHealth.data) { $toolHealth.data.warningFresh } else { $null }

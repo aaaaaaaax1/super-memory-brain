@@ -178,6 +178,141 @@ def shadow_index(text: str, category: str = "general", tags: str = "", line_num:
     _maybe_commit()
 
 
+def _normalize_line_map(line_map: dict | None) -> dict:
+    if line_map is None:
+        line_map = {}
+    normalized = {}
+    for old_line, new_line in line_map.items():
+        try:
+            old_value = int(old_line)
+            new_value = int(new_line)
+        except (TypeError, ValueError):
+            continue
+        if old_value > 0 and new_value > 0:
+            normalized[old_value] = new_value
+    return normalized
+
+
+def _map_line_numbers(raw_line_nums: str, line_map: dict) -> list[int]:
+    mapped = set()
+    for raw_line in str(raw_line_nums or "").split(","):
+        try:
+            old_line = int(raw_line.strip())
+        except (TypeError, ValueError):
+            continue
+        new_line = line_map.get(old_line)
+        if new_line:
+            mapped.add(new_line)
+    return sorted(mapped)
+
+
+def rebuild_line_index(line_map: dict | None = None) -> dict:
+    """重写行号投影，保留信任、标签、实体和织线数据。"""
+    db = _get_conn()
+    normalized = _normalize_line_map(line_map)
+    if line_map is None:
+        try:
+            with open(os.path.join(_NB, "sandglass.txt"), "r", encoding="utf-8") as handle:
+                line_count = sum(1 for _ in handle)
+        except OSError:
+            line_count = 0
+        normalized = {line: line for line in range(1, line_count + 1)}
+
+    try:
+        db.commit()
+        trust_rows = db.execute(
+            "SELECT line_num, score, helpful, unhelpful, retrievals, updated_at FROM trust"
+        ).fetchall()
+        entity_rows = db.execute(
+            "SELECT name, line_nums, created_at FROM entities"
+        ).fetchall()
+        tag_rows = db.execute(
+            "SELECT line_num, category, tags, created_at FROM fact_tags"
+        ).fetchall()
+        graph_exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='wthread_triples'"
+        ).fetchone() is not None
+        graph_rows = []
+        if graph_exists:
+            graph_rows = db.execute(
+                "SELECT id, source_line FROM wthread_triples"
+            ).fetchall()
+
+        db.execute("BEGIN")
+        db.execute("DELETE FROM trust")
+        db.execute("DELETE FROM entities")
+        db.execute("DELETE FROM fact_tags")
+
+        trust_count = 0
+        for row in trust_rows:
+            new_line = normalized.get(int(row[0]))
+            if not new_line:
+                continue
+            db.execute(
+                "INSERT INTO trust (line_num, score, helpful, unhelpful, retrievals, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (new_line, row[1], row[2], row[3], row[4], row[5])
+            )
+            trust_count += 1
+
+        entity_count = 0
+        for row in entity_rows:
+            mapped_lines = _map_line_numbers(row[1], normalized)
+            if not mapped_lines:
+                continue
+            db.execute(
+                "INSERT INTO entities (name, line_nums, created_at) VALUES (?, ?, ?)",
+                (row[0], ",".join(str(line) for line in mapped_lines), row[2])
+            )
+            entity_count += 1
+
+        tag_count = 0
+        for row in tag_rows:
+            new_line = normalized.get(int(row[0]))
+            if not new_line:
+                continue
+            db.execute(
+                "INSERT INTO fact_tags (line_num, category, tags, created_at) VALUES (?, ?, ?, ?)",
+                (new_line, row[1], row[2], row[3])
+            )
+            tag_count += 1
+
+        graph_updated = 0
+        graph_removed = 0
+        if graph_exists:
+            for graph_id, source_line in graph_rows:
+                if not source_line:
+                    continue
+                new_line = normalized.get(int(source_line))
+                if not new_line:
+                    db.execute("DELETE FROM wthread_triples WHERE id = ?", (graph_id,))
+                    graph_removed += 1
+                elif new_line != source_line:
+                    db.execute(
+                        "UPDATE wthread_triples SET source_line = ? WHERE id = ?",
+                        (new_line, graph_id)
+                    )
+                    graph_updated += 1
+
+        db.commit()
+        global _commit_pending
+        _commit_pending = 0
+        return {
+            "ok": True,
+            "mappedLines": len(normalized),
+            "trustRows": trust_count,
+            "entityRows": entity_count,
+            "tagRows": tag_count,
+            "graphUpdated": graph_updated,
+            "graphRemoved": graph_removed,
+        }
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return {"ok": False, "error": str(exc)}
+
+
 # ═══════════════════ 反馈 ═══════════════════
 
 def shadow_feedback(line_num: int, helpful: bool) -> dict:

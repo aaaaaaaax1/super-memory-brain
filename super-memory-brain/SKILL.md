@@ -1,6 +1,6 @@
 ---
 name: super-memory-brain
-description: Public entry skill for explicit Super Memory Brain / 超级大脑 control, G1 status, memory recall, continuation, learning, automatic evolution closeout, restore, single-agent subagent workflow, legacy Agent Bridge, refresh, install, repair, or package maintenance. Load for clear wake/control/status/recall phrases such as 超级大脑, 启动超级大脑, 刷新超级大脑, Super Brain, G1, 任务状态, 还记得, 上次, 之前, 另一个会话, subagent execution/review/verification, agent channel, agent bridge, or subagent channel. Do not load this full skill for ordinary chat, simple coding, casual G1/product mentions, user-agent explanations, or human brain/脑子 self-reports unless the message primarily refers to this Super Brain system.
+description: Public entry skill for explicit Super Memory Brain / 超级大脑 control, G1 status, memory recall, continuation, learning, automatic evolution closeout, restore, single-agent subagent workflow, legacy Agent Bridge, refresh, install, repair, package maintenance, or configured workflow recall such as git怎么写, git呢, and 怎么提交. Load for clear wake/control/status/recall phrases such as 超级大脑, 启动超级大脑, 刷新超级大脑, Super Brain, G1, 任务状态, 还记得, 上次, 之前, 另一个会话, subagent execution/review/verification, agent channel, agent bridge, or subagent channel. Do not load this full skill for ordinary chat, simple coding, casual G1/product mentions, user-agent explanations, or human brain/脑子 self-reports unless the message primarily refers to this Super Brain system.
 ---
 
 ## Installed Root Markers
@@ -36,8 +36,13 @@ classify intent
 
 Ordinary chat, simple code, direct explanations, and casual mentions stay on the
 host path. Do not show a `G1` prefix or run memory scripts unless the user
-explicitly asks for memory/status/continuity or the answer depends on prior
-state.
+explicitly asks for memory/status/continuity, the answer depends on prior
+state, or a terse request matches a configured canonical workflow preference.
+
+Visible G1 invariant: when Super Brain, G1, ORC, NexSandglass, governed recall,
+or governed writeback actually participates in a turn, the final reply's first
+line is exactly `G1`. Intermediate updates do not carry the prefix. Never show
+`G1` when Super Brain did not participate, and never omit it when it did.
 
 Safety invariant: slimming may shorten or defer loading, but must not remove
 recall, status, continuation recovery, privacy gating, Agent Bridge, install,
@@ -56,6 +61,9 @@ Load this skill first for explicit Super Brain control:
   or explanation; `上次`, `之前`, `还记得`, `另一个会话`, previous/last-time wording
   signals possible historical recovery.
 - `记住`, remember preference, recall memory, learning, durable rule update.
+- A terse request matching a configured workflow preference. Perform one
+  bounded canonical lookup before replying; do not replace a current verified
+  response contract with generic command text.
 - Subagent execution/review/verification requests such as letting a subagent modify, test, audit, or produce evidence.
 - Legacy/manual Agent Bridge channel commands: `agent channel`, `subagent channel`, `agent bridge`, `子agent通道`, open/connect/send/read/close channel.
 
@@ -85,6 +93,7 @@ Hot route summary:
 | `historical_recovery` | previous/last/another session | `references/status-recovery.md` |
 | `privacy_memory_gate` | remember/store secret or sensitive data | `references/memory-governance.md` |
 | `memory_write_candidate` | stable preference/rule/decision | `references/memory-governance.md` |
+| `workflow_preference_recall` | configured terse workflow-format request | `references/memory-governance.md` |
 | `automatic_evolution_learning` | post-task bounded learning closeout | `references/automatic-evolution-policy.md` |
 | `anti_degradation_guard` | GPT-5 execution quality drift or instruction recovery | `references/base-instructions/gpt-5.5-base-instructions.md` |
 | `single_agent_subagent_workflow` | subagent execution/review/verification inside one agent | `references/single-agent-subagent-workflow.md` |
@@ -104,7 +113,8 @@ route is blocked without it.
 ## Memory Modes
 
 - `memory:auto`: default. Retrieve or write only when keyword/semantic triggers
-  and G1 policy justify it.
+  and G1 policy justify it. A configured terse workflow preference is one such
+  trigger and uses one bounded canonical lookup.
 - `memory:force`: user explicitly asks to remember/recall. Privacy still wins.
 - `memory:off`: no proactive retrieval or durable writes; use visible context.
 
@@ -194,6 +204,16 @@ or casual chat.
 When ORC is needed, read `capabilities.json` and `references/orc-routing.md`.
 Select the smallest useful skill/tool set. Avoid load-all-skills behavior.
 
+For non-trivial repair, optimization, architecture, migration, performance,
+root-cause, or best-option decisions, ORC applies the cross-cutting engineering
+judgment contract in `references/engineering-judgment.md` and uses
+`engineering-decision-gate.ps1` before meaningful mutation/completion. Keep
+FACT / INFERENCE / UNKNOWN separate, require evidence for facts, label root
+cause verified/hypothesis/unknown, test critical unknowns cheaply, qualify
+optimality by objective/constraints/alternatives/tradeoffs/criteria, and give
+each execution step input/output/acceptance/stop conditions. Ordinary chat and
+tiny direct tasks stay concise.
+
 ## Maintenance And Install
 
 For refresh/install/repair/hot-refresh, read `references/install-refresh.md`.
@@ -216,7 +236,7 @@ Current Phase 2 route regression files:
 
 Expected during Phase 3/4 draft and slimming:
 
-- Non-strict regression: `ok=true`, `total=28`, `failed=0`.
+- Non-strict regression: `ok=true`, `total=42`, `failed=0`.
 - Strict regression: `failed <= 17`, and every failure must be
   `known_baseline_gap` with `mustFixBeforePhase6=true`.
 
@@ -237,10 +257,12 @@ Before answering a Super Brain-triggered request, run this mental checklist:
 3. If status, decide task status vs system status before reading files.
 4. If continuation, decide current session vs historical recovery before recall.
 5. If memory write, run the privacy gate before any storage/search action.
-6. If subagent execution/review/verification is requested, use single-agent workflow before generic team dispatch.
-7. If explicit channel/open/connect/send/read/close is requested, choose legacy Agent Bridge.
-8. If ORC, confirm complexity justifies it and choose the smallest route.
-9. If maintenance, check approval and rollback requirements before writes.
+6. If a terse workflow phrase is configured, perform its bounded canonical
+   recall before replying; do not fall back to a generic template.
+7. If subagent execution/review/verification is requested, use single-agent workflow before generic team dispatch.
+8. If explicit channel/open/connect/send/read/close is requested, choose legacy Agent Bridge.
+9. If ORC, confirm complexity justifies it and choose the smallest route.
+10. If maintenance, check approval and rollback requirements before writes.
 
 Known baseline gaps must not be hidden by looser wording. Preserve the stricter
 target behavior in this draft even when current scripts still observe a weaker
@@ -271,6 +293,11 @@ Keep these compact markers until the full Pester suite is updated to read
 - DRIFT_DETECTED.
 - Self-learning loop rule.
 - Unfinished-task progress-only rule.
+- Engineering judgment rule.
+- engineering-decision-gate.ps1.
+- FACT / INFERENCE / UNKNOWN.
+- evidence_grounding.
+- engineering_decision.
 
 ## Output Style
 

@@ -15,8 +15,25 @@ Route discipline:
 - Use memory only when continuity or prior decisions affect correctness.
 - Keep user-visible route narration short.
 
+For approval-boundary decisions, read `references/execution-autonomy.md`.
+
 Known Phase 0b gap:
 - `complex-multi-domain-orc`
+
+## Engineering Judgment
+
+Engineering judgment is a cross-cutting ORC capability, not a new top-level
+route. Activate it for debugging, repair, optimization, architecture,
+migration, performance, root-cause analysis, consequential option selection,
+or best/optimal claims. Keep greetings, acknowledgements, simple factual
+answers, and tiny fully specified low-risk actions on the direct path.
+
+Use `references/engineering-judgment.md` as the method and
+`scripts/engineering-decision-gate.ps1` as the task-scoped evidence gate.
+Require FACT / INFERENCE / UNKNOWN separation, explicit root-cause confidence,
+the cheapest discriminating test for critical unknowns, objective/constraints/
+alternatives/tradeoffs/criteria before optimality, and input/output/acceptance/
+stop conditions for every execution step.
 
 ## Single-Agent Subagent Workflow
 

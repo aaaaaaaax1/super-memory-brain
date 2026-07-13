@@ -2,6 +2,7 @@ param(
   [switch]$Json,
   [switch]$AllowPrivacyRisk,
   [switch]$AllowActiveCheckpoint,
+  [switch]$RequireEngineeringDecision,
   [string]$TaskId = ''
 )
 
@@ -35,6 +36,18 @@ function Test-TaskScopedEvidence($Obj) {
   if ([string]::IsNullOrWhiteSpace($TaskId) -or -not $Obj) { return $true }
   return ([string]$Obj.taskId -eq $TaskId)
 }
+function U([int[]]$Codes) { return -join ($Codes | ForEach-Object { [char]$_ }) }
+function Test-EngineeringJudgmentIntent([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+  $lower = $Value.ToLowerInvariant()
+  foreach ($term in @('fix','debug','repair','optimize','optimization','architecture','architect','root cause','tradeoff','trade-off','best option','optimal','performance','bottleneck','regression','refactor','migration','failure analysis')) {
+    if ($lower.Contains($term)) { return $true }
+  }
+  foreach ($term in @((U @(20462,22797)),(U @(20248,21270)),(U @(26550,26500)),(U @(26681,22240)),(U @(26368,20248)),(U @(26368,20339)),(U @(24615,33021)),(U @(37325,26500)),(U @(25925,38556)),(U @(35774,35745)),(U @(20915,31574)))) {
+    if ($Value.Contains($term)) { return $true }
+  }
+  return $false
+}
 
 $currentTaskContext = Read-WorkspaceJson 'current-task-context.json'
 if ([string]::IsNullOrWhiteSpace($TaskId) -and $currentTaskContext -and [string]$currentTaskContext.status -eq 'active') { $TaskId = [string]$currentTaskContext.taskId }
@@ -42,9 +55,9 @@ $lastVerify = Read-WorkspaceJson 'last-verify-package.json'
 $lastHotRefresh = Read-WorkspaceJson 'last-hot-refresh.json'
 $lastTask = Read-WorkspaceJson 'last-task-verification.json'
 $smartNextAudit = $null
-$completionAuditExpectedRoles = @('pre_action_constraint','challenge_gate','review_verifier','test_strategy','real_user_path_verifier','version_record_keeper','cache_freshness_checker','skill_gap_repair')
+$completionAuditExpectedRoles = @('pre_action_constraint','challenge_gate','evidence_grounding','engineering_decision','review_verifier','test_strategy','real_user_path_verifier','version_record_keeper','cache_freshness_checker','skill_gap_repair')
 try {
-  $smartRaw = @(& (Join-Path $PSScriptRoot 'smart-next.ps1') 'completion skill audit verify test regression before completion' -Json 2>$null)
+  $smartRaw = @(& (Join-Path $PSScriptRoot 'smart-next.ps1') -Text 'completion skill audit verify test regression before completion' -Json 2>$null)
   if ($smartRaw) { $smartNextAudit = (($smartRaw -join "`n") | ConvertFrom-Json) }
 } catch {}
 $activeCheckpoint = Read-WorkspaceJson 'active-checkpoint.json'
@@ -54,6 +67,14 @@ $routeCheckpoint = Read-TaskScopedJson 'route-checkpoints' 'last-route-checkpoin
 $integrationParity = Read-TaskScopedJson 'integration-parity-check' 'last-integration-parity-check.json'
 $causalReview = Read-TaskScopedJson 'change-causality-reviews' 'last-causal-change-review.json'
 $contractReplay = Read-TaskScopedJson 'integration-contract-replay' 'last-integration-contract-replay.json'
+$engineeringDecisionRaw = Read-TaskScopedJson 'engineering-decisions' 'last-engineering-decision-gate.json'
+$engineeringDecision = if($engineeringDecisionRaw -and $engineeringDecisionRaw.latest){$engineeringDecisionRaw.latest}else{$engineeringDecisionRaw}
+$contextCurrent = $false
+if ($currentTaskContext -and [string]$currentTaskContext.status -eq 'active' -and [string]$currentTaskContext.version -eq [string](Get-SuperBrainManifest $Root).version) {
+  try { $contextCurrent = ([datetime]::Parse([string]$currentTaskContext.expiresAt) -gt (Get-Date)) } catch { $contextCurrent = $false }
+}
+$contextApplies = ($contextCurrent -and ([string]::IsNullOrWhiteSpace($TaskId) -or [string]$currentTaskContext.taskId -eq $TaskId))
+$engineeringRequired = ([bool]$RequireEngineeringDecision -or ($contextApplies -and (Test-EngineeringJudgmentIntent ([string]$currentTaskContext.acceptedGoal))))
 
 $checks = @()
 $verifyOk = ($lastVerify -and $lastVerify.ok -eq $true)
@@ -83,6 +104,10 @@ $checks += [pscustomobject]@{ name='causal-change-review'; ok=$causalReviewOk; e
 $checks += [pscustomobject]@{ name='task-scoped-integration-contract-replay'; ok=(Test-TaskScopedEvidence $contractReplay); evidence=if($contractReplay){"taskId=$($contractReplay.taskId) requiredTaskId=$TaskId"}else{'none'} }
 $contractReplayOk = (-not $contractReplay) -or (($contractReplay.unresolvedBehaviorMismatch -ne $true -and $contractReplay.ok -eq $true) -and (Test-TaskScopedEvidence $contractReplay))
 $checks += [pscustomobject]@{ name='integration-contract-replay'; ok=$contractReplayOk; evidence=if ($contractReplay) { "module=$($contractReplay.module) normalizedMatch=$($contractReplay.normalizedMatch) mismatches=$(@($contractReplay.mismatches).Count)" } else { 'none' } }
+$engineeringTaskMatch = (Test-TaskScopedEvidence $engineeringDecision)
+$engineeringResolutionOk = (-not $engineeringDecision -or [string]$engineeringDecision.rootCause.status -eq 'verified' -or -not [string]::IsNullOrWhiteSpace([string]$engineeringDecision.rootCause.discriminatingTestEvidence))
+$engineeringDecisionOk = (-not $engineeringRequired -or ($engineeringDecision -and $engineeringDecision.ok -eq $true -and @($engineeringDecision.gaps).Count -eq 0 -and $engineeringDecision.epistemicGrounding.factsSupported -eq $true -and $engineeringDecision.optimality.qualified -eq $true -and $engineeringResolutionOk -and @($engineeringDecision.executionChain).Count -gt 0 -and @($engineeringDecision.acceptanceCriteria).Count -gt 0 -and $engineeringTaskMatch))
+$checks += [pscustomobject]@{ name='engineering-decision-gate'; ok=$engineeringDecisionOk; evidence=if($engineeringRequired){if($engineeringDecision){"taskId=$($engineeringDecision.taskId) requiredTaskId=$TaskId decisionId=$($engineeringDecision.decisionId) factsSupported=$($engineeringDecision.epistemicGrounding.factsSupported) optimalityQualified=$($engineeringDecision.optimality.qualified) rootCauseStatus=$($engineeringDecision.rootCause.status) discriminatingTestEvidence=$(-not [string]::IsNullOrWhiteSpace([string]$engineeringDecision.rootCause.discriminatingTestEvidence)) gaps=$(@($engineeringDecision.gaps).Count)"}else{'missing valid task-scoped engineering decision'}}else{'not_required'} }
 
 function Add-JsonScriptCheck([string]$Name, [string]$ScriptName) {
   $ok = $false
@@ -116,6 +141,8 @@ $result = [pscustomobject]@{
   ok = ($failed.Count -eq 0)
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
   allowPrivacyRisk = [bool]$AllowPrivacyRisk
+  engineeringJudgmentRequired = $engineeringRequired
+  engineeringDecisionId = if($engineeringDecision){$engineeringDecision.decisionId}else{''}
   taskId = $TaskId
   failed = $failed.Count
   checks = @($checks)

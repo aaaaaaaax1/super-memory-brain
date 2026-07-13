@@ -1,7 +1,7 @@
-﻿{
+{
     "name":  "super-memory-brain-package",
-    "version":  "0.5.75",
-    "description":  "Focused native Windows skill injector with BAT/VBS entrypoints, global ZCode/Codex shared-memory injection, custom agent skill directory injection, preview-first install-backup cleanup, Hybrid Recall, ADR decision records, Memory Eval Harness, structured local memory, package-root and memory-root hot-load markers, scoped memory roots, verification, share privacy guards, silent START response discipline, Commander review gates, team memory retrieval, roadmap management, recall regression checks, task state reporting, cross-agent/session task identity indexing, lightweight task registration fast path, compact task status tables, scriptable intent gating, recovery E2E checks, detailed step ledgers, ranked resume candidates, host cache checks, paste-free current-task resume, ZCode TodoWrite avoidance, privacy sentinel checks, completion guard, maintenance tools, strict task verification parameter binding, smoke-test policy restoration, regression guards for completion-state isolation, dispatch learning, trigger simulation, intent routing, smart next actions, health summaries, agent scorecards, agent bridge isolation/failover, shared channel conversations with active target mode, task handoff, bridge dispatch packets, bridge role permissions, bridge queue relay, team-task archival, release readiness checks, a unified brain command, and safe version bump previews, and a read-only optimization advisor, and causal change plans for structural problem-solving, plus automatic workspace lifecycle maintenance, auto memory hygiene, policy-governed post-task maintenance hooks, self-improvement queues, and compaction-safe continuation priority.",
+    "version": "0.5.79",
+    "description":  "Focused native Windows skill injector with BAT/VBS entrypoints, global ZCode/Codex shared-memory injection, custom agent skill directory injection, preview-first install-backup cleanup, Hybrid Recall, ADR decision records, Memory Eval Harness, structured local memory, package-root and memory-root hot-load markers, scoped memory roots, verification, share privacy guards, silent START response discipline, Commander review gates, team memory retrieval, roadmap management, recall regression checks, task state reporting, cross-agent/session task identity indexing, lightweight task registration fast path, compact task status tables, scriptable intent gating, recovery E2E checks, detailed step ledgers, ranked resume candidates, host cache checks, paste-free current-task resume, ZCode TodoWrite avoidance, privacy sentinel checks, completion guard, maintenance tools, strict task verification parameter binding, smoke-test policy restoration, regression guards for completion-state isolation, dispatch learning, trigger simulation, intent routing, smart next actions, health summaries, agent scorecards, agent bridge isolation/failover, shared channel conversations with active target mode, task handoff, bridge dispatch packets, bridge role permissions, bridge queue relay, team-task archival, release readiness checks, a unified brain command, and safe version bump previews, and a read-only optimization advisor, and causal change plans for structural problem-solving, plus automatic workspace lifecycle maintenance, auto memory hygiene, policy-governed post-task maintenance hooks, self-improvement queues, compaction-safe continuation priority, and evidence-bounded engineering decision gates.",
     "entrySkill":  "super-memory-brain",
     "modules":  [
                     "skill-orchestrator",
@@ -146,6 +146,7 @@
                     "cognitive-preflight.ps1",
                     "integration-parity-check.ps1",
                     "causal-change-plan.ps1",
+                    "engineering-decision-gate.ps1",
                     "current-task-context.ps1",
                     "guard-negative-e2e.ps1",
                     "lesson-scope-gate.ps1",
@@ -214,6 +215,7 @@
                     "session-compact.ps1",
                     "verify-extensions.ps1",
                     "skill-evolution.ps1",
+                    "route-regression.ps1",
                     "install-ui-regression.ps1"
                 ],
     "scriptGroups":  {
@@ -275,6 +277,7 @@
                                              "autonomous-executor.ps1",
                                              "integration-parity-check.ps1",
                                              "causal-change-plan.ps1",
+                                             "engineering-decision-gate.ps1",
                                              "current-task-context.ps1",
                                              "guard-negative-e2e.ps1",
                                              "lesson-scope-gate.ps1",
@@ -300,7 +303,8 @@
                                              "agent-bridge-channel.ps1",
                                              "agent-bridge-dispatch.ps1",
                                              "agent-bridge-permissions.ps1",
-                                             "agent-bridge-queue.ps1"
+                                             "agent-bridge-queue.ps1",
+                                             "route-regression.ps1"
                                          ],
                          "team":  [
                                       "team-dispatch-check.ps1",
@@ -1174,13 +1178,22 @@
                                "notes":  "Writes causal change plans that connect observed problem, root cause, known facts, prior changes, proposed intervention, expected optimization, verification method, and residual risk before meaningful changes."
                            },
                            {
+                               "path":  "engineering-decision-gate.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Writes task-scoped evidence-bounded engineering decisions with FACT/INFERENCE/UNKNOWN separation, root-cause confidence, objective/constraints/options/tradeoffs/criteria, qualified optimality, dependency-ordered step contracts, acceptance, and residual risk; rejects unsupported facts, untested critical unknowns, and unjustified optimal claims."
+                           },
+                           {
                                "path":  "current-task-context.ps1",
                                "tier":  "T1",
                                "manualOnly":  false,
                                "dangerousSwitches":  [
                                                          "Clear"
                                                      ],
-                               "notes":  "Creates current-task-context.json so guard scripts inherit one taskId, accepted goal, route, evidence paths, and completion requirements instead of trusting stale global last-* state."
+                               "notes":  "Creates current-task-context.json so guard scripts inherit one taskId, accepted goal, route, causal/engineering/integration evidence paths, and completion requirements instead of trusting stale global last-* state."
                            },
                            {
                                "path":  "guard-negative-e2e.ps1",
@@ -1754,8 +1767,17 @@
                                "notes":  "Extension and skill ingestion hub: List/Inspect/RebuildMap are low-risk; can adopt a reviewed local skill/plugin. Adopt copies a local skill/plugin into extensions/\u003cid\u003e and requires explicit user intent."
                            },
                            {
-                               "path":  "install-ui-regression.ps1",
+                               "path":  "route-regression.ps1",
                                "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only structured intent-route regression runner. Non-strict mode preserves declared draft gaps; strict mode requires every observed route to match its expected route."
+                           },
+                           {
+                               "path":  "install-ui-regression.ps1",
+                               "tier":  "T1",
                                "manualOnly":  false,
                                "dangerousSwitches":  [
 

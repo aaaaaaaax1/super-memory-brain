@@ -173,7 +173,7 @@ if ($smartNext -and $smartNext.completionSkillAudit) {
     [void]$candidates.Add((Add-CandidateMetadata $c 'gap' 'missing_skill_role' 'medium' @($audit.expectedRoles) @($presentRoles) @($missingRoles) @('completionSkillAudit','skill_proficiency_self_learning_loop')))
       } else {
         $c = New-Candidate 'experience' 'Skill proficiency success sample should update routing confidence' ('Successful completion skill audit roles: ' + ($presentRoles -join ', ') + '; route: ' + (($routeNames | Select-Object -First 10) -join ' -> ')) 0.77 @($evidenceItems) 'A successful ORC route plan with no missing completion-audit roles can improve future skill selection confidence for skill proficiency self-learning.'
-        [void]$candidates.Add((Add-CandidateMetadata $c 'gap' 'skill_proficiency_success_sample' 'low' @('pre_action_constraint','challenge_gate','review_verifier','test_strategy','real_user_path_verifier','version_record_keeper','cache_freshness_checker','skill_gap_repair') @($presentRoles) @() @('completionSkillAudit','skill_proficiency_self_learning_loop')))
+        [void]$candidates.Add((Add-CandidateMetadata $c 'gap' 'skill_proficiency_success_sample' 'low' @('pre_action_constraint','challenge_gate','evidence_grounding','engineering_decision','review_verifier','test_strategy','real_user_path_verifier','version_record_keeper','cache_freshness_checker','skill_gap_repair') @($presentRoles) @() @('completionSkillAudit','skill_proficiency_self_learning_loop')))
       }
 }
 if ($candidates.Count -eq 0) {

@@ -48,33 +48,33 @@ Describe 'Execution-state resume regression guards' {
     $routerText = Get-Content -LiteralPath (Join-Path $root 'scripts\intent-router.ps1') -Raw -Encoding UTF8
     foreach ($marker in @('agent_bridge_channel','zhOpenChannel','zhConnectChannel','zhSendTo','no_auto_close')) { $routerText.Contains($marker) | Should Be $true }
     $smartText = Get-Content -LiteralPath (Join-Path $root 'scripts\smart-next.ps1') -Raw -Encoding UTF8
-    foreach ($marker in @('agent_bridge_channel','WaitConnect','WaitInbox','SendAndWait','Action Close','agent_bridge_channel_open_no_auto_close','do not create or launch a nested agent','skill-capability-map.ps1','orc_auto_composition_route','intent_plus_capability_map_not_user_menu','orcComposition','routePlan','dashboardOk','dashboardRisks','blockingConditions','completionSkillAudit','before_completion_skill_audit','missingRoles','real_user_path_verifier','version_record_keeper','cache_freshness_checker')) { $smartText.Contains($marker) | Should Be $true }
+    foreach ($marker in @('agent_bridge_channel','WaitConnect','WaitInbox','SendAndWait','Action Close','agent_bridge_channel_open_no_auto_close','do not create or launch a nested agent','skill-capability-map.ps1','orc_auto_composition_route','intent_plus_capability_map_not_user_menu','orcComposition','routePlan','dashboardOk','dashboardRisks','blockingConditions','completionSkillAudit','before_completion_skill_audit','missingRoles','evidence_grounding','engineering_decision','engineering-decision-gate.ps1','real_user_path_verifier','version_record_keeper','cache_freshness_checker')) { $smartText.Contains($marker) | Should Be $true }
   }
   It 'keeps cognitive execution preflight as memory-driven control layer' {
     $cognitivePath = Join-Path $root 'scripts\cognitive-preflight.ps1'
     Test-Path -LiteralPath $cognitivePath | Should Be $true
     $cognitiveText = Get-Content -LiteralPath $cognitivePath -Raw -Encoding UTF8
-    foreach ($marker in @('super-brain.cognitive-preflight.v1','memory_driven_execution_control','user_hard_rule','similar_experience','driftGuards','mustPreserve','noTodoWriteInZCode','idle_as_blocked','nested_agent_launch','using_stale_memory_over_live_evidence','skipping_reflection_after_user_correction','procedure-cards\agent-bridge-channel.json','procedure_memory','rule_skill_fusion','skill:ponytail','skill:grill-me','overengineering_without_ponytail_check','plan_without_grill_me_challenge','rule-skill-fusion','partial_progress_reported_as_final_completion','rule_skill_fusion_strategy','dynamic-rule-skill-fusion-strategy','pre_action_constraint_not_applied','challenge_gate_not_applied','review_verifier_skipped_before_completion')) { $cognitiveText.Contains($marker) | Should Be $true }
+    foreach ($marker in @('super-brain.cognitive-preflight.v1','memory_driven_execution_control','user_hard_rule','similar_experience','driftGuards','mustPreserve','noTodoWriteInZCode','idle_as_blocked','nested_agent_launch','using_stale_memory_over_live_evidence','skipping_reflection_after_user_correction','procedure-cards\agent-bridge-channel.json','procedure_memory','rule_skill_fusion','skill:ponytail','skill:grill-me','overengineering_without_ponytail_check','plan_without_grill_me_challenge','rule-skill-fusion','partial_progress_reported_as_final_completion','rule_skill_fusion_strategy','dynamic-rule-skill-fusion-strategy','pre_action_constraint_not_applied','challenge_gate_not_applied','review_verifier_skipped_before_completion','engineering_judgment','FACT','INFERENCE','UNKNOWN','unsupported_optimal_claim','engineering-decision-gate.ps1')) { $cognitiveText.Contains($marker) | Should Be $true }
     $skillText = Get-Content -LiteralPath (Join-Path $root 'super-memory-brain\SKILL.md') -Raw -Encoding UTF8
-    foreach ($marker in @('Cognitive execution loop rule','cognitive-preflight.ps1','cognitive-enforce.ps1','runtime-drift-checkpoint.ps1','reflection-promotion.ps1','semantic memory','episodic memory','procedural memory','working memory','DRIFT_DETECTED','Self-learning loop rule','Unfinished-task progress-only rule')) { $skillText.Contains($marker) | Should Be $true }
+    foreach ($marker in @('Cognitive execution loop rule','cognitive-preflight.ps1','cognitive-enforce.ps1','runtime-drift-checkpoint.ps1','reflection-promotion.ps1','semantic memory','episodic memory','procedural memory','working memory','DRIFT_DETECTED','Self-learning loop rule','Unfinished-task progress-only rule','Engineering judgment rule','engineering-decision-gate.ps1','FACT / INFERENCE / UNKNOWN')) { $skillText.Contains($marker) | Should Be $true }
   }
   It 'keeps 0.5.71 cognitive enforcement and self-learning guards' {
     $enforceText = Get-Content -LiteralPath (Join-Path $root 'scripts\cognitive-enforce.ps1') -Raw -Encoding UTF8
-    foreach ($marker in @('super-brain.cognitive-enforce.v1','last-cognitive-enforce.json','AllowMissingPreflight','High-risk work must pass cognitive preflight','mustPreserve','driftGuards')) { $enforceText.Contains($marker) | Should Be $true }
+    foreach ($marker in @('super-brain.cognitive-enforce.v1','last-cognitive-enforce.json','AllowMissingPreflight','fresh query-matched cognitive preflight','cognitive-preflight-query-match','engineering-decision-gate','mustPreserve','driftGuards')) { $enforceText.Contains($marker) | Should Be $true }
     $driftText = Get-Content -LiteralPath (Join-Path $root 'scripts\runtime-drift-checkpoint.ps1') -Raw -Encoding UTF8
     foreach ($marker in @('super-brain.runtime-drift-checkpoint.v1','runtime-drift-checkpoint.json','last-runtime-drift-checkpoint.json','DRIFT_DETECTED','unresolvedDrift','BeforeCompletion','nested_agent_launch','reply_as_goal_completed')) { $driftText.Contains($marker) | Should Be $true }
     $promotionText = Get-Content -LiteralPath (Join-Path $root 'scripts\reflection-promotion.ps1') -Raw -Encoding UTF8
-    foreach ($marker in @('super-brain.reflection-promotion.v1','Analyze','Preview','Apply','defaultNoDurableWrite','privacyCheck','duplicateCheck','confidenceThreshold','noDirectSkillMutation','skill-evolution.ps1','learn-memory.ps1','completionSkillAudit','skill_proficiency_self_learning_loop','missing_skill_role','skill_proficiency_success_sample','real_user_path_verifier','version_record_keeper','cache_freshness_checker')) { $promotionText.Contains($marker) | Should Be $true }
+    foreach ($marker in @('super-brain.reflection-promotion.v1','Analyze','Preview','Apply','defaultNoDurableWrite','privacyCheck','duplicateCheck','confidenceThreshold','noDirectSkillMutation','skill-evolution.ps1','learn-memory.ps1','completionSkillAudit','skill_proficiency_self_learning_loop','missing_skill_role','skill_proficiency_success_sample','evidence_grounding','engineering_decision','real_user_path_verifier','version_record_keeper','cache_freshness_checker')) { $promotionText.Contains($marker) | Should Be $true }
     $cardText = Get-Content -LiteralPath (Join-Path $root 'memory\workspace\procedure-cards\agent-bridge-channel.json') -Raw -Encoding UTF8
     foreach ($marker in @('super-brain.procedure-card.v1','nested_agent_launch','idle_as_blocked','auto_close_without_explicit_close','WaitInbox until explicit Close')) { $cardText.Contains($marker) | Should Be $true }
     $completionText = Get-Content -LiteralPath (Join-Path $root 'scripts\completion-guard.ps1') -Raw -Encoding UTF8
-    foreach ($marker in @('last-runtime-drift-checkpoint.json','runtime-drift-checkpoint','unresolvedDrift','smart-next.ps1','completion skill audit verify test regression before completion','completion-skill-audit','completionSkillAudit','missing_completion_skill_audit','real_user_path_verifier','version_record_keeper','cache_freshness_checker')) { $completionText.Contains($marker) | Should Be $true }
+    foreach ($marker in @('last-runtime-drift-checkpoint.json','runtime-drift-checkpoint','unresolvedDrift','smart-next.ps1','completion skill audit verify test regression before completion','completion-skill-audit','completionSkillAudit','missing_completion_skill_audit','RequireEngineeringDecision','engineering-decision-gate','discriminatingTestEvidence','evidence_grounding','engineering_decision','real_user_path_verifier','version_record_keeper','cache_freshness_checker')) { $completionText.Contains($marker) | Should Be $true }
   }
   It 'keeps skill capability map for ORC skill synergy' {
     $mapPath = Join-Path $root 'memory\workspace\skill-capability-map.json'
     Test-Path -LiteralPath $mapPath | Should Be $true
     $mapText = Get-Content -LiteralPath $mapPath -Raw -Encoding UTF8
-    foreach ($marker in @('super-brain.skill-capability-map.v1','ponytail','grill-me','agent-bridge','browser-act','skill-evolution-loop','pre_action_constraint','challenge_gate','real_user_path_verifier','version_record_keeper','cache_freshness_checker','current_task_guard','rules_as_execution_constraints')) { $mapText.Contains($marker) | Should Be $true }
+    foreach ($marker in @('super-brain.skill-capability-map.v1','ponytail','grill-me','agent-bridge','browser-act','skill-evolution-loop','pre_action_constraint','challenge_gate','evidence_grounding','engineering_decision','engineering-decision-gate','real_user_path_verifier','version_record_keeper','cache_freshness_checker','current_task_guard','rules_as_execution_constraints')) { $mapText.Contains($marker) | Should Be $true }
     $scriptText = Get-Content -LiteralPath (Join-Path $root 'scripts\skill-capability-map.ps1') -Raw -Encoding UTF8
     foreach ($marker in @('super-brain.skill-capability-map.result.v1','category','role','triggers','applyAt','verification','IncludeAuditHints','cannotDo','stopCondition','extension-capability-map.ps1','extension-capability-map.json','List','Detail','NoExtensions','extension capabilities','do not force the user to remember skill names')) { $scriptText.Contains($marker) | Should Be $true }
     $cognitiveText = Get-Content -LiteralPath (Join-Path $root 'scripts\cognitive-preflight.ps1') -Raw -Encoding UTF8
@@ -102,6 +102,7 @@ Describe 'Execution-state resume regression guards' {
 Describe '0.5.28 regression guards' {
   BeforeAll { $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
   It 'keeps task verification parameters non-positional' { (Get-Content -LiteralPath (Join-Path $root 'scripts\task-verification.ps1') -Raw -Encoding UTF8) | Should Match '\[CmdletBinding\(PositionalBinding\s*=\s*\$false\)\]' }
+  It 'keeps engineering decisions task scoped in current task context' { $scriptText = Get-Content -LiteralPath (Join-Path $root 'scripts\current-task-context.ps1') -Raw -Encoding UTF8; foreach($marker in @('engineeringDecisions','engineering-decisions','valid task-scoped engineering decision when engineering judgment applies')) { $scriptText.Contains($marker) | Should Be $true } }
   It 'restores memory sharing policy after smoke tests' { $scriptText = Get-Content -LiteralPath (Join-Path $root 'scripts\smoke-test.ps1') -Raw -Encoding UTF8; $scriptText.Contains('Get-SuperBrainSharingPolicyPath') | Should Be $true; $scriptText.Contains('Write-Utf8NoBom $policyPath $originalPolicy') | Should Be $true; $scriptText.Contains('Remove-Item -LiteralPath $policyPath -Force') | Should Be $true }
   It 'restores memory sharing policy after verify-package temp installs' { $scriptText = Get-Content -LiteralPath (Join-Path $root 'scripts\verify-package.ps1') -Raw -Encoding UTF8; $scriptText.Contains('.tmp-verify-package') | Should Be $true; $scriptText.Contains('Get-SuperBrainSharingPolicyPath') | Should Be $true; $scriptText.Contains('Write-Utf8NoBom $policyPath $originalPolicy') | Should Be $true; $scriptText.Contains('Remove-Item -LiteralPath $policyPath -Force') | Should Be $true }
   It 'keeps verify-package completion guard task scoped' { $scriptText = Get-Content -LiteralPath (Join-Path $root 'scripts\verify-package.ps1') -Raw -Encoding UTF8; foreach ($marker in @('last-task-verification.json','$completionGuardTaskId','completion-guard.ps1','-TaskId $completionGuardTaskId','completion guard fields missing')) { $scriptText.Contains($marker) | Should Be $true } }
@@ -217,5 +218,57 @@ Describe 'Installer capability invariant guards' {
     foreach ($marker in @('Installer Capability Invariant','install.bat','one-click global inject/refresh','memory import','share package generation','install-ui-regression.ps1')) { $installRef.Contains($marker) | Should Be $true }
     $regText = Get-Content -LiteralPath (Join-Path $root 'scripts\install-ui-regression.ps1') -Raw -Encoding UTF8
     foreach ($marker in @('install.bat','share package verification and privacy shape','memory import dry-run','hot-refresh report-only narrow scope','cold-reference addition')) { $regText.Contains($marker) | Should Be $true }
+  }
+}
+
+Describe 'Canonical workflow preference recall guards' {
+  BeforeAll {
+    $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    function U([int[]]$Codes) { return -join ($Codes | ForEach-Object { [char]$_ }) }
+    $gitHow = 'git' + (U @(24590,20040,20889))
+  }
+
+  It 'normalizes workflow phrase whitespace punctuation and case inside scope' {
+    $prompt = 'Git ' + (U @(24590,20040,20889)) + [char]65311
+    $result = (& (Join-Path $root 'scripts\intent-router.ps1') -Text $prompt -Workspace 'G:\Atoapi' -Json) | ConvertFrom-Json
+    $result.intent | Should Be 'workflow_preference_recall'
+    $result.workflowPreference.decisionKey | Should Be 'git-ui-commit-response'
+    $result.workflowPreference.normalizedInput | Should Be $gitHow
+  }
+
+  It 'does not apply a project-scoped workflow preference outside its scope' {
+    $result = (& (Join-Path $root 'scripts\intent-router.ps1') -Text $gitHow -Workspace 'G:\OtherProject' -Json) | ConvertFrom-Json
+    $result.intent | Should Be 'general_task'
+  }
+
+  It 'resolves the exact current verified response contract through smart next' {
+    $result = (& (Join-Path $root 'scripts\smart-next.ps1') -Text $gitHow -Workspace 'G:\Atoapi' -Json) | ConvertFrom-Json
+    $result.ok | Should Be $true
+    $result.intent | Should Be 'workflow_preference_recall'
+    $result.canonicalResponseContract.status | Should Be 'resolved'
+    $result.canonicalResponseContract.decisionKey | Should Be 'git-ui-commit-response'
+    $result.canonicalResponseContract.content.Contains('Summary') | Should Be $true
+    $result.canonicalResponseContract.content.Contains('Description') | Should Be $true
+    $result.canonicalResponseContract.content.Contains('Commit button text') | Should Be $true
+  }
+}
+
+Describe 'Root marker and startup bootstrap guards' {
+  BeforeAll {
+    $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    . (Join-Path $root 'scripts\common.ps1')
+  }
+
+  It 'refuses to write a package root marker for a missing target' {
+    $skillDir = Join-Path $TestDrive 'skill'
+    New-Item -ItemType Directory -Force -Path $skillDir | Out-Null
+    { Write-SuperBrainPackageRootMarker $skillDir (Join-Path $TestDrive 'missing-package') } | Should Throw
+  }
+
+  It 'keeps one canonical startup block with workflow and G1 hot guards' {
+    $commonText = Get-Content -LiteralPath (Join-Path $root 'scripts\common.ps1') -Raw -Encoding UTF8
+    foreach ($marker in @('legacyPattern','Workflow trigger hot index','decision_key=git-ui-commit-response','G1 visibility','PACKAGE_ROOT_MARKER_SOURCE_MISSING','PACKAGE_ROOT_MARKER_VERIFY_FAILED')) {
+      $commonText.Contains($marker) | Should Be $true
+    }
   }
 }

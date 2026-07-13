@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.79
+
+- Added bounded memory lifecycle with global and per-layer budgets, write admission, expiry-aware hygiene planning, and budget-aware health and optimization signals.
+- Hardened applied memory hygiene to rebuild Sandglass, SQLite FTS, Shadow Sand, and graph line references after physical record removal while preserving trust and tag metadata.
+
+## 0.5.78
+
+- Added evidence-bounded engineering judgment with FACT/INFERENCE/UNKNOWN grounding, qualified optimality, task-scoped decision and execution gates, and active ORC routing without a new top-level route.
+- Added deterministic negative gates for unsupported facts, untested root-cause hypotheses, unresolved completion hypotheses, unjustified optimality, and execution steps without input/output/acceptance/stop contracts.
+- Added `evidence_grounding` and `engineering_decision` ORC capability roles, direct-path exclusions for greetings/tiny tasks, and task-scoped completion integration across cognitive preflight/enforcement, smart-next, current-task context, and completion guard.
+- Added positive/negative/activation Pester coverage plus an engineering-judgment procedure card, memory policy, cold reference, command documentation, and recall fixture.
+- Fixed `version-bump.ps1` replacement-group ambiguity and multiline current-version restoration so README and `BASELINE_HISTORY.md` remain valid after a bump.
+- Shortened task-scoped causal/engineering evidence slugs while retaining hash identity so atomic `.tmp` writes stay below legacy Windows path limits in deep package roots.
+- Fixed PowerShell 5.1 Sandglass result enumeration in `recall-search.ps1` and narrowed `profile-card.ps1` relevance terms so freshly written `[PROFILE]` preferences are immediately retrievable instead of being misread as one nested row or filtered out.
+- Made governed profile writes rebuild `profile-card.json` with an exact preferred-title recall before merging general profile summaries, so newly accepted preferences survive new-session startup even when the backend recent view is stale or older keyword-heavy records dominate broad search.
+- Fixed NexSandglass `recent(n)` reverse-tail handling for long records spanning 4 KB chunks; larger recent windows now preserve partial lines and return the true newest records instead of silently jumping back to old history.
+
+## 0.5.77
+
+- Harden historical recovery intent routing, relevance-gated recall, and explicit missing-evidence anti-hallucination boundaries.
+
+## 0.5.76
+
+- Repair health truth synchronization, modern verifier contracts, completion-audit role routing, host sync readiness, ADR integrity, and memory hygiene.
+
 ## 0.5.75
 
 - Added the Super Brain extension/skill ingestion hub: `extension-ingest.ps1` lists, inspects, adopts, and rebuilds routable extension capabilities.

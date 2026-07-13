@@ -42,7 +42,17 @@ Run-Step 'impact-advisor' (Join-Path $PSScriptRoot 'impact-advisor.ps1') @('-Cha
 Run-Step 'super-brain-dashboard' (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') @('-Json')
 Run-Step 'auto-continuation' (Join-Path $PSScriptRoot 'auto-continuation.ps1') @('-Json')
 Run-Step 'status-snapshot-writer' (Join-Path $PSScriptRoot 'status-snapshot-writer.ps1') @('-Summary','CI status-card refresh','-NextAction','Continue from verified CI status card.','-Json')
-Run-Step 'completion-guard' (Join-Path $PSScriptRoot 'completion-guard.ps1') @('-Json','-AllowPrivacyRisk')
+$completionGuardArgs = @('-Json','-AllowPrivacyRisk')
+try {
+  $lastTaskPath = Join-Path $workspace 'last-task-verification.json'
+  if (Test-Path -LiteralPath $lastTaskPath) {
+    $lastTask = Get-Content -LiteralPath $lastTaskPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($lastTask -and -not [string]::IsNullOrWhiteSpace([string]$lastTask.taskId)) { $completionGuardArgs += @('-TaskId',[string]$lastTask.taskId) }
+  }
+} catch {
+  Write-Host "CI_INFO completion_guard_task_lookup_failed message=$($_.Exception.Message)"
+}
+Run-Step 'completion-guard' (Join-Path $PSScriptRoot 'completion-guard.ps1') $completionGuardArgs
 Run-Step 'memory-quality-fixer' (Join-Path $PSScriptRoot 'memory-quality-fixer.ps1') @('-Json')
 Run-Step 'lesson-replay' (Join-Path $PSScriptRoot 'lesson-replay.ps1') @('-Query','install ui','-Json')
 Run-Step 'dispatch-learning' (Join-Path $PSScriptRoot 'dispatch-learning.ps1') @('-Json')

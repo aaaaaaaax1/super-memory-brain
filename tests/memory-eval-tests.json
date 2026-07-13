@@ -168,7 +168,7 @@
                             "recallTriggered",
                             "keywordTriggers",
                             "semanticTriggers",
-                            "Autonomous recall rule",
+                            "Memory Modes",
                             "codexMemoryRootOk"
                         ],
         "mustNotContain":  [
@@ -201,7 +201,7 @@
                             "mustPreserve",
                             "mustNotViolate",
                             "guardHash",
-                            "Accepted constraints preflight rule"
+                            "Apply these accepted constraints before editing"
                         ],
         "mustNotContain":  [
 
@@ -226,7 +226,7 @@
                             "rawTranscript=$false",
                             "longSnippet=$false",
                             "historyTail=$false",
-                            "Do not replace this with default restore tails or long snippets"
+                            "No accepted constraints found for this query"
                         ],
         "mustNotContain":  [
 
@@ -334,7 +334,7 @@
                         "scripts/ci.ps1"
                     ],
         "mustContain":  [
-                            "Status-card cache rule",
+                            "current_task_status",
                             "status-card.json",
                             "statusCardPath",
                             "status-snapshot-writer"
@@ -359,10 +359,10 @@
                         "scripts/repair-hook.ps1"
                     ],
         "mustContain":  [
-                            "Bare Super Brain trigger rule",
-                            "Visible `G1` prefix is explicit-only",
-                            "ordinary acknowledgements",
-                            "dormant `memory:auto` routing",
+                            "Wake And Route Triggers",
+                            "Visible G1 invariant",
+                            "Ordinary greeting or chat",
+                            "memory:auto",
                             "bare_superbrain_zh",
                             "bare_g1",
                             "ack_ok_no_problem_zh",
@@ -399,7 +399,7 @@
                         "scripts/doctor.ps1"
                     ],
         "mustContain":  [
-                            "Temporary session binding protocol",
+                            "temporary_workspace_only",
                             "session-binding.json",
                             "ttlMinutes",
                             "expiresAt",
@@ -408,7 +408,7 @@
                             "temporary_session_binding",
                             "session_binding_version_mismatch",
                             "noRawChat",
-                            "Avoidable Issue Elimination Rule"
+                            "noDefaultDeepRecall"
                         ],
         "mustNotContain":  [
 
@@ -539,8 +539,8 @@
                         "scripts/trigger-simulation.ps1"
                     ],
         "mustContain":  [
-                            "Fast Session Resume rule",
-                            "继续 #sess_xxx",
+                            "fast-session-resume",
+                            "bindSession",
                             "fastSessionResume",
                             "noDefaultDeepRecall",
                             "sessionIdSummaryOnly",
@@ -569,11 +569,11 @@
                         "manifest.json"
                     ],
         "mustContain":  [
-                            "Project Graph Continuity rule",
-                            "Multi-agent memory isolation rule",
-                            "Evidence freshness gate",
-                            "Long-context safe learning rule",
-                            "Step/structure anti-drift rule",
+                            "super-brain.project-graph.v2",
+                            "Multi-agent findings stay candidate/advisory/private",
+                            "evidence-freshness guards current-state conclusions",
+                            "accepted constraints cannot be overridden by stale chat memory",
+                            "step-ledger guards multi-step work from omissions",
                             "project-graph.json",
                             "structure-baseline.json",
                             "step-ledger.json",
@@ -644,9 +644,9 @@
         "mustContain":  [
                             "task-index.ps1",
                             "last-task-index.json",
-                            "有哪些任务",
-                            "任务列表",
-                            "numbered shortlist",
+                            "choiceListPolicy",
+                            "rankingPolicy",
+                            "numbered choice list",
                             "active-checkpoint.json",
                             "task-graph.json",
                             "step-ledger.json",
@@ -684,9 +684,9 @@
                             "clarify",
                             "canMutate",
                             "shouldExecute",
-                            "不要执行",
-                            "任务状态",
-                            "按这个做"
+                            "do not execute",
+                            "current task status/list only",
+                            "go ahead"
                         ],
         "mustNotContain":  [
 
@@ -970,5 +970,92 @@
                      "channel",
                      "target-mode"
                  ]
+    },
+    {
+        "id":  "static-workflow-preference-exact-recall",
+        "question":  "配置工作流短语是否经过作用域与归一化后精确查询 canonical decision？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "memory-policy.json",
+                        "references/memory-governance.md",
+                        "scripts/intent-router.ps1",
+                        "scripts/smart-next.ps1",
+                        "scripts/common.ps1"
+                    ],
+        "mustContain":  [
+                            "workflowPreferenceTriggers",
+                            "Normalize-WorkflowText",
+                            "Test-WorkflowPreferenceScope",
+                            "decision-search.ps1",
+                            "canonicalResponseContract",
+                            "Workflow trigger hot index",
+                            "G1 visibility"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "memory",
+                     "workflow_preference",
+                     "canonical"
+                 ]
+    },
+    {
+        "id":  "decision-workflow-git-ui-commit-response",
+        "question":  "git-ui-commit-response",
+        "key":  "git-ui-commit-response",
+        "relation":  "decides",
+        "currentOnly":  true,
+        "mode":  "decisionSearch",
+        "topK":  1,
+        "maxTokens":  600,
+        "minResults":  1,
+        "mustContain":  [
+                            "Summary",
+                            "Description",
+                            "Commit button text"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "memory",
+                     "workflow_preference",
+                     "canonical"
+                 ]
+    },
+    {
+        "id":  "static-bounded-memory-lifecycle",
+        "question":  "长期记忆是否有预算、分层配额、写入门禁和确认式淘汰？",
+        "mode":  "staticSources",
+        "sources":  [
+                        "memory-policy.json",
+                        "references/memory-governance.md",
+                        "scripts/common.ps1",
+                        "scripts/memory-health.ps1",
+                        "scripts/write-memory.ps1",
+                        "scripts/auto-hygiene-runner.ps1",
+                        "scripts/optimize-advisor.ps1"
+                    ],
+        "mustContain":  [
+                            "lifecycle",
+                            "maxLines",
+                            "maxChars",
+                            "maxLinesByLayer",
+                            "Get-SuperBrainMemoryBudget",
+                            "memory budget blocked",
+                            "budgetOverflow",
+                            "memory_budget_near_limit",
+                            "requireConfirmationForBudgetOverflow"
+                        ],
+        "mustNotContain":  [
+
+                           ],
+        "tags":  [
+                     "memory",
+                     "bounded-lifecycle",
+                     "anti-hallucination"
+                 ],
+        "weight":  1
     }
 ]

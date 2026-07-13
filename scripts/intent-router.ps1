@@ -1,19 +1,29 @@
 param(
   [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Text,
+  [string]$Workspace = '',
   [switch]$Json
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 
 $ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
 $inputText = (($Text -join ' ').Trim())
+if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = (Get-Location).Path }
 $normalized = $inputText.ToLowerInvariant()
 $intent = 'general_task'
 $confidence = 0.55
 $recommendedAction = 'Use smart-next.ps1 or ask for the next concrete task.'
 $dispatchHints = @()
 $commands = @('scripts\smart-next.ps1 -Json')
+$workflowPreferenceTriggers = @()
+try {
+  $memoryPolicy = Get-Content -LiteralPath (Join-Path $Root 'memory-policy.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($memoryPolicy.retrieval.PSObject.Properties['workflowPreferenceTriggers']) {
+    $workflowPreferenceTriggers = @($memoryPolicy.retrieval.workflowPreferenceTriggers)
+  }
+} catch {}
 
 function U([int[]]$Codes) {
   return -join ($Codes | ForEach-Object { [char]$_ })
@@ -87,6 +97,42 @@ function Test-All([string[]]$Needles) {
   return $true
 }
 
+function Normalize-WorkflowText([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+  $form = $Value.Normalize([System.Text.NormalizationForm]::FormKC).ToLowerInvariant()
+  return [regex]::Replace($form, '[\s\p{P}\p{S}]+', '')
+}
+
+function Test-WorkflowPreferenceScope([object]$Candidate) {
+  $scope = [string]$Candidate.scope
+  if ([string]::IsNullOrWhiteSpace($scope)) { return $true }
+  $context = ($Workspace + ' ' + $inputText).ToLowerInvariant()
+  foreach ($term in @($scope -split '[/,;|]')) {
+    $value = ([string]$term).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($value) -and $context.Contains($value)) { return $true }
+  }
+  return $false
+}
+
+$workflowPreferenceMatch = $null
+$workflowPreferenceMatchedPhrase = ''
+$normalizedWorkflowInput = Normalize-WorkflowText $inputText
+foreach ($candidate in @($workflowPreferenceTriggers)) {
+  if (-not (Test-WorkflowPreferenceScope $candidate)) { continue }
+  foreach ($phrase in @($candidate.phrases)) {
+    $value = [string]$phrase
+    $normalizedPhrase = Normalize-WorkflowText $value
+    if (-not [string]::IsNullOrWhiteSpace($normalizedPhrase) -and $normalizedWorkflowInput.Contains($normalizedPhrase)) {
+      $workflowPreferenceMatch = $candidate
+      $workflowPreferenceMatchedPhrase = $value
+      break
+    }
+  }
+  if ($null -ne $workflowPreferenceMatch) { break }
+}
+$hasWorkflowPreferenceRecall = ($null -ne $workflowPreferenceMatch)
+$workflowPreference = $null
+
 $isUserAgentQuestion = (
   $normalized.Contains('user agent') -and
   (Test-Any @('what is','what''s','meaning','explain',$zhWhatIs))
@@ -107,12 +153,17 @@ $hasAgentBridgeIntent = (
   (($normalized.Contains($zhTo) -or $normalized.Contains($zhGive)) -and (Test-Any @($zhSendTo,$zhSendMsg)) -and (Test-Any @($zhSubAgent,'codex','agent'))) -or
   (($normalized.Contains($zhReadChannelReply) -or $normalized.Contains($zhCloseChannel)) -and $normalized.Contains($zhChannel))
 )
+$hasHistoricalReference = Test-Any @(
+  'previous task','last task','previous session','last session','last time','last-time','another session',
+  'remember last','remember previous','do you remember',
+  $zhLast,$zhBefore,$zhAnotherSession
+)
 $hasHistoricalContinue = (
-  (Test-Any @($zhContinue,'continue','resume')) -and
-  (Test-Any @('previous','last time','last-time','another session',$zhLast,$zhBefore,$zhAnotherSession))
+  ((Test-Any @($zhContinue,'continue','resume')) -and $hasHistoricalReference) -or
+  $hasHistoricalReference
 )
 $hasCurrentTaskStatus = (
-  (Test-Any @('task status','current progress','where are we','where are we at','next step',$zhTask + $zhStatus,$zhNowWhere)) -or
+  (Test-Any @('task status','current progress','where are we','where are we at','next step',($zhTask + $zhStatus),$zhNowWhere)) -or
   ($normalized.Contains($zhTask) -and $normalized.Contains($zhStatus))
 )
 $hasSystemStatus = Test-Any @('super brain status','g1 status','system status','health','version','dashboard','overall','ready')
@@ -128,7 +179,10 @@ $hasComplexOrc = (
   (Test-Any @('multi-step','migration','migrate','tests','test plan')) -and
   (Test-Any @('plan','app','release','migration','migrate'))
 )
-$hasMaintenanceHotRefresh = Test-Any @('hot-refresh','hot refresh',$zhRefreshSuperBrain) -or ((Test-Any @('refresh',$zhRefresh)) -and (Test-Any @('super brain','superbrain',$zhSuperBrain,'install',$zhInstall)))
+$hasMaintenanceHotRefresh = (
+  (Test-Any @('hot-refresh','hot refresh',$zhRefreshSuperBrain)) -or
+  ((Test-Any @('refresh',$zhRefresh)) -and (Test-Any @('super brain','superbrain',$zhSuperBrain,'install',$zhInstall)))
+)
 $hasSingleAgentWorkflow = (
   -not $hasAgentBridgeIntent -and
   (Test-Any @('subagent','sub-agent','executor subagent','reviewer subagent','verifier subagent',$zhProxyAgent,($zhExecute + $zhProxyAgent),($zhAudit + $zhProxyAgent),($zhVerify + $zhProxyAgent))) -and
@@ -165,6 +219,26 @@ if ($isUserAgentQuestion -or $isAgentMeaningQuestion -or ($isAgentConceptQuestio
   $recommendedAction = 'Treat as a compact durable preference candidate after conflict and privacy checks.'
   $commands = @('references\memory-governance.md')
   $dispatchHints = @('memory_write_candidate','compact_preference')
+} elseif ($hasWorkflowPreferenceRecall) {
+  $intent = 'workflow_preference_recall'
+  $confidence = 0.98
+  $preferenceId = [string]$workflowPreferenceMatch.id
+  $recallQuery = [string]$workflowPreferenceMatch.query
+  $decisionKey = [string]$workflowPreferenceMatch.decisionKey
+  $workflowPreference = [pscustomobject]@{
+    id = $preferenceId
+    decisionKey = $decisionKey
+    query = $recallQuery
+    scope = [string]$workflowPreferenceMatch.scope
+    matchedPhrase = $workflowPreferenceMatchedPhrase
+    normalizedInput = $normalizedWorkflowInput
+  }
+  $recommendedAction = "Perform one bounded memory:auto canonical lookup for workflow preference '$preferenceId' before answering. Use only the current verified record for '$decisionKey'; preserve its response format and do not substitute generic Git commands."
+  $commands = @(
+    'references\memory-governance.md',
+    "scripts\decision-search.ps1 -Key `"$decisionKey`" -CurrentOnly -Relation decides -TopK 1 -MaxTokens 400 -Json"
+  )
+  $dispatchHints = @('workflow_preference_recall','current_verified_canonical_only','no_generic_fallback')
 } elseif ($hasHistoricalContinue) {
   $intent = 'historical_recovery'
   $confidence = 0.9
@@ -233,11 +307,13 @@ $result = [pscustomobject]@{
   ok = $true
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
   input = $inputText
+  workspace = $Workspace
   intent = $intent
   confidence = $confidence
   recommendedAction = $recommendedAction
   dispatchHints = @($dispatchHints)
   commands = @($commands)
+  workflowPreference = $workflowPreference
 }
 
 if ($Json) { $result | ConvertTo-Json -Depth 8 } else { Write-Host "INTENT_ROUTER intent=$intent confidence=$confidence action=$recommendedAction" }

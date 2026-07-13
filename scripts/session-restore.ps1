@@ -41,6 +41,16 @@ if ($MemoryMode -eq 'off') {
   exit 0
 }
 
+$routeIntent = ''
+if (-not [string]::IsNullOrWhiteSpace($Query)) {
+  try {
+    $intentOutput = @(& (Join-Path $PSScriptRoot 'intent-router.ps1') -Text $Query -Json 6>$null)
+    $intentResult = (($intentOutput -join "`n") | ConvertFrom-Json)
+    $routeIntent = [string]$intentResult.intent
+  } catch {}
+}
+$historicalRecoveryIntent = ($routeIntent -eq 'historical_recovery')
+
 $state = $null
 $statePath = Join-Path $workspace 'super-brain-state.json'
 if (Test-Path $statePath) {
@@ -115,6 +125,7 @@ if (-not [string]::IsNullOrWhiteSpace($Query) -and -not $fastSessionResume) {
   }
   if ($continuationOnly -and -not $Deep -and $MemoryMode -ne 'force') { $shouldRecall = $false }
 }
+if ($historicalRecoveryIntent) { $shouldRecall = $true }
 if ($fastSessionResume -and -not $Deep -and $MemoryMode -ne 'force') { $shouldRecall = $false }
 
 $recall = @()
@@ -122,8 +133,21 @@ if ($shouldRecall) {
   $defaultRecallQuery = $continueWord + ' ' + (U @(0x4E0A,0x6B21)) + ' ' + (U @(0x6700,0x8FD1)) + ' ' + (U @(0x4F1A,0x8BDD)) + ' ' + (U @(0x8BB0,0x5FC6)) + ' ' + (U @(0x504F,0x597D)) + ' ' + (U @(0x9879,0x76EE))
   $recallQuery = if ([string]::IsNullOrWhiteSpace($Query)) { $defaultRecallQuery } else { $Query }
   $recallOutput = @(& (Join-Path $PSScriptRoot 'recall-search.ps1') -Query $recallQuery -TopK $TopK -MaxTokens ([Math]::Max(200, $MaxTokens - 300)) -MemoryMode $MemoryMode -Json 2>&1)
-  try { $recall = (($recallOutput -join "`n") | ConvertFrom-Json) } catch { $recall = @() }
+  try { $recall = @((($recallOutput -join "`n") | ConvertFrom-Json) | Where-Object { $_ -ne $null }) } catch { $recall = @() }
 }
+
+if ($historicalRecoveryIntent) {
+  $recall = @($recall | Where-Object {
+    $card = if ($_.evidenceCard) { $_.evidenceCard } else { $_ }
+    $tags = @($card.tags)
+    $verified = ([string]$card.lastVerified -eq 'verified' -or $tags -contains '[VERIFIED]')
+    $current = ($tags -contains '[CURRENT]')
+    $relevant = ([string]$card.relevanceStatus -eq 'matched' -or $_.relevanceOk -eq $true)
+    $verified -and $current -and $relevant -and -not ($tags -contains '[STALE]')
+  })
+}
+$historicalEvidenceStatus = if (-not $historicalRecoveryIntent) { 'not_requested' } elseif (@($recall).Count -gt 0) { 'found' } else { 'missing' }
+$evidenceClaimAllowed = (-not $historicalRecoveryIntent -or $historicalEvidenceStatus -eq 'found')
 
 $sessionBinding = $null
 if ($BindSession) {
@@ -146,10 +170,15 @@ function New-CompactEvidenceCard([object]$Card) {
   $claim = [string]$Card.claim
   if ($claim.Length -gt 180) { $claim = $claim.Substring(0, 180) + '...' }
   $evidenceCard = [ordered]@{
+    source = [string]$Card.source
     sourceType = [string]$Card.sourceType
     claim = $claim
     whyRelevant = [string]$Card.whyRelevant
     confidence = $Card.confidence
+    lastVerified = [string]$Card.lastVerified
+    relevanceStatus = [string]$Card.relevanceStatus
+    matchedTerms = @($Card.matchedTerms)
+    requiredMatchCount = $Card.requiredMatchCount
     tags = @($Card.tags)
     tokenEstimate = $Card.tokenEstimate
   }
@@ -199,6 +228,15 @@ $lightPacket = [pscustomobject]@{
   memoryRoot = $MemoryRoot
   tokenBudget = $MaxTokens
   recallTriggered = $shouldRecall
+  routeIntent = $routeIntent
+  historicalEvidenceStatus = $historicalEvidenceStatus
+  evidenceStatus = [pscustomobject]@{
+    status = $historicalEvidenceStatus
+    historicalRecovery = $historicalRecoveryIntent
+    claimAllowed = $evidenceClaimAllowed
+    verifiedCurrentCount = @($recall).Count
+    reason = if ($historicalEvidenceStatus -eq 'missing') { 'No current verified relevant historical evidence matched the request.' } elseif ($historicalEvidenceStatus -eq 'found') { 'Current verified relevant historical evidence is available.' } else { 'Historical recovery was not requested.' }
+  }
   state = if ($state) { [pscustomobject]@{ version=$state.version; ok=$state.ok; hookOk=$state.hookOk; lastVerifyOk=$state.lastVerifyOk; updatedAt=$state.updatedAt } } else { $null }
   statusCard = if ($statusCard) { [pscustomobject]@{ version=$statusCard.version; ok=$statusCard.ok; packageOk=$statusCard.packageOk; verifyOk=$statusCard.verifyOk; updatedAt=$statusCard.updatedAt; risksCount=$statusCard.risksCount; nextAction=$statusCardNextAction } } else { $null }
   activeCheckpoint = if ($activeCheckpoint) { New-CompactCheckpoint $activeCheckpoint } else { $null }
@@ -212,7 +250,7 @@ $lightPacket = [pscustomobject]@{
     $card = if ($_.evidenceCard) { $_.evidenceCard } else { $_ }
     New-CompactEvidenceCard $card
   } | Where-Object { $_ -ne $null })
-  nextAction = if ($fastSessionResume) { 'Fast session resume: use the explicit session binding, status card, checkpoint, and current visible context first; do not run deep recall unless details are missing.' } elseif ($shouldRecall) { 'Use evidenceCards only if relevant; do not inject raw memory beyond the token budget.' } else { 'No deep recall needed unless the user asks for continuity, memory, preferences, or previous-session context.' }
+  nextAction = if ($fastSessionResume) { 'Fast session resume: use the explicit session binding, status card, checkpoint, and current visible context first; do not run deep recall unless details are missing.' } elseif ($historicalEvidenceStatus -eq 'missing') { 'Historical evidence is missing/unknown; report that explicitly and do not infer prior task details.' } elseif ($historicalEvidenceStatus -eq 'found') { 'Use only the current verified relevant evidenceCards; do not infer details beyond their evidence.' } elseif ($shouldRecall) { 'Use evidenceCards only if relevant; do not inject raw memory beyond the token budget.' } else { 'No deep recall needed unless the user asks for continuity, memory, preferences, or previous-session context.' }
 }
 Write-JsonUtf8NoBom $statusPath $lightPacket 10
 

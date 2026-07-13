@@ -101,7 +101,7 @@ function Invoke-RecallCase($Case) {
     $output = (& (Join-Path $PSScriptRoot 'recall-search.ps1') -Query $query -TopK $topK -MaxTokens $maxTokens -Json) -join "`n"
   }
   $exitCode = $LASTEXITCODE
-  $items = Convert-JsonArray $output
+  $items = @(Convert-JsonArray $output)
   $jsonText = if ($items.Count -gt 0) { ($items | ConvertTo-Json -Depth 8 -Compress) } else { $output }
   $needleResult = Compare-Needles $jsonText (Get-ArrayProperty $Case 'mustContain') (Get-ArrayProperty $Case 'mustNotContain')
   $minResults = Get-IntProperty $Case 'minResults' 0
@@ -126,21 +126,22 @@ function Invoke-RecallCase($Case) {
 
 function Invoke-DecisionCase($Case) {
   $query = Get-StringProperty $Case 'query' (Get-StringProperty $Case 'question')
+  $key = Get-StringProperty $Case 'key'
+  $relation = Get-StringProperty $Case 'relation'
   $topK = Get-IntProperty $Case 'topK' 3
   $maxTokens = Get-IntProperty $Case 'maxTokens' 1200
   $status = Get-StringProperty $Case 'status'
   $adrOnly = ($Case.PSObject.Properties['adrOnly'] -and $Case.adrOnly -eq $true)
-  if ($adrOnly -and -not [string]::IsNullOrWhiteSpace($status)) {
-    $output = (& (Join-Path $PSScriptRoot 'decision-search.ps1') -Query $query -TopK $topK -MaxTokens $maxTokens -AdrOnly -Status $status -Json) -join "`n"
-  } elseif ($adrOnly) {
-    $output = (& (Join-Path $PSScriptRoot 'decision-search.ps1') -Query $query -TopK $topK -MaxTokens $maxTokens -AdrOnly -Json) -join "`n"
-  } elseif (-not [string]::IsNullOrWhiteSpace($status)) {
-    $output = (& (Join-Path $PSScriptRoot 'decision-search.ps1') -Query $query -TopK $topK -MaxTokens $maxTokens -Status $status -Json) -join "`n"
-  } else {
-    $output = (& (Join-Path $PSScriptRoot 'decision-search.ps1') -Query $query -TopK $topK -MaxTokens $maxTokens -Json) -join "`n"
-  }
+  $currentOnly = ($Case.PSObject.Properties['currentOnly'] -and $Case.currentOnly -eq $true)
+  $params = @{ TopK=$topK; MaxTokens=$maxTokens; Json=$true }
+  if (-not [string]::IsNullOrWhiteSpace($key)) { $params.Key = $key } else { $params.Query = $query }
+  if (-not [string]::IsNullOrWhiteSpace($relation)) { $params.Relation = $relation }
+  if (-not [string]::IsNullOrWhiteSpace($status)) { $params.Status = $status }
+  if ($adrOnly) { $params.AdrOnly = $true }
+  if ($currentOnly) { $params.CurrentOnly = $true }
+  $output = (& (Join-Path $PSScriptRoot 'decision-search.ps1') @params) -join "`n"
   $exitCode = $LASTEXITCODE
-  $items = Convert-JsonArray $output
+  $items = @(Convert-JsonArray $output)
   $jsonText = if ($items.Count -gt 0) { ($items | ConvertTo-Json -Depth 8 -Compress) } else { $output }
   $needleResult = Compare-Needles $jsonText (Get-ArrayProperty $Case 'mustContain') (Get-ArrayProperty $Case 'mustNotContain')
   $minResults = Get-IntProperty $Case 'minResults' 0

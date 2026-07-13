@@ -104,6 +104,61 @@ function Get-QueryTerms([string]$Text) {
   return @($Text.ToLowerInvariant() -split '[^\p{L}\p{Nd}]+' | Where-Object { $_.Length -ge 2 } | Select-Object -Unique)
 }
 
+function Get-RelevanceTerms([string]$Text) {
+  function U([int[]]$Codes) { return -join ($Codes | ForEach-Object { [char]$_ }) }
+  $clean = $Text.ToLowerInvariant()
+  $zhAnotherSession = U @(21478,19968,20010,20250,35805)
+  $zhRemember = U @(36824,35760,24471)
+  $zhLast = U @(19978,27425)
+  $zhBefore = U @(20043,21069)
+  $zhContinue = U @(32487,32493)
+  $zhContinueDoing = U @(25509,30528,20570)
+  $zhRememberShort = U @(35760,24471)
+  $zhSession = U @(20250,35805)
+  $zhTask = U @(20219,21153)
+  $zhHistory = U @(21382,21490)
+  $zhThat = U @(37027,20010)
+  $zhThis = U @(36825,20010)
+  $zhParticle = U @(30340)
+  $routingPhrases = @(
+    'do you remember','another session','previous session','last session','previous task','last task','last time',
+    'continue','resume','previous','remember','recall','session','task','history','historical','another',
+    'please','from','about','with','into','this','that','the','your','my',
+    $zhAnotherSession,$zhRemember,$zhLast,$zhBefore,$zhContinue,$zhContinueDoing,$zhRememberShort,
+    $zhSession,$zhTask,$zhHistory,$zhThat,$zhThis,$zhParticle
+  ) | Sort-Object Length -Descending
+  foreach ($phrase in $routingPhrases) { $clean = $clean.Replace(([string]$phrase).ToLowerInvariant(), ' ') }
+
+  $terms = New-Object System.Collections.ArrayList
+  foreach ($term in @(Get-QueryTerms $clean)) {
+    $value = ([string]$term).Trim()
+    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+    if ($value -match '[\u4e00-\u9fff]') {
+      if ($value.Length -ge 2) { [void]$terms.Add($value) }
+      if ($value.Length -gt 2) {
+        $maxGram = [Math]::Min(4, $value.Length)
+        for ($size = 2; $size -le $maxGram; $size++) {
+          for ($index = 0; $index -le ($value.Length - $size); $index++) {
+            [void]$terms.Add($value.Substring($index, $size))
+          }
+        }
+      }
+    } elseif ($value.Length -ge 3) {
+      [void]$terms.Add($value)
+    }
+  }
+  return @($terms | Select-Object -Unique)
+}
+
+function Test-HistoricalRecallQuery([string]$Text) {
+  function U([int[]]$Codes) { return -join ($Codes | ForEach-Object { [char]$_ }) }
+  return Test-IntentTrigger $Text @(
+    'previous task','last task','previous session','last session','last time','another session',
+    'remember last','remember previous','do you remember',
+    (U @(19978,27425)),(U @(20043,21069)),(U @(21478,19968,20010,20250,35805)),(U @(36824,35760,24471))
+  )
+}
+
 function Get-Tags([string]$Text) {
   $tags = @()
   foreach ($match in [regex]::Matches($Text, '\[[A-Z_]+\]')) { $tags += $match.Value }
@@ -244,7 +299,29 @@ function New-Candidate([string]$Text, [string]$Source, [string]$SourceType, [str
   $layerName = Get-LayerFromText $Text
   $tags = @(Get-Tags $Text)
   $priority = if ($Text.Contains('[PROFILE]')) { 'profile' } elseif ($Text.Contains('[SESSION]')) { 'session' } elseif ($Text.Contains('[TASK]')) { 'task' } else { $SourceType }
+  $lowerText = $Text.ToLowerInvariant()
+  $matchedRelevanceTerms = @($relevanceTerms | Where-Object { $lowerText.Contains(([string]$_).ToLowerInvariant()) })
+  $profileIntent = Test-IntentTrigger $Query @(@($hybrid.profileIntentTriggers) + @($hybrid.personaIntentTriggers))
+  $experienceIntent = Test-IntentTrigger $Query @($hybrid.experienceIntentTriggers)
+  $historicalTaskEvidence = (
+    (Test-HistoricalRecallQuery $Query) -and
+    ($Text.Contains('[TASK]') -or $Text.Contains('[SESSION]')) -and
+    $Text.Contains('[CURRENT]') -and
+    $Text.Contains('[VERIFIED]')
+  )
+  $requiredMatchCount = if ($relevanceTerms.Count -le 0) { 0 } elseif ($relevanceTerms.Count -le 2) { 1 } else { [Math]::Ceiling($relevanceTerms.Count * 0.6) }
+  $intentAuthoritative = (
+    $Reason -eq 'temporary_session_binding' -or
+    $Reason -eq 'state_recall_priority' -or
+    ($Reason -eq 'persona_recall_priority' -and $profileIntent) -or
+    ($Reason -eq 'experience_index_recall' -and $experienceIntent -and $relevanceTerms.Count -eq 0) -or
+    $historicalTaskEvidence
+  )
+  $relevanceOk = (($requiredMatchCount -gt 0 -and $matchedRelevanceTerms.Count -ge $requiredMatchCount) -or $intentAuthoritative)
   $evidenceCard = New-EvidenceCard $Text $Source $SourceType $Reason $layerName $confidence $ageDays $recencyScore $priority $tags
+  $evidenceCard | Add-Member -NotePropertyName relevanceStatus -NotePropertyValue $(if ($relevanceOk) { 'matched' } else { 'unmatched' })
+  $evidenceCard | Add-Member -NotePropertyName matchedTerms -NotePropertyValue @($matchedRelevanceTerms)
+  $evidenceCard | Add-Member -NotePropertyName requiredMatchCount -NotePropertyValue $requiredMatchCount
   return [pscustomobject]@{
     text = $candidateText
     evidenceCard = $evidenceCard
@@ -259,10 +336,15 @@ function New-Candidate([string]$Text, [string]$Source, [string]$SourceType, [str
     recencyScore = $recencyScore
     recallPriority = $priority
     tokenEstimate = [Math]::Ceiling($candidateText.Length / 4)
+    relevanceOk = $relevanceOk
+    matchedTerms = @($matchedRelevanceTerms)
+    requiredMatchCount = $requiredMatchCount
   }
 }
 
 function Add-Candidate([object[]]$Candidates, [object]$Candidate) {
+  if (-not $Candidate.relevanceOk) { return @($Candidates) }
+  if (([string]$Candidate.text).Contains('[STALE]') -or (Test-Expired ([string]$Candidate.text))) { return @($Candidates) }
   if ($Candidate.confidence -lt $summaryConfidence) { return @($Candidates) }
   $layerTag = Get-LayerTag $Layer
   if (-not [string]::IsNullOrWhiteSpace($layerTag) -and -not ([string]$Candidate.text).Contains($layerTag)) { return @($Candidates) }
@@ -377,7 +459,10 @@ function Get-SessionBindingSnippets([object[]]$Terms) {
   return @($snippets)
 }
 
-$terms = @((Get-QueryTerms $Query) + (Get-AliasTerms $Query) | ForEach-Object { ([string]$_).ToLowerInvariant() } | Where-Object { $_.Length -ge 2 } | Select-Object -Unique)
+$queryTerms = @(Get-QueryTerms $Query)
+$aliasTerms = @(Get-AliasTerms $Query)
+$terms = @(($queryTerms + $aliasTerms) | ForEach-Object { ([string]$_).ToLowerInvariant() } | Where-Object { $_.Length -ge 2 } | Select-Object -Unique)
+$relevanceTerms = @(Get-RelevanceTerms $Query)
 $candidates = @()
 
 foreach ($snippet in @(Get-SessionBindingSnippets $terms)) {
@@ -394,7 +479,8 @@ $code = "import base64,json; from sandglass_vault import search; q=base64.b64dec
 try {
   $result = (& python -c $code) -join "`n"
   if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($result)) {
-    foreach ($item in @($result | ConvertFrom-Json)) {
+    $parsedSearch = $result | ConvertFrom-Json
+    foreach ($item in @($parsedSearch)) {
       $text = Get-ItemText $item
       if ([string]::IsNullOrWhiteSpace($text)) { continue }
       $candidate = New-Candidate $text (Get-ItemSource $item 'sandglass') 'sandglass' 'sandglass_search' $terms
@@ -449,7 +535,8 @@ if ($candidates.Count -lt $TopK -and [bool]$hybrid.fallbackRecentWhenBelowTopK) 
   try {
     $recentResult = (& python -c $recentCode) -join "`n"
     if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($recentResult)) {
-      foreach ($item in @($recentResult | ConvertFrom-Json)) {
+      $parsedRecent = $recentResult | ConvertFrom-Json
+      foreach ($item in @($parsedRecent)) {
         $text = Get-ItemText $item
         if ([string]::IsNullOrWhiteSpace($text)) { continue }
         $candidate = New-Candidate $text (Get-ItemSource $item 'recent') 'recent' 'recent_fallback' $terms

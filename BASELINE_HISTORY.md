@@ -1,9 +1,45 @@
 # BASELINE_HISTORY
 
+## 0.5.79
+
+Date: 2026-07-13
+Status: [CURRENT][VERIFIED]
+Change:
+- Added bounded memory lifecycle with global and per-layer budgets, write admission, expiry-aware hygiene planning, and budget-aware health and optimization signals.
+Supersedes: 0.5.78
+Rollback: Restore 0.5.78 scripts/docs/manifest/baseline if 0.5.79 changes need to be disabled temporarily.
+
+## 0.5.78
+
+Date: 2026-07-13
+Status: [HISTORY][VERIFIED]
+Change:
+- Added evidence-bounded engineering judgment with FACT/INFERENCE/UNKNOWN grounding, qualified optimality, task-scoped decision and execution gates, and active ORC routing without a new top-level route.
+Supersedes: 0.5.77
+Rollback: Restore 0.5.77 scripts/docs/manifest/baseline if 0.5.78 changes need to be disabled temporarily.
+
+## 0.5.77
+
+Date: 2026-07-13
+Status: [HISTORY][VERIFIED]
+Change:
+- Harden historical recovery intent routing, relevance-gated recall, and explicit missing-evidence anti-hallucination boundaries.
+Supersedes: 0.5.76
+Rollback: Restore 0.5.76 scripts/docs/manifest/baseline if 0.5.77 changes need to be disabled temporarily.
+
+## 0.5.76
+
+Date: 2026-07-13
+Status: [HISTORY][VERIFIED]
+Change:
+- Repair health truth synchronization, modern verifier contracts, completion-audit role routing, host sync readiness, ADR integrity, and memory hygiene.
+Supersedes: 0.5.75
+Rollback: Restore 0.5.75 scripts/docs/manifest/baseline if 0.5.76 changes need to be disabled temporarily.
+
 ## 0.5.75
 
 Date: 2026-07-02
-Status: [CURRENT][VERIFIED]
+Status: [HISTORY][VERIFIED]
 Change:
 - Added a Super Brain extension/skill ingestion hub with List/Inspect/Adopt/RebuildMap actions.
 - Added extension capability map generation and merged core+extension skill list/search/detail views for ORC automatic routing.
@@ -14,7 +50,7 @@ Rollback: Restore 0.5.74 scripts/docs/manifest/baseline if extension ingestion o
 ## 0.5.74
 
 Date: 2026-07-02
-Status: [CURRENT][VERIFIED]
+Status: [HISTORY][VERIFIED]
 Change:
 - Closed residual guard risks by making current-task-context freshness explicit, expanding skill capability/completion audit coverage, and requiring real-user-path acceptance metadata before completion claims.
 - Completion audit now expects current-task guard, real-user-path verifier, version record keeper, cache freshness checker, and skill proficiency learning coverage in addition to rule/test/review roles.

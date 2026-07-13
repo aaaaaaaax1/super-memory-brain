@@ -51,6 +51,18 @@ $zhChannel = U @(36890,36947)
 $zhOpen = U @(24320,21551)
 $zhBrain = U @(36229,32423,22823,33041)
 
+function Get-EngineeringJudgmentActivation([string]$IntentName) {
+  $reasons = New-Object System.Collections.ArrayList
+  if ($IntentName -eq 'add_or_optimize_feature') { [void]$reasons.Add('engineering_intent') }
+  foreach ($term in @('fix','debug','repair','optimize','optimization','architecture','architect','root cause','tradeoff','trade-off','best option','optimal','performance','bottleneck','regression','refactor','migration','failure analysis')) {
+    if ($lower.Contains($term)) { [void]$reasons.Add($term.Replace(' ','_')) }
+  }
+  foreach ($term in @((U @(20462,22797)),(U @(20248,21270)),(U @(26550,26500)),(U @(26681,22240)),(U @(26368,20248)),(U @(26368,20339)),(U @(24615,33021)),(U @(37325,26500)),(U @(25925,38556)),(U @(35774,35745)),(U @(20915,31574)))) {
+    if ($inputText.Contains($term)) { [void]$reasons.Add('cjk_engineering_intent') }
+  }
+  return [pscustomobject]@{ required=($reasons.Count -gt 0); reasons=@($reasons | Select-Object -Unique) }
+}
+
 $cards = New-Object System.Collections.ArrayList
 $driftGuards = New-Object System.Collections.ArrayList
 $experienceMatches = New-Object System.Collections.ArrayList
@@ -114,6 +126,15 @@ try {
   if ($intentRaw) { $intent = (($intentRaw -join "`n") | ConvertFrom-Json) }
 } catch {}
 $intentName = if ($intent -and $intent.intent) { [string]$intent.intent } else { 'general_task' }
+$engineeringActivation = Get-EngineeringJudgmentActivation $intentName
+$engineeringRequired = ($engineeringActivation.required -eq $true)
+if ($engineeringRequired) {
+  [void]$cards.Add((New-Card 'engineering_judgment' 'Separate FACT, INFERENCE, and UNKNOWN. Every fact requires named current evidence; memory and plausible explanations remain inference until verified.' 'references/engineering-judgment.md' 0.99 $true))
+  [void]$cards.Add((New-Card 'engineering_judgment' 'Label root cause as verified, hypothesis, or unknown. Hypotheses and unknown causes require the cheapest discriminating test before causal certainty.' 'references/engineering-judgment.md' 0.99 $true))
+  [void]$cards.Add((New-Card 'engineering_judgment' 'Do not claim best or optimal without an objective, constraints, alternatives, tradeoffs, criteria, evidence-backed facts, and resolution evidence for decision-changing unknowns.' 'references/engineering-judgment.md' 0.99 $true))
+  [void]$cards.Add((New-Card 'engineering_judgment' 'Execute in dependency order; each step must define input, output, acceptance, and stop conditions, and a failed acceptance stops the old plan.' 'references/engineering-judgment.md' 0.98 $true))
+  foreach ($guard in @('unsupported_fact','fact_without_evidence','inference_as_fact','unclassified_root_cause','untested_root_cause_hypothesis','untested_critical_unknown','unsupported_optimal_claim','execution_step_without_contract','continuing_after_failed_acceptance')) { [void]$driftGuards.Add($guard) }
+}
 
 # Accepted constraints become must-preserve material.
 $accepted = $null
@@ -176,6 +197,7 @@ if (Test-Path -LiteralPath $procedureRoot) {
       if (-not $matched -and [string]$pc.id -eq 'goal-route-lock' -and ($lower -match 'goal|route|scope|accepted|目标|路线|主线|偏航')) { $matched = $true }
       if (-not $matched -and [string]$pc.id -eq 'verified-integration-guard' -and ($lower -match 'integration|module|smoke|acceptance|verified|模块|集成|验收|环境|拼装')) { $matched = $true }
       if (-not $matched -and [string]$pc.id -eq 'causal-change-plan' -and (($lower -match 'cause|root cause|causal|structural|change plan') -or $inputText.Contains((U @(21407,22240))) -or $inputText.Contains((U @(32467,26524))) -or $inputText.Contains((U @(32467,26500))) -or $inputText.Contains((U @(20248,21270))))) { $matched = $true }
+      if (-not $matched -and [string]$pc.id -eq 'engineering-judgment' -and $engineeringRequired) { $matched = $true }
       if ($matched) {
         $pcSource = 'procedure-cards/' + $pcPath.Name
         foreach ($item in @($pc.mustDo | Select-Object -First 3)) {
@@ -220,7 +242,9 @@ foreach ($guard in @('acting_without_recalling_constraints','ignoring_user_hard_
   [void]$driftGuards.Add($guard)
 }
 
-$mustPreserve = @($cards | Where-Object { $_.hard } | Select-Object -First $MaxItems | ForEach-Object { $_.claim })
+$hardCards = @($cards | Where-Object { $_.hard })
+if ($engineeringRequired) { $hardCards = @($hardCards | Where-Object { $_.kind -eq 'engineering_judgment' }) + @($hardCards | Where-Object { $_.kind -ne 'engineering_judgment' }) }
+$mustPreserve = @($hardCards | Select-Object -First $MaxItems | ForEach-Object { $_.claim })
 $shouldRecall = @($cards | Where-Object { -not $_.hard } | Select-Object -First $MaxItems | ForEach-Object { $_.claim })
 
 $result = [pscustomobject]@{
@@ -237,11 +261,22 @@ $result = [pscustomobject]@{
   shouldRecall = @($shouldRecall)
   driftGuards = @($driftGuards | Select-Object -Unique)
   procedureExpectations = @($procedureExpectations)
+  engineeringJudgment = [pscustomobject]@{
+    required = $engineeringRequired
+    activationReasons = @($engineeringActivation.reasons)
+    epistemicClasses = @('FACT','INFERENCE','UNKNOWN')
+    rootCauseStatuses = @('verified','hypothesis','unknown')
+    decisionGate = 'engineering-decision-gate.ps1'
+    method = 'references/engineering-judgment.md'
+    outputContract = @('Judgment','Evidence','Best option','Execution chain','Acceptance/Risk')
+    guard = if($engineeringRequired){'Facts require evidence; critical unknowns require discriminating tests; optimality and execution claims must pass the engineering decision gate.'}else{'Keep the direct path concise; activate engineering judgment only when task risk or decision content requires it.'}
+  }
   structuralThinking = [pscustomObject]@{
-    frame = 'known facts -> causal mechanism -> intended change -> expected optimization -> verification evidence -> residual risk'
+    frame = 'pain point -> FACT / INFERENCE / UNKNOWN -> root cause and constraints -> objective -> options and tradeoffs -> decision -> execution contracts -> acceptance and residual risk'
     researchPatterns = @('root cause analysis: separate symptoms from causes and prevent recurrence','theory of change: map desired outcome backward through causal assumptions and indicators','systems thinking: check feedback loops, leverage points, interactions, and unintended consequences')
     guard = 'Do not change scattered parts without explaining what caused the problem, what result the change should produce, what is already known from previous changes, and how the new change preserves the accepted route.'
     planScript = 'causal-change-plan.ps1'
+    decisionGateScript = 'engineering-decision-gate.ps1'
   }
   executionGate = [pscustomobject]@{
     canProceed = $true

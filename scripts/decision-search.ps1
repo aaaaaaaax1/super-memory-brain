@@ -202,3 +202,4 @@ if ($Json) {
     $item | ConvertTo-Json -Compress -Depth 8
   }
 }
+exit 0
