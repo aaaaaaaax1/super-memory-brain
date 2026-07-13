@@ -2,7 +2,7 @@
 
 Last Updated: 2026-06-30
 Status: [CURRENT][VERIFIED]
-Package Version: 0.5.75
+Package Version: 0.5.79
 
 ## Current State
 
@@ -43,6 +43,8 @@ G1 governs memory; ORC routes only when needed; Sandglass stores stable state on
 
 ## Verified Capabilities
 
+- [VERIFIED] Evidence-bounded engineering judgment is active as a cross-cutting ORC capability: repair, optimization, architecture, performance, migration, root-cause, and best-option work uses `references/engineering-judgment.md` and task-scoped `scripts/engineering-decision-gate.ps1`, while greetings and tiny direct tasks stay concise.
+- [VERIFIED] Engineering claims separate `FACT / INFERENCE / UNKNOWN`; facts require named current evidence, live evidence overrides memory, root cause is `verified / hypothesis / unknown`, critical unknowns require discriminating tests, optimality requires objective/constraints/alternatives/tradeoffs/criteria/resolution evidence, and every execution step requires input/output/acceptance/stop conditions.
 - [VERIFIED] Super Brain extension/skill capability center is active: `scripts\extension-ingest.ps1` lists, inspects, adopts, and rebuilds user-added skills/plugins as opt-in extensions, while `scripts\extension-capability-map.ps1` infers ORC-routable capability metadata from extension manifests, triggers, setup notes, provenance, and verification hints.
 - [VERIFIED] Core and extension capabilities are merged for routing visibility: `scripts\skill-capability-map.ps1 -List/-Name/-Detail` exposes combined core+extension skills with category, role, triggers, apply phase, setup requirements, provenance, and verification evidence so ORC can route by intent instead of forcing the user to memorize skill names.
 - [VERIFIED] Unified Super Brain skill discovery commands are active: `scripts\brain.ps1 skills`, `scripts\brain.ps1 capability <name>`, and `scripts\brain.ps1 extensions` let the user call up the skill list and inspect each skill's capabilities while preserving automatic ORC routing semantics.

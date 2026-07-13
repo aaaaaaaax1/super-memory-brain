@@ -244,7 +244,8 @@ $result = [pscustomobject]@{
   all = @($unique)
   unknownSession = $unknownSession
   unknownReason = if ($unknownSession) { '共享索引未登记该会话；未知，不等于没有任务' } else { '' }
-  rankingPolicy = 'shared task identity index rank 5 > legacy active checkpoint rank 10 > active task graph rank 20 > paused/blocked rank 30 > weak verification rank 80 > status-card fallback rank 90; ties use confidence then freshness.'
+  rankingPolicy = 'rank/confidence/freshness: shared task identity index rank 5 > legacy active checkpoint rank 10 > active task graph rank 20 > paused/blocked rank 30 > weak verification rank 80 > status-card fallback rank 90; ties use confidence then freshness.'
+  choiceListPolicy = 'When multiple plausible candidates remain, return a numbered choice list with status, scope, freshness, and next action instead of guessing.'
   counts = [pscustomobject]@{ current=@($current).Count; paused=@($paused).Count; completed=@($completed).Count; candidates=@($hints).Count; total=@($unique).Count }
   nextAction = if (@($current).Count -eq 1) { 'Resume the single current task if the user authorized execution.' } elseif (@($current).Count -gt 1) { 'Ask the user to choose which current task to resume.' } elseif (@($paused).Count -gt 0) { 'Ask whether to resume a paused/blocked task.' } elseif ($unknownSession) { 'Ask the owning agent/session to write a shared session card and task checkpoint.' } else { 'No active task is registered in the shared index; unknown is not the same as no task outside the index.' }
   statusPath = $statusPath

@@ -5,6 +5,8 @@ Describe 'Super Memory Brain package manifest' {
     [string]::IsNullOrWhiteSpace($manifest.version) | Should Be $false
     @($manifest.scripts) -contains 'ci.ps1' | Should Be $true
     @($manifest.scripts) -contains 'common.ps1' | Should Be $true
+    @($manifest.scripts) -contains 'engineering-decision-gate.ps1' | Should Be $true
+    ($manifest.scriptMetadata | Where-Object { $_.path -eq 'engineering-decision-gate.ps1' }).tier | Should Be 'T1'
     @($manifest.runtimeFiles) -contains 'sandglass_vault.py' | Should Be $true
   }
 }

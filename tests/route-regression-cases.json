@@ -486,6 +486,132 @@
                       "mustFixBeforePhase6":  true
                   },
                   {
+                      "id":  "workflow-preference-git-how-to-write",
+                      "prompt":  "git\u600e\u4e48\u5199",
+                      "workspace":  "G:\\Atoapi",
+                      "expectedRoute":  "workflow_preference_recall",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "workflow_preference",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "workflow-preference-git-question",
+                      "prompt":  "git\u5462",
+                      "workspace":  "G:\\Atoapi",
+                      "expectedRoute":  "workflow_preference_recall",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "workflow_preference",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "workflow-preference-how-to-commit",
+                      "prompt":  "\u600e\u4e48\u63d0\u4ea4",
+                      "workspace":  "G:\\Atoapi",
+                      "expectedRoute":  "workflow_preference_recall",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "workflow_preference",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "workflow-preference-commit-how-to-write",
+                      "prompt":  "\u63d0\u4ea4\u600e\u4e48\u5199",
+                      "workspace":  "G:\\Atoapi",
+                      "expectedRoute":  "workflow_preference_recall",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "workflow_preference",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "workflow-preference-git-spaced-punctuation",
+                      "prompt":  "Git \u600e\u4e48\u5199\uff1f",
+                      "workspace":  "G:\\Atoapi",
+                      "expectedRoute":  "workflow_preference_recall",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "workflow_preference",
+                                   "normalization",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "workflow-preference-commit-message-how-to-write",
+                      "prompt":  "\u63d0\u4ea4\u4fe1\u606f\u600e\u4e48\u5199",
+                      "workspace":  "G:\\Atoapi",
+                      "expectedRoute":  "workflow_preference_recall",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "workflow_preference",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "workflow-preference-commit-en-how-to-write",
+                      "prompt":  "commit\u600e\u4e48\u5199",
+                      "workspace":  "G:\\Atoapi",
+                      "expectedRoute":  "workflow_preference_recall",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "memory",
+                                   "workflow_preference",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "workflow-preference-negative-outside-scope",
+                      "prompt":  "git\u600e\u4e48\u5199",
+                      "workspace":  "G:\\OtherProject",
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "negative",
+                                   "workflow_preference",
+                                   "scope"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "workflow-preference-negative-git-log",
+                      "prompt":  "git log",
+                      "expectedRoute":  "normal_chat",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "negative",
+                                   "workflow_preference",
+                                   "git"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
                       "id":  "direct-code-no-orc",
                       "prompt":  "write a simple regex for digits",
                       "expectedRoute":  "direct_answer",

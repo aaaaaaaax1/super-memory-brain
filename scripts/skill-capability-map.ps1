@@ -67,7 +67,7 @@ if($List -or -not [string]::IsNullOrWhiteSpace($Name) -or $Detail -or [string]::
 }
 $auditHints = @()
 if($IncludeAuditHints){
-  $auditHintRoles = @('pre_action_constraint','challenge_gate','review_verifier','test_strategy','real_user_path_verifier','version_record_keeper','cache_freshness_checker','skill_gap_repair','extension_capability')
+  $auditHintRoles = @('pre_action_constraint','challenge_gate','evidence_grounding','engineering_decision','review_verifier','test_strategy','real_user_path_verifier','version_record_keeper','cache_freshness_checker','skill_gap_repair','extension_capability')
   $auditHints = @($auditHintRoles | ForEach-Object { [pscustomobject]@{ role=$_; present=(@($ranked.role) -contains $_) } })
 }
 $result = [pscustomobject]@{

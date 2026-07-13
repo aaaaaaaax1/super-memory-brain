@@ -1,5 +1,5 @@
 {
-  "version": "0.5.73",
+  "version": "0.5.78",
   "memoryShortcut": "memory:auto；G1 governs, ORC routes, Sandglass hybrid recall only on semantic/keyword recall; stable state only; private memory requires confirmation and [PRIVACY].",
   "memoryModes": [
     "auto",
@@ -38,6 +38,19 @@
     "maxClaimChars": 160,
     "guardFailOnConflict": true,
     "writeLastPreflight": true
+  },
+  "engineeringJudgment": {
+    "enabled": true,
+    "activation": ["debug", "repair", "optimization", "architecture", "migration", "performance", "root-cause analysis", "consequential option selection", "best or optimal claim"],
+    "directPathExclusions": ["greeting", "acknowledgement", "simple factual answer", "tiny fully specified low-risk action"],
+    "epistemicClasses": ["FACT", "INFERENCE", "UNKNOWN"],
+    "factPolicy": "A FACT requires named current evidence; current live evidence overrides memory, summaries, and assumptions.",
+    "rootCauseStatuses": ["verified", "hypothesis", "unknown"],
+    "criticalUnknownPolicy": "Use the cheapest discriminating test before causal certainty or a decision-changing claim.",
+    "optimalityRequirements": ["objective", "constraints", "at least two feasible options", "tradeoffs", "criteria", "evidence-backed facts", "resolution evidence for decision-changing unknowns"],
+    "executionStepRequirements": ["input", "output", "acceptance", "stopCondition"],
+    "outputContract": ["Judgment", "Evidence", "Best option", "Execution chain", "Acceptance/Risk"],
+    "decisionGate": "scripts/engineering-decision-gate.ps1"
   },
   "requiredTags": [
     "[CURRENT]",
@@ -320,6 +333,24 @@
       "先按我的偏好来",
       "先想想我是什么风格"
     ],
+    "workflowPreferenceTriggers": [
+      {
+        "id": "git-ui-commit-response",
+        "phrases": [
+          "git\u600e\u4e48\u5199",
+          "git\u5462",
+          "\u600e\u4e48\u63d0\u4ea4",
+          "\u63d0\u4ea4\u600e\u4e48\u5199",
+          "git\u63d0\u4ea4\u600e\u4e48\u5199",
+          "\u63d0\u4ea4\u4fe1\u606f\u600e\u4e48\u5199",
+          "commit\u600e\u4e48\u5199",
+          "\u63d0\u4ea4\u8bf4\u660e\u600e\u4e48\u5199"
+        ],
+        "query": "git\u600e\u4e48\u5199",
+        "decisionKey": "git-ui-commit-response",
+        "scope": "Atoapi/ccsapi"
+      }
+    ],
     "continuationPriority": [
       "visible_context",
       "compression_summary_or_record",
@@ -413,6 +444,39 @@
     "银行卡"
   ],
   "maxMemoryChars": 800,
+  "lifecycle": {
+    "enabled": true,
+    "maxLines": 240,
+    "maxChars": 180000,
+    "warnAt": 0.8,
+    "maxLinesByLayer": {
+      "profile": 32,
+      "project": 120,
+      "decision": 96,
+      "task": 48,
+      "session": 24
+    },
+    "retentionDays": {
+      "profile": 3650,
+      "project": 730,
+      "decision": 1095,
+      "task": 120,
+      "session": 30
+    },
+    "preserveTags": [
+      "[CURRENT]",
+      "[VERIFIED]",
+      "[PROFILE]",
+      "[DECISION]"
+    ],
+    "autoArchive": {
+      "exactDuplicates": true,
+      "explicitExpiry": true,
+      "staleHistory": false,
+      "budgetOverflow": false,
+      "requireConfirmationForBudgetOverflow": true
+    }
+  },
   "admissionThreshold": 3,
   "scores": {
     "explicitRemember": 3,

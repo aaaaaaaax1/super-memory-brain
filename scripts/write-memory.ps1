@@ -93,6 +93,26 @@ if ($privateHits.Count -gt 0 -and $ConfirmPrivate -and $Text -notmatch '\[PRIVAC
   $Text = "[PRIVACY] $Text"
 }
 
+$memoryBudget = $null
+try {
+  $existingPath = Join-Path $MemoryRoot 'sandglass.txt'
+  $existingLines = if (Test-Path -LiteralPath $existingPath) { @(Get-Content -LiteralPath $existingPath -Encoding UTF8) } else { @() }
+  $existingRecords = @()
+  $existingLineNumber = 0
+  foreach ($existingLine in $existingLines) {
+    $existingLineNumber += 1
+    if (-not [string]::IsNullOrWhiteSpace($existingLine)) { $existingRecords += Get-SuperBrainMemoryLineRecord ([string]$existingLine) $existingLineNumber }
+  }
+  $budgetLayer = if ([string]::IsNullOrWhiteSpace($Layer)) { 'project' } else { $Layer }
+  $memoryBudget = Get-SuperBrainMemoryBudget $existingRecords $Text $budgetLayer $Root
+  if ($memoryBudget.enabled -and $memoryBudget.admissionStatus -eq 'blocked') {
+    Write-Host "DENY: memory budget blocked projectedLines=$($memoryBudget.projectedLines)/$($memoryBudget.maxLines) projectedChars=$($memoryBudget.projectedChars)/$($memoryBudget.maxChars) reason=$($memoryBudget.reason). Run auto-hygiene in plan mode and confirm selective archival before writing."
+    exit 5
+  }
+} catch {
+  throw "MEMORY_BUDGET_CHECK_FAILED: $($_.Exception.Message)"
+}
+
 $hasTag = $false
 foreach ($tag in $Policy.requiredTags) {
   if ($Text.Contains($tag)) { $hasTag = $true; break }
@@ -115,4 +135,4 @@ $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
 $b64 = [Convert]::ToBase64String($bytes)
 $sender64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Sender))
 python -c "import base64; from sandglass_log import log_message; text=base64.b64decode('$b64').decode('utf-8'); sender=base64.b64decode('$sender64').decode('utf-8'); print(log_message(text, sender))"
-Write-Host "WRITE_OK score=$score private=$($privateHits.Count -gt 0) negative=$negativeHit layer=$Layer summary=$Summary memory=$MemoryRoot"
+Write-Host "WRITE_OK score=$score private=$($privateHits.Count -gt 0) negative=$negativeHit layer=$Layer summary=$Summary memory=$MemoryRoot budgetStatus=$($memoryBudget.status) projectedLines=$($memoryBudget.projectedLines)/$($memoryBudget.maxLines)"

@@ -205,6 +205,10 @@ function Refresh-GlobalStartup([string]$SkillRoot) {
 }
 
 function Write-Status([object]$Status) {
+  if (-not $ReportOnlyMode) {
+    Write-JsonUtf8NoBom $StatusPath $Status 8
+  }
+
   if ($Json) {
     $Status | ConvertTo-Json -Depth 10
     return
@@ -219,7 +223,6 @@ function Write-Status([object]$Status) {
     return
   }
 
-  Write-JsonUtf8NoBom $StatusPath $Status 8
   if ($Status.ok) {
     Write-Host "HOT_REFRESH_OK version=$PackageVersion status=$StatusPath"
   } else {
@@ -276,12 +279,14 @@ try {
     skipGlobalStartup = [bool]$SkipGlobalStartup
     results = $results
   }
+  if (-not $ReportOnlyMode) {
+    Write-JsonUtf8NoBom $StatusPath $status 8
+  }
   if ($Json) {
     $status | ConvertTo-Json -Depth 10
   } elseif ($ReportOnlyMode) {
     Write-Host "HOT_REFRESH_REPORT_FAILED version=$PackageVersion error=$($_.Exception.Message)"
   } else {
-    Write-JsonUtf8NoBom $StatusPath $status 8
     Write-Host "HOT_REFRESH_FAILED version=$PackageVersion error=$($_.Exception.Message)"
   }
   exit 1

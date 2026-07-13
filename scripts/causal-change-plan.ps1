@@ -36,7 +36,7 @@ function Safe-Name([string]$Value) {
   $v = if ([string]::IsNullOrWhiteSpace($Value)) { 'change-plan' } else { $Value }
   $safe = (($v -replace '[^A-Za-z0-9._-]+','-').Trim('-')).ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($safe)) { return 'change-plan' }
-  if ($safe.Length -gt 80) { return $safe.Substring(0,80) }
+  if ($safe.Length -gt 36) { return $safe.Substring(0,36) }
   return $safe
 }
 function Safe-TaskId([string]$Value) {

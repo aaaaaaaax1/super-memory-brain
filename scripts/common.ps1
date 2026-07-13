@@ -230,6 +230,115 @@ function Get-SuperBrainActiveMemoryRoot([string]$Root = $SuperBrainRoot) {
   return Get-SuperBrainSharedMemoryRoot $Root
 }
 
+function Get-SuperBrainMemoryLifecyclePolicy([string]$Root = $SuperBrainRoot) {
+  $defaults = [pscustomobject]@{
+    enabled = $true
+    maxLines = 240
+    maxChars = 180000
+    warnAt = 0.8
+    maxLinesByLayer = [pscustomobject]@{ profile = 32; project = 120; decision = 96; task = 48; session = 24 }
+    retentionDays = [pscustomobject]@{ profile = 3650; project = 730; decision = 1095; task = 120; session = 30 }
+    preserveTags = @('[CURRENT]','[VERIFIED]','[PROFILE]','[DECISION]')
+    autoArchive = [pscustomobject]@{ exactDuplicates = $true; explicitExpiry = $true; staleHistory = $false; budgetOverflow = $false; requireConfirmationForBudgetOverflow = $true }
+  }
+  try {
+    $path = Join-Path $Root 'memory-policy.json'
+    $policy = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($policy.PSObject.Properties['lifecycle'] -and $policy.lifecycle) { return $policy.lifecycle }
+  } catch {}
+  return $defaults
+}
+
+function Get-SuperBrainMemoryLineRecord([string]$Line, [int]$LineNumber = 0) {
+  $value = if ($null -eq $Line) { '' } else { [string]$Line }
+  $match = [regex]::Match($value, '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \| ([^|]+) \| (.*)$')
+  $timestamp = $null
+  $sender = ''
+  $text = $value
+  if ($match.Success) {
+    try { $timestamp = [datetime]::ParseExact($match.Groups[1].Value, 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) } catch {}
+    $sender = $match.Groups[2].Value.Trim()
+    $text = $match.Groups[3].Value
+  }
+  $tags = @([regex]::Matches($text, '\[[A-Z_]+\]') | ForEach-Object { $_.Value } | Select-Object -Unique)
+  $layer = 'project'
+  foreach ($candidate in @('profile','decision','task','session','project')) {
+    if ($text.Contains("[$($candidate.ToUpperInvariant())]")) { $layer = $candidate; break }
+  }
+  if ($text.Contains('[ADR]')) { $layer = 'decision' }
+  $expiryMatch = [regex]::Match($text, 'expires=(\d{4}-\d{2}-\d{2})')
+  $expired = $false
+  $expiry = ''
+  if ($expiryMatch.Success) {
+    $expiry = $expiryMatch.Groups[1].Value
+    try { $expired = ([datetime]::ParseExact($expiry, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) -lt (Get-Date).Date) } catch { $expired = $true }
+  }
+  $ageDays = 0.0
+  if ($timestamp) { $ageDays = [Math]::Max(0, ((Get-Date) - $timestamp).TotalDays) }
+  return [pscustomobject]@{
+    line = $LineNumber
+    raw = $value
+    text = $text
+    timestamp = $timestamp
+    sender = $sender
+    tags = @($tags)
+    layer = $layer
+    expired = $expired
+    expiry = $expiry
+    ageDays = [Math]::Round($ageDays, 2)
+    current = $text.Contains('[CURRENT]')
+    verified = $text.Contains('[VERIFIED]')
+    stale = $text.Contains('[STALE]')
+    history = $text.Contains('[HISTORY]')
+    protected = ($text.Contains('[CURRENT]') -and $text.Contains('[VERIFIED]'))
+  }
+}
+
+function Get-SuperBrainMemoryBudget([object[]]$Records, [string]$CandidateText = '', [string]$CandidateLayer = '', [string]$Root = $SuperBrainRoot) {
+  $lifecycle = Get-SuperBrainMemoryLifecyclePolicy $Root
+  $items = @($Records | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.raw) })
+  $maxLines = [int]$lifecycle.maxLines
+  $maxChars = [int]$lifecycle.maxChars
+  $currentLines = $items.Count
+  $currentChars = 0
+  foreach ($item in $items) { $currentChars += ([string]$item.raw).Length }
+  $candidate = if ([string]::IsNullOrWhiteSpace($CandidateText)) { $null } else { [string]$CandidateText }
+  $projectedLines = $currentLines + $(if ($candidate) { 1 } else { 0 })
+  $projectedChars = [int]$currentChars + $(if ($candidate) { $candidate.Length } else { 0 })
+  $layerCounts = [ordered]@{}
+  $layerUtilization = [ordered]@{}
+  foreach ($layer in @('profile','project','decision','task','session')) {
+    $count = @($items | Where-Object { [string]$_.layer -eq $layer }).Count
+    if ($candidate -and $CandidateLayer -eq $layer) { $count += 1 }
+    $limit = [int]$lifecycle.maxLinesByLayer.$layer
+    $layerCounts[$layer] = $count
+    $layerUtilization[$layer] = [Math]::Round($(if ($limit -gt 0) { $count / $limit } else { 0 }), 4)
+  }
+  $lineUtilization = if ($maxLines -gt 0) { $projectedLines / $maxLines } else { 1 }
+  $charUtilization = if ($maxChars -gt 0) { $projectedChars / $maxChars } else { 1 }
+  $layerBlocked = @($layerUtilization.Keys | Where-Object { [double]$layerUtilization[$_] -gt 1 }).Count -gt 0
+  $blocked = ($projectedLines -gt $maxLines -or $projectedChars -gt $maxChars -or $layerBlocked)
+  $warning = (-not $blocked -and ($lineUtilization -ge [double]$lifecycle.warnAt -or $charUtilization -ge [double]$lifecycle.warnAt -or @($layerUtilization.Values | Where-Object { [double]$_ -ge [double]$lifecycle.warnAt }).Count -gt 0))
+  return [pscustomobject]@{
+    enabled = [bool]$lifecycle.enabled
+    status = if ($blocked) { 'blocked' } elseif ($warning) { 'warning' } else { 'ok' }
+    admissionStatus = if ($blocked) { 'blocked' } elseif ($warning) { 'warning' } else { 'allowed' }
+    currentLines = $currentLines
+    currentChars = [int]$currentChars
+    projectedLines = $projectedLines
+    projectedChars = $projectedChars
+    maxLines = $maxLines
+    maxChars = $maxChars
+    warnAt = [double]$lifecycle.warnAt
+    lineUtilization = [Math]::Round($lineUtilization, 4)
+    charUtilization = [Math]::Round($charUtilization, 4)
+    layerCounts = $layerCounts
+    layerUtilization = $layerUtilization
+    retentionDays = $lifecycle.retentionDays
+    reason = if ($blocked) { 'memory_budget_exceeded' } elseif ($warning) { 'memory_budget_near_limit' } else { 'within_memory_budget' }
+  }
+}
+
 function Test-SuperBrainSamePath([string]$Left, [string]$Right) {
   if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
   return ((Get-NormalizedSuperBrainRoot $Left) -eq (Get-NormalizedSuperBrainRoot $Right))
@@ -318,11 +427,21 @@ function Initialize-SuperBrainMemoryRoot([string]$MemoryRoot, [string]$Root = $S
 }
 
 function Write-SuperBrainPackageRootMarker([string]$SkillDir, [string]$Root = $SuperBrainRoot) {
-  Write-Utf8NoBom (Join-Path $SkillDir 'package-root.txt') ((Get-NormalizedSuperBrainRoot $Root) + "`n")
+  $normalized = Get-NormalizedSuperBrainRoot $Root
+  if (-not (Test-Path -LiteralPath $normalized)) { throw "PACKAGE_ROOT_MARKER_SOURCE_MISSING: $normalized" }
+  $path = Join-Path $SkillDir 'package-root.txt'
+  Write-Utf8NoBom $path ($normalized + "`n")
+  $written = ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)).Trim()
+  if (-not (Test-SuperBrainSamePath $written $normalized)) { throw "PACKAGE_ROOT_MARKER_VERIFY_FAILED: $path" }
 }
 
 function Write-SuperBrainMemoryRootMarker([string]$SkillDir, [string]$MemoryRoot) {
-  Write-Utf8NoBom (Join-Path $SkillDir 'memory-root.txt') ((Get-NormalizedSuperBrainRoot $MemoryRoot) + "`n")
+  $normalized = Get-NormalizedSuperBrainRoot $MemoryRoot
+  if (-not (Test-Path -LiteralPath $normalized)) { throw "MEMORY_ROOT_MARKER_SOURCE_MISSING: $normalized" }
+  $path = Join-Path $SkillDir 'memory-root.txt'
+  Write-Utf8NoBom $path ($normalized + "`n")
+  $written = ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)).Trim()
+  if (-not (Test-SuperBrainSamePath $written $normalized)) { throw "MEMORY_ROOT_MARKER_VERIFY_FAILED: $path" }
 }
 
 function Get-SuperBrainGlobalStartupBlock([string]$Root = $SuperBrainRoot) {
@@ -334,8 +453,11 @@ function Get-SuperBrainGlobalStartupBlock([string]$Root = $SuperBrainRoot) {
     '',
     'At the start of every new agent conversation, treat the Super Memory Brain short router as active even if the full `super-memory-brain` skill body has not been loaded yet.',
     '',
-    '- Public entry: `super-memory-brain`; package root: `' + $packageRoot + '`; memory root: `' + $memoryRoot + '`.',
+    ('- Public entry: `super-memory-brain`; package root: `' + $packageRoot + '`; memory root: `' + $memoryRoot + '`.'),
     '- Keep startup lightweight: `memory:auto`, G1 governs memory decisions, ORC routes tasks, and NexSandglass/Hybrid Recall is used only when continuity, status, prior decisions, or evidence are needed.',
+    '- Treat a terse request matching a configured canonical workflow preference as a `memory:auto` recall trigger: perform one bounded lookup before replying and do not replace its current verified contract with a generic template.',
+    '- Workflow trigger hot index: `git怎么写`, `git呢`, `怎么提交`, `提交怎么写`, and spacing/punctuation variants map to `decision_key=git-ui-commit-response`; resolve it with exact current-and-verified decision lookup, never generic semantic fallback.',
+    '- G1 visibility: when Super Brain/G1/ORC/NexSandglass or governed memory actually participates, the final reply first line must be exactly `G1`; never display it without participation and never omit it after participation.',
     '- Load/read `super-memory-brain` first for explicit wake/control/status/recall/learning/restore/maintenance/agent-bridge phrases such as `超级大脑`, `启动超级大脑`, `刷新超级大脑`, `Super Brain`, `G1`, `任务状态`, `还记得`, `上次`, `另一个会话`, `开启agent通道`, `开启子agent通道`, `打开子agent通道`, `连接子agent通道`, `agent通道`, `子agent通道`, `agent bridge`, or `subagent channel`.',
     '- Agent Bridge startup route: any mixed Chinese/English user phrase containing `agent` plus channel/open/connect/send/bridge/communication intent must load/read `super-memory-brain` first, not the host default agent/worker/explorer help. Short commands such as open agent channel, connect agent channel, send to agent, subagent channel, and agent bridge are Super Brain agent-bridge commands.',
     '- Hard guard: any user phrase containing ASCII `agent` together with CJK/non-English characters should be treated as Super Brain Agent Bridge routing, not host default explorer/worker/default agent role help, unless the user explicitly asks for role help or says explorer/worker/default.',
@@ -386,12 +508,16 @@ function Write-SuperBrainGlobalStartup([string]$SkillRoot, [string]$Root = $Supe
   if ($targets.Count -eq 0) { return @() }
   $block = Get-SuperBrainGlobalStartupBlock $Root
   $pattern = '(?s)<!-- SUPER_MEMORY_BRAIN_BOOTSTRAP_START -->.*?<!-- SUPER_MEMORY_BRAIN_BOOTSTRAP_END -->'
+  $legacyPattern = '(?s)\A# Codex Global Bootstrap\s+## Super Memory Brain Short Router.*?## Browser Route.*?(?=\r?\n\r?\n## Shiroyama Output Rule)'
   $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   foreach ($path in $targets) {
     $old = ''
     if (Test-Path -LiteralPath $path) {
       $old = Get-Content -LiteralPath $path -Raw -Encoding UTF8
       if (-not $NoBackup) { Copy-Item -LiteralPath $path -Destination "$path.bak-super-brain-bootstrap-$timestamp" -Force }
+    }
+    if ($old -match $legacyPattern) {
+      $old = [regex]::Replace($old, $legacyPattern, "# Codex Global Bootstrap`r`n", 1)
     }
     if ($old -match $pattern) {
       $new = [regex]::Replace($old, $pattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $block }, 1)
@@ -412,7 +538,9 @@ function Test-SuperBrainGlobalStartup([string]$SkillRoot) {
   foreach ($path in $targets) {
     if (Test-Path -LiteralPath $path) {
       $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
-      if (($text -like '*SUPER_MEMORY_BRAIN_BOOTSTRAP_START*') -and ($text -like '*super-memory-brain*') -and ($text -like '*browser-act*') -and ($text -like '*Agent Bridge startup route*') -and ($text -like '*Hard guard*') -and ($text -like '*CJK/non-English*') -and ($text -like '*subagent channel*') -and ($text -like '*Agent Bridge target-mode guard*') -and ($text -like '*Compaction/resume priority*') -and ($text -like '*Maintenance autonomy*')) { $found += $path }
+      $singleBlock = ([regex]::Matches($text, '<!-- SUPER_MEMORY_BRAIN_BOOTSTRAP_START -->')).Count -eq 1
+      $singleRouter = ([regex]::Matches($text, '## Super Memory Brain Short Router')).Count -eq 1
+      if ($singleBlock -and $singleRouter -and ($text -like '*super-memory-brain*') -and ($text -like '*browser-act*') -and ($text -like '*workflow preference*') -and ($text -like '*Workflow trigger hot index*') -and ($text -like '*decision_key=git-ui-commit-response*') -and ($text -like '*G1 visibility*') -and ($text -like '*Agent Bridge startup route*') -and ($text -like '*Hard guard*') -and ($text -like '*CJK/non-English*') -and ($text -like '*subagent channel*') -and ($text -like '*Agent Bridge target-mode guard*') -and ($text -like '*Compaction/resume priority*') -and ($text -like '*Maintenance autonomy*')) { $found += $path }
     }
   }
   return [pscustomobject]@{ ok = ($found.Count -gt 0); paths = @($found); expected = @($targets) }

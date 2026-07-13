@@ -137,7 +137,7 @@ def rebuild_index() -> int:
         return len(idx)
     except Exception:
         logger.warning("sandglass: rebuild_index() failed", exc_info=True)
-        return 0
+        return -1
 
 
 def _sync_index() -> dict:
@@ -265,30 +265,32 @@ def recent(n: int = 10) -> list:
         if n <= 0 or not os.path.exists(_SANDGLASS):
             return []
         
-        # 逆向读取文件尾部——只加载最后几KB，不读全文件
+        # Reverse-read complete lines while preserving a partial line across
+        # chunk boundaries. Memory stays bounded by the requested tail.
         chunk_size = 4096
         with open(_SANDGLASS, "rb") as f:
-            f.seek(0, 2)  # 跳到文件末尾
+            f.seek(0, 2)
             file_size = f.tell()
-            
+
             lines_found = []
             buffer = b""
             pos = file_size
-            
+
             while pos > 0 and len(lines_found) < n:
                 read_size = min(chunk_size, pos)
                 pos -= read_size
                 f.seek(pos)
-                chunk = f.read(read_size)
-                buffer = chunk + buffer
-                lines_found = buffer.split(b"\n")
-                # 保留最后N+1行
+                parts = (f.read(read_size) + buffer).split(b"\n")
+                if pos > 0:
+                    buffer = parts[0]
+                    complete = parts[1:]
+                else:
+                    buffer = b""
+                    complete = parts
+                lines_found = complete + lines_found
                 if len(lines_found) > n + 1:
                     lines_found = lines_found[-(n + 1):]
-                # 保留第一行残片到下次循环（跨chunk长行）
-                buffer = b"" if len(lines_found) == 1 and not lines_found[0] else (lines_found[0] if pos > 0 else b"")
-            
-            # 取最后n行非空行
+
             lines_found = [l for l in lines_found if l.strip()][-n:]
         
         total = count()  # 用已有count()函数，不重复数文件

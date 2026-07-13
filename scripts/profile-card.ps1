@@ -2,6 +2,7 @@ param(
   [switch]$Refresh,
   [int]$MaxTokens = 180,
   [int]$TopK = 3,
+  [string]$PreferredQuery = '',
   [switch]$Json
 )
 
@@ -15,18 +16,21 @@ $workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
 if (-not (Test-Path $workspace)) { New-Item -ItemType Directory -Force -Path $workspace | Out-Null }
 $cardPath = Join-Path $workspace 'profile-card.json'
 
-if (-not $Refresh -and (Test-Path $cardPath)) {
+if (-not $Refresh -and [string]::IsNullOrWhiteSpace($PreferredQuery) -and (Test-Path $cardPath)) {
   if ($Json) { Get-Content -LiteralPath $cardPath -Raw -Encoding UTF8 } else { Write-Host "PROFILE_CARD_OK path=$cardPath cached=True" }
   exit 0
 }
 
-$query = '我的偏好 我的性格 我的经历 我的习惯 按我的习惯来 profile preference persona'
 $recall = @()
-try {
-  $recallOutput = @(& (Join-Path $PSScriptRoot 'recall-search.ps1') -Query $query -TopK $TopK -MaxTokens ([Math]::Max(160, $MaxTokens)) -Layer profile -MemoryMode auto -Json 2>&1)
-  $recall = @(($recallOutput -join "`n") | ConvertFrom-Json)
-} catch {
-  $recall = @()
+foreach ($query in @($PreferredQuery,'profile preference') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique) {
+  try {
+    $recallOutput = @(& (Join-Path $PSScriptRoot 'recall-search.ps1') -Query $query -TopK $TopK -MaxTokens ([Math]::Max(160, $MaxTokens)) -Layer profile -MemoryMode auto -Json 2>&1)
+    $parsedRecall = (($recallOutput -join "`n") | ConvertFrom-Json)
+    foreach ($item in @($parsedRecall)) {
+      $key = if($item.evidenceCard){[string]$item.evidenceCard.claim}else{[string]$item.text}
+      if (@($recall | Where-Object { $existingKey=if($_.evidenceCard){[string]$_.evidenceCard.claim}else{[string]$_.text}; $existingKey -eq $key }).Count -eq 0) { $recall += $item }
+    }
+  } catch {}
 }
 
 $cards = @($recall | Select-Object -First $TopK | ForEach-Object {

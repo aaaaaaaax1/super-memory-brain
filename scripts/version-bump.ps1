@@ -18,9 +18,11 @@ if ([string]::IsNullOrWhiteSpace($Supersedes)) { $Supersedes = [string]$manifest
 
 $targets = @(
   'manifest.json',
+  'README.md',
   'CHANGELOG.md',
   'CURRENT_BASELINE.md',
   'BASELINE_HISTORY.md',
+  'tests\memory-recall-tests.json',
   'memory\graph.jsonl'
 )
 $actions = @()
@@ -29,7 +31,8 @@ foreach ($target in $targets) {
 }
 
 function Replace-First([string]$Text, [string]$Pattern, [string]$Replacement) {
-  return [regex]::Replace($Text, $Pattern, $Replacement, 1)
+  $regex = New-Object System.Text.RegularExpressions.Regex($Pattern)
+  return $regex.Replace($Text, $Replacement, 1)
 }
 
 if ($Apply) {
@@ -37,6 +40,12 @@ if ($Apply) {
   $manifestText = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
   $manifestText = Replace-First $manifestText '"version"\s*:\s*"[^"]+"' ('"version": "' + $Version + '"')
   Write-Utf8NoBom $manifestPath $manifestText
+
+  $readmePath = Join-Path $Root 'README.md'
+  $readmeText = Get-Content -LiteralPath $readmePath -Raw -Encoding UTF8
+  $readmePattern = '(?m)^(\s*)' + [regex]::Escape($Supersedes) + '(\s*)$'
+  $readmeText = Replace-First $readmeText $readmePattern ('${1}' + $Version + '${2}')
+  Write-Utf8NoBom $readmePath $readmeText
 
   $changelogPath = Join-Path $Root 'CHANGELOG.md'
   $changelogText = Get-Content -LiteralPath $changelogPath -Raw -Encoding UTF8
@@ -50,13 +59,19 @@ if ($Apply) {
   $baselineText = $baselineText -replace 'Package Version: \d+\.\d+\.\d+', "Package Version: $Version"
   Write-Utf8NoBom $baselinePath $baselineText
 
+  $recallTestsPath = Join-Path $Root 'tests\memory-recall-tests.json'
+  $recallTestsText = Get-Content -LiteralPath $recallTestsPath -Raw -Encoding UTF8
+  $recallTestsText = Replace-First $recallTestsText ('"' + [regex]::Escape($Supersedes) + '"') ('"' + $Version + '"')
+  Write-Utf8NoBom $recallTestsPath $recallTestsText
+
   $historyPath = Join-Path $Root 'BASELINE_HISTORY.md'
   $historyText = Get-Content -LiteralPath $historyPath -Raw -Encoding UTF8
   if ($historyText -notlike "*## $Version*" ) {
     $historyText = $historyText -replace '^# BASELINE_HISTORY\s*', ("# BASELINE_HISTORY`n`n## $Version`n`nDate: " + (Get-Date -Format 'yyyy-MM-dd') + "`nStatus: [CURRENT][VERIFIED]`nChange:`n- $Summary`nSupersedes: $Supersedes`nRollback: Restore $Supersedes scripts/docs/manifest/baseline if $Version changes need to be disabled temporarily.`n`n")
     $historyText = $historyText -replace ("## " + [regex]::Escape($Supersedes) + "\s+Date:"), ("## $Supersedes`n`nDate:")
     $historyText = $historyText -replace 'Status: \[CURRENT\]\[VERIFIED\]', 'Status: [HISTORY][VERIFIED]'
-    $historyText = $historyText -replace ("## " + [regex]::Escape($Version) + "\s+Date:\s+.*?Status: \[HISTORY\]\[VERIFIED\]"), ("## $Version`n`nDate: " + (Get-Date -Format 'yyyy-MM-dd') + "`nStatus: [CURRENT][VERIFIED]")
+    $currentPattern = '(?s)(## ' + [regex]::Escape($Version) + '\s+Date:\s+.*?Status:) \[HISTORY\]\[VERIFIED\]'
+    $historyText = Replace-First $historyText $currentPattern '${1} [CURRENT][VERIFIED]'
     Write-Utf8NoBom $historyPath $historyText
   }
 

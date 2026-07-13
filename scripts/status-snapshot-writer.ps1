@@ -61,7 +61,7 @@ $codegraphSummary = [pscustomobject]@{
 }
 
 $snapshot = [pscustomobject]@{
-  ok = $true
+  ok = ($dashboard.ok -eq $true)
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
   version = $dashboard.version
   summary = Limit-Text $Summary 180
@@ -69,6 +69,7 @@ $snapshot = [pscustomobject]@{
   roadmapCompletedVersions = @($dashboard.roadmap.completedVersions)
   roadmapRemainingVersions = @($dashboard.roadmap.remainingVersions)
   verifyOk = $dashboard.verify.ok
+  verifyCheckedAt = $dashboard.verify.checkedAt
   hotRefreshOk = $dashboard.hotRefresh.ok
   memoryRegressionOk = $dashboard.memoryRegression.ok
   reviewGateOk = $dashboard.reviewGate.ok
@@ -82,8 +83,8 @@ $snapshot = [pscustomobject]@{
 
 $path = Join-Path $workspace 'last-status-snapshot.json'
 Write-JsonUtf8NoBom $path $snapshot 12
-$statusCard = [pscustomobject]@{ ok=$snapshot.ok; updatedAt=$snapshot.checkedAt; version=$snapshot.version; packageOk=$dashboard.ok; verifyOk=$snapshot.verifyOk; hotRefreshOk=$snapshot.hotRefreshOk; memoryRegressionOk=$snapshot.memoryRegressionOk; reviewGateOk=$snapshot.reviewGateOk; privacyOk=$snapshot.privacyOk; risksCount=@($snapshot.risks).Count; nextAction=$snapshot.nextAction; continuity=$continuitySummary; impact=$impactSummary; codegraph=$codegraphSummary; source='status-snapshot-writer.ps1' }
+$statusCard = [pscustomobject]@{ ok=$snapshot.ok; updatedAt=$snapshot.checkedAt; version=$snapshot.version; packageOk=$dashboard.ok; verifyOk=$snapshot.verifyOk; verifyCheckedAt=$snapshot.verifyCheckedAt; hotRefreshOk=$snapshot.hotRefreshOk; memoryRegressionOk=$snapshot.memoryRegressionOk; reviewGateOk=$snapshot.reviewGateOk; privacyOk=$snapshot.privacyOk; risksCount=@($snapshot.risks).Count; nextAction=$snapshot.nextAction; continuity=$continuitySummary; impact=$impactSummary; codegraph=$codegraphSummary; source='status-snapshot-writer.ps1' }
 $statusCardPath = Join-Path $workspace 'status-card.json'
 Write-JsonUtf8NoBom $statusCardPath $statusCard 10
-if ($Json) { $snapshot | Add-Member -NotePropertyName statusCardPath -NotePropertyValue $statusCardPath -Force; $snapshot | ConvertTo-Json -Depth 12 } else { Write-Host "STATUS_SNAPSHOT_WRITER ok=True path=$path version=$($snapshot.version) statusCard=$statusCardPath"; Write-Host "STATUS_SNAPSHOT_SUMMARY $($snapshot.summary)"; Write-Host "STATUS_SNAPSHOT_NEXT $($snapshot.nextAction)" }
+if ($Json) { $snapshot | Add-Member -NotePropertyName statusCardPath -NotePropertyValue $statusCardPath -Force; $snapshot | ConvertTo-Json -Depth 12 } else { Write-Host "STATUS_SNAPSHOT_WRITER ok=$($snapshot.ok) path=$path version=$($snapshot.version) statusCard=$statusCardPath"; Write-Host "STATUS_SNAPSHOT_SUMMARY $($snapshot.summary)"; Write-Host "STATUS_SNAPSHOT_NEXT $($snapshot.nextAction)" }
 exit 0

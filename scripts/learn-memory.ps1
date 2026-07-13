@@ -147,7 +147,7 @@ if ($writeOk -and $Layer -eq 'experience') {
 
 $profileCard = $null
 if ($writeOk -and $Layer -eq 'profile') {
-  $profileOutput = @(& (Join-Path $PSScriptRoot 'profile-card.ps1') -Refresh -Json 2>&1)
+  $profileOutput = @(& (Join-Path $PSScriptRoot 'profile-card.ps1') -Refresh -PreferredQuery $Title -Json 2>&1)
   $profileCard = ($profileOutput -join "`n")
 }
 

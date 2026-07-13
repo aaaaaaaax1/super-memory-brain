@@ -21,6 +21,7 @@ $evidenceRoot = Join-Path $workspace 'compressed-memory-evidence'
 if (-not (Test-Path -LiteralPath $evidenceRoot)) { New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null }
 
 $memoryPolicy = Get-Content -LiteralPath (Join-Path $Root 'memory-policy.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$lifecyclePolicy = Get-SuperBrainMemoryLifecyclePolicy $Root
 if ($MaxMemoryChars -le 0) { $MaxMemoryChars = [int]$memoryPolicy.maxMemoryChars }
 if ($MaxActions -le 0) { $MaxActions = 20 }
 $memoryPath = Join-Path $memoryRoot 'sandglass.txt'
@@ -102,6 +103,27 @@ function Add-Action([string]$Type, [int]$LineNumber, [string]$Action, [string]$R
 }
 function Add-Error([string]$Where, [string]$Message) { [void]$script:errors.Add([pscustomobject]@{ where=$Where; message=Limit-Text $Message 500 }) }
 
+function Invoke-RebuildMemoryIndexes([hashtable]$LineMap) {
+  $oldHome = $env:NEXSANDBASE_HOME
+  $oldPythonPath = $env:PYTHONPATH
+  try {
+    $env:NEXSANDBASE_HOME = $memoryRoot
+    $env:PYTHONPATH = Join-Path $memoryRoot 'scripts'
+    $mappingJson = ($LineMap | ConvertTo-Json -Compress -Depth 4)
+    $mapping64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($mappingJson))
+    $code = "import base64,json; from sandglass_archive import rebuild_indexes; mapping=json.loads(base64.b64decode('$mapping64').decode('utf-8')); print(json.dumps(rebuild_indexes(mapping), ensure_ascii=False))"
+    $raw = (& python -c $code) -join "`n"
+    if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ ok=$false; error=('python_exit_' + $LASTEXITCODE) } }
+    if ([string]::IsNullOrWhiteSpace($raw)) { return [pscustomobject]@{ ok=$false; error='empty_rebuild_result' } }
+    return ($raw | ConvertFrom-Json)
+  } catch {
+    return [pscustomobject]@{ ok=$false; error=$_.Exception.Message }
+  } finally {
+    if ($null -eq $oldHome) { Remove-Item Env:NEXSANDBASE_HOME -ErrorAction SilentlyContinue } else { $env:NEXSANDBASE_HOME = $oldHome }
+    if ($null -eq $oldPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } else { $env:PYTHONPATH = $oldPythonPath }
+  }
+}
+
 $beforeHealth = $null
 try { $beforeHealth = (& (Join-Path $PSScriptRoot 'memory-health.ps1') -Json | ConvertFrom-Json) } catch {}
 
@@ -109,21 +131,49 @@ $archivePath = Join-Path $evidenceRoot ('memory-hygiene-' + $stamp + '.json')
 $originalLines = @()
 $newLines = @()
 $archiveItems = New-Object System.Collections.ArrayList
+$originalRecords = @()
 $seen = @{}
+$lineMap = [ordered]@{}
 $lineNumber = 0
+$newLineNumber = 0
 $changed = $false
 
 if (Test-Path -LiteralPath $memoryPath) {
   $originalLines = @(Get-Content -LiteralPath $memoryPath -Encoding UTF8)
+  $recordLineNumber = 0
+  foreach ($recordLine in $originalLines) {
+    $recordLineNumber += 1
+    if (-not [string]::IsNullOrWhiteSpace($recordLine)) { $originalRecords += Get-SuperBrainMemoryLineRecord ([string]$recordLine) $recordLineNumber }
+  }
   foreach ($line in $originalLines) {
     $lineNumber += 1
-    if ([string]::IsNullOrWhiteSpace($line)) { $newLines += $line; continue }
+    if ([string]::IsNullOrWhiteSpace($line)) {
+      $newLines += $line
+      $newLineNumber += 1
+      $lineMap[[string]$lineNumber] = $newLineNumber
+      continue
+    }
     $current = [string]$line
+    $record = Get-SuperBrainMemoryLineRecord $current $lineNumber
     $privatePattern = Get-PrivatePattern $current
     if (-not [string]::IsNullOrWhiteSpace($privatePattern)) {
       if ($actions.Count -lt $MaxActions) { Add-Action 'private_pattern' $lineNumber 'requires_confirmation' ('private-pattern hit: ' + $privatePattern) $current '' $false 'high' }
       $newLines += $current
       continue
+    }
+
+    if ($record.expired) {
+      if ($actions.Count -lt $MaxActions) { Add-Action 'expired' $lineNumber 'archive_expired_with_original_archive' 'Explicit expiry has passed; expired memory is not eligible for default recall.' $current '' $ApplySafe 'low' }
+      if ($ApplySafe -and $lifecyclePolicy.autoArchive.explicitExpiry) {
+        [void]$archiveItems.Add([pscustomobject]@{ line=$lineNumber; type='expired'; original=$current })
+        $changed = $true
+        continue
+      }
+    }
+
+    $retentionDays = [int]$lifecyclePolicy.retentionDays.($record.layer)
+    if (($record.stale -or $record.history) -and -not $record.protected -and $retentionDays -gt 0 -and $record.ageDays -gt $retentionDays) {
+      if ($actions.Count -lt $MaxActions) { Add-Action 'stale_history' $lineNumber 'requires_confirmation' "Stale/history memory is older than the $retentionDays-day $($record.layer) retention window." $current '' $false 'medium' }
     }
 
     $key = $current -replace '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| [^|]+ \| ', ''
@@ -146,14 +196,26 @@ if (Test-Path -LiteralPath $memoryPath) {
       if ($ApplySafe -and $compact -ne $current) {
         [void]$archiveItems.Add([pscustomobject]@{ line=$lineNumber; type='too_long'; original=$current; compact=$compact })
         $newLines += $compact
+        $newLineNumber += 1
+        $lineMap[[string]$lineNumber] = $newLineNumber
         $changed = $true
         continue
       }
     }
     $newLines += $current
+    $newLineNumber += 1
+    $lineMap[[string]$lineNumber] = $newLineNumber
   }
 }
 
+$memoryBudget = Get-SuperBrainMemoryBudget $originalRecords '' '' $Root
+if ($memoryBudget.enabled -and $memoryBudget.status -ne 'ok' -and $actions.Count -lt $MaxActions) {
+  $budgetAction = if ($memoryBudget.status -eq 'blocked') { 'requires_confirmation' } else { 'review_budget_pressure' }
+  $budgetRisk = if ($memoryBudget.status -eq 'blocked') { 'high' } else { 'low' }
+  Add-Action 'budget' 0 $budgetAction "Memory lifecycle budget status=$($memoryBudget.status) lines=$($memoryBudget.currentLines)/$($memoryBudget.maxLines) chars=$($memoryBudget.currentChars)/$($memoryBudget.maxChars)." '' '' $false $budgetRisk
+}
+
+$indexRebuild = [pscustomobject]@{ ok=$true; skipped=$true; reason='no_memory_change' }
 if ($ApplySafe -and $changed) {
   try {
     $archive = [pscustomobject]@{
@@ -169,6 +231,8 @@ if ($ApplySafe -and $changed) {
     }
     Write-JsonUtf8NoBom $archivePath $archive 16
     Write-Utf8NoBom $memoryPath (($newLines -join "`n") + "`n")
+    $indexRebuild = Invoke-RebuildMemoryIndexes $lineMap
+    if (-not $indexRebuild.ok) { Add-Error 'index_rebuild' ([string]$indexRebuild.error) }
   } catch { Add-Error 'memory_write' $_.Exception.Message }
 }
 
@@ -184,17 +248,23 @@ $result = [pscustomobject]@{
   memory = $memoryPath
   archivePath = if ($ApplySafe -and $changed) { $archivePath } else { '' }
   maxMemoryChars = $MaxMemoryChars
-  before = if ($beforeHealth) { [pscustomobject]@{ duplicateCount=$beforeHealth.duplicateCount; tooLongCount=$beforeHealth.tooLongCount; privatePatternHitCount=$beforeHealth.privatePatternHitCount; invalidExpiryCount=$beforeHealth.invalidExpiryCount } } else { $null }
-  after = if ($afterHealth) { [pscustomobject]@{ duplicateCount=$afterHealth.duplicateCount; tooLongCount=$afterHealth.tooLongCount; privatePatternHitCount=$afterHealth.privatePatternHitCount; invalidExpiryCount=$afterHealth.invalidExpiryCount } } else { $null }
+  before = if ($beforeHealth) { [pscustomobject]@{ duplicateCount=$beforeHealth.duplicateCount; tooLongCount=$beforeHealth.tooLongCount; privatePatternHitCount=$beforeHealth.privatePatternHitCount; invalidExpiryCount=$beforeHealth.invalidExpiryCount; budgetStatus=$beforeHealth.memoryLifecycle.status; budgetLines="$($beforeHealth.memoryLifecycle.currentLines)/$($beforeHealth.memoryLifecycle.maxLines)"; budgetChars="$($beforeHealth.memoryLifecycle.currentChars)/$($beforeHealth.memoryLifecycle.maxChars)" } } else { $null }
+  after = if ($afterHealth) { [pscustomobject]@{ duplicateCount=$afterHealth.duplicateCount; tooLongCount=$afterHealth.tooLongCount; privatePatternHitCount=$afterHealth.privatePatternHitCount; invalidExpiryCount=$afterHealth.invalidExpiryCount; budgetStatus=$afterHealth.memoryLifecycle.status; budgetLines="$($afterHealth.memoryLifecycle.currentLines)/$($afterHealth.memoryLifecycle.maxLines)"; budgetChars="$($afterHealth.memoryLifecycle.currentChars)/$($afterHealth.memoryLifecycle.maxChars)" } } else { $null }
+  memoryLifecycle = $memoryBudget
   actionCount = $actions.Count
   appliedCount = @($actions | Where-Object { $_.applied -eq $true }).Count
   requiresConfirmation = @($actions | Where-Object { $_.action -eq 'requires_confirmation' }).Count
   changed = [bool]($ApplySafe -and $changed)
+  lineMapEntries = $lineMap.Count
+  indexRebuild = $indexRebuild
   actions = @($actions)
   errors = @($errors)
   policy = [pscustomobject]@{
     lowRiskCompression = 'archive_original_then_replace_with_summary'
     duplicateCleanup = 'archive_original_then_remove_duplicate'
+    explicitExpiry = 'archive_expired_memory when ApplySafe is enabled'
+    derivedIndexes = 'rebuild Sandglass idx, SQLite FTS, Shadow Sand, and remap graph source lines after physical rewrite'
+    budgetOverflow = 'report and require confirmation; never auto-delete current verified memory'
     privatePatternHits = 'confirmation_required'
     noRawPrivateInReport = $true
   }

@@ -3,6 +3,7 @@ param(
   [string[]]$Text,
   [string]$Query = '',
   [string]$Scope = '',
+  [string]$TaskId = '',
   [ValidateSet('BeforeAct','BeforeMutation','BeforeCompletion','AfterUserCorrection','Status')]
   [string]$Phase = 'BeforeAct',
   [int]$MaxAgeMinutes = 60,
@@ -44,15 +45,28 @@ $lower = $inputText.ToLowerInvariant()
 $zhSubAgent = (U @(23376)) + 'agent'
 $zhChannel = U @(36890,36947)
 
+function Test-EngineeringJudgmentIntent([string]$IntentName) {
+  if ($IntentName -eq 'add_or_optimize_feature') { return $true }
+  foreach ($term in @('fix','debug','repair','optimize','optimization','architecture','architect','root cause','tradeoff','trade-off','best option','optimal','performance','bottleneck','regression','refactor','migration','failure analysis')) {
+    if ($lower.Contains($term)) { return $true }
+  }
+  foreach ($term in @((U @(20462,22797)),(U @(20248,21270)),(U @(26550,26500)),(U @(26681,22240)),(U @(26368,20248)),(U @(26368,20339)),(U @(24615,33021)),(U @(37325,26500)),(U @(25925,38556)),(U @(35774,35745)),(U @(20915,31574)))) {
+    if ($inputText.Contains($term)) { return $true }
+  }
+  return $false
+}
+
 $intent = $null
 try {
   $intentRaw = @(& (Join-Path $PSScriptRoot 'intent-router.ps1') $inputText -Json 2>$null)
   if ($intentRaw) { $intent = (($intentRaw -join "`n") | ConvertFrom-Json) }
 } catch {}
 $intentName = if ($intent -and $intent.intent) { [string]$intent.intent } else { 'general_task' }
+$engineeringRequiredFromInput = Test-EngineeringJudgmentIntent $intentName
 
 $highRiskReasons = New-Object System.Collections.ArrayList
 if ($intentName -eq 'agent_bridge_channel' -or $lower.Contains('agent bridge') -or ($lower.Contains('agent') -and ($inputText.Contains($zhChannel) -or $inputText.Contains($zhSubAgent)))) { [void]$highRiskReasons.Add('agent_bridge_channel') }
+if ($engineeringRequiredFromInput) { [void]$highRiskReasons.Add('engineering_judgment') }
 foreach ($term in @('memory mechanism','cognitive','preflight','startup','global route','hot-refresh','version bump','release','historical import','destructive','apply','force','delete','remove','overwrite')) {
   if ($lower.Contains($term)) { [void]$highRiskReasons.Add($term.Replace(' ','_')) }
 }
@@ -69,6 +83,10 @@ $blockers = New-Object System.Collections.ArrayList
 $preflightExists = ($null -ne $preflight)
 $preflightExistsEvidence = if ($preflightExists) { "path=last-cognitive-preflight.json checkedAt=$($preflight.checkedAt)" } else { 'missing last-cognitive-preflight.json' }
 Add-Check $checks 'cognitive-preflight-exists' ($preflightExists -or -not $isHighRisk -or $AllowMissingPreflight) $preflightExistsEvidence $isHighRisk
+
+$preflightQueryMatch = ($preflightExists -and [string]$preflight.query -eq (Limit-Text $inputText 260))
+$preflightQueryEvidence = if ($preflightExists) { "expected=$(Limit-Text $inputText 260) observed=$($preflight.query)" } else { 'missing preflight' }
+Add-Check $checks 'cognitive-preflight-query-match' ($preflightQueryMatch -or -not $isHighRisk -or $AllowMissingPreflight) $preflightQueryEvidence $isHighRisk
 
 $preflightFresh = $false
 if ($preflightExists -and $preflight.checkedAt) {
@@ -88,6 +106,31 @@ $mustCount = if ($preflightExists) { @($preflight.mustPreserve).Count } else { 0
 $guardCount = if ($preflightExists) { @($preflight.driftGuards).Count } else { 0 }
 Add-Check $checks 'must-preserve-present' ($mustCount -gt 0 -or -not $isHighRisk -or $AllowMissingPreflight) "mustPreserve=$mustCount" $isHighRisk
 Add-Check $checks 'drift-guards-present' ($guardCount -gt 0 -or -not $isHighRisk -or $AllowMissingPreflight) "driftGuards=$guardCount" $isHighRisk
+
+$engineeringRequired = ($engineeringRequiredFromInput -or ($preflightExists -and $preflightQueryMatch -and $preflight.engineeringJudgment.required -eq $true))
+$engineeringContractPresent = ($preflightExists -and $preflight.engineeringJudgment -and [string]$preflight.engineeringJudgment.decisionGate -eq 'engineering-decision-gate.ps1')
+Add-Check $checks 'engineering-judgment-contract' ($engineeringContractPresent -or -not $engineeringRequired -or $AllowMissingPreflight) "required=$engineeringRequired decisionGate=$($preflight.engineeringJudgment.decisionGate)" $engineeringRequired
+
+$currentTaskContext = Read-WorkspaceJson 'current-task-context.json'
+if ([string]::IsNullOrWhiteSpace($TaskId) -and $currentTaskContext -and [string]$currentTaskContext.status -eq 'active') { $TaskId = [string]$currentTaskContext.taskId }
+$engineeringGateRequired = ($engineeringRequired -and $Phase -in @('BeforeMutation','BeforeCompletion'))
+$engineeringStatus = $null
+if ($engineeringGateRequired) {
+  try {
+    $engineeringRaw = @(& (Join-Path $PSScriptRoot 'engineering-decision-gate.ps1') -Action Status -TaskId $TaskId -Json 2>$null)
+    if ($engineeringRaw) { $engineeringStatus = (($engineeringRaw -join "`n") | ConvertFrom-Json) }
+  } catch {}
+}
+$engineeringDecision = if($engineeringStatus -and $engineeringStatus.latest){$engineeringStatus.latest}else{$null}
+$engineeringTaskMatch = ([string]::IsNullOrWhiteSpace($TaskId) -or ($engineeringDecision -and [string]$engineeringDecision.taskId -eq $TaskId))
+$engineeringResolutionOk = (-not $engineeringDecision -or [string]$engineeringDecision.rootCause.status -eq 'verified' -or -not [string]::IsNullOrWhiteSpace([string]$engineeringDecision.rootCause.discriminatingTestEvidence))
+$engineeringCompletionEvidenceOk = ($Phase -ne 'BeforeCompletion' -or $engineeringResolutionOk)
+$engineeringGateOk = (-not $engineeringGateRequired -or ($engineeringStatus -and $engineeringStatus.ok -eq $true -and $engineeringDecision.ok -eq $true -and $engineeringDecision.epistemicGrounding.factsSupported -eq $true -and $engineeringCompletionEvidenceOk -and $engineeringTaskMatch))
+$engineeringGateEvidence = 'not required before this phase'
+if ($engineeringGateRequired) {
+  $engineeringGateEvidence = if($engineeringDecision){"taskId=$($engineeringDecision.taskId) requiredTaskId=$TaskId decisionId=$($engineeringDecision.decisionId) rootCauseStatus=$($engineeringDecision.rootCause.status) completionEvidenceOk=$engineeringCompletionEvidenceOk gaps=$(@($engineeringDecision.gaps).Count)"}else{'missing valid task-scoped engineering decision'}
+}
+Add-Check $checks 'engineering-decision-gate' $engineeringGateOk $engineeringGateEvidence $engineeringGateRequired
 
 if ($isHighRisk -and -not $AllowMissingPreflight) {
   foreach ($check in @($checks)) {
@@ -111,11 +154,12 @@ $result = [pscustomobject]@{
   checks = @($checks)
   violations = @($violations)
   blockers = @($blockers)
-  candidateSignals = @($violations | ForEach-Object { [pscustomobject]@{ candidateType='gap'; gapKind=if($_ -like '*fresh*'){'stale_state'}elseif($_ -like '*must*'){'missing_must_preserve'}elseif($_ -like '*drift*'){'missing_drift_guards'}else{'missing_preflight'}; severity='medium'; code=$_; expected=@('fresh cognitive-preflight','mustPreserve','driftGuards'); observed=@($_); missing=@($_); evidence=@('last-cognitive-enforce.json') } })
+  candidateSignals = @($violations | ForEach-Object { [pscustomobject]@{ candidateType='gap'; gapKind=if($_ -like '*engineering-decision*'){'missing_engineering_decision'}elseif($_ -like '*query-match*'){'stale_or_wrong_preflight'}elseif($_ -like '*fresh*'){'stale_state'}elseif($_ -like '*must*'){'missing_must_preserve'}elseif($_ -like '*drift*'){'missing_drift_guards'}else{'missing_preflight'}; severity='medium'; code=$_; expected=@('fresh query-matched cognitive-preflight','mustPreserve','driftGuards','valid engineering decision when required'); observed=@($_); missing=@($_); evidence=@('last-cognitive-enforce.json') } })
   mustPreserve = if ($preflightExists) { @($preflight.mustPreserve) } else { @() }
   driftGuards = if ($preflightExists) { @($preflight.driftGuards) } else { @() }
-  guard = 'High-risk work must pass cognitive preflight before action; memory is execution control, not passive storage.'
-  nextAction = if ($violations.Count -gt 0) { 'Run scripts\cognitive-preflight.ps1 for the current command, then re-run cognitive-enforce before action.' } else { 'Proceed while applying mustPreserve and driftGuards; run runtime-drift-checkpoint before major steps.' }
+  engineeringJudgment = [pscustomobject]@{ required=$engineeringRequired; gateRequired=$engineeringGateRequired; gateOk=$engineeringGateOk; completionEvidenceOk=$engineeringCompletionEvidenceOk; taskId=$TaskId; decisionId=if($engineeringDecision){$engineeringDecision.decisionId}else{''}; epistemicClasses=@('FACT','INFERENCE','UNKNOWN') }
+  guard = 'High-risk work must pass a fresh query-matched cognitive preflight; engineering mutation/completion must also pass evidence and decision grounding.'
+  nextAction = if (@($violations) -contains 'engineering-decision-gate') { 'Create a valid task-scoped engineering decision with evidence, options, execution contracts, acceptance, and risk, then re-run cognitive-enforce.' } elseif ($violations.Count -gt 0) { 'Run scripts\cognitive-preflight.ps1 for the current command, then re-run cognitive-enforce before action.' } else { 'Proceed while applying mustPreserve and driftGuards; stop on failed engineering acceptance and run runtime-drift-checkpoint before major steps.' }
   path = $outPath
 }
 

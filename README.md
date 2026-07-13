@@ -5,7 +5,7 @@
 ## 当前版本
 
 ```text
-0.5.75
+0.5.79
 ```
 
 版本信息见：
@@ -187,7 +187,7 @@ G1审记，ORC调度，沙漏只存稳态；隐私记忆需确认并标 [PRIVACY
 
 - `maintenance-policy.json` 定义哪些维护可自动做、哪些必须确认、哪些永不自动做。
 - `scripts\workspace-lifecycle-manager.ps1` 处理过期 `session-binding.json`、过期/关闭 Agent Bridge 临时通道、陈旧 active pointer、陈旧锁、生成型 tmp 文件。
-- `scripts\auto-hygiene-runner.ps1` 对过长记忆和精确重复记忆做证据归档后压缩/清理；隐私命中只提示确认，不自动删除。
+- `scripts\auto-hygiene-runner.ps1` 对过长记忆和精确重复记忆做证据归档后压缩/清理；物理删改后同步重建 Sandglass、SQLite FTS、Shadow Sand 和图谱行号；隐私命中只提示确认，不自动删除。
 - `scripts\post-task-maintenance.ps1` 在任务验证后串起生命周期维护、记忆卫生、自改进队列、状态快照。
 - `scripts\self-improvement-queue.ps1` 把遗漏、自动化缺口、反复提醒、逻辑断点变成候选项；候选项默认不改技能、不发布、不越权。
 
@@ -221,6 +221,8 @@ memory_mode: auto / force / off
 ```
 
 检索默认使用 Hybrid Recall：把 Sandglass 搜索、`memory\graph.jsonl` 决策/版本关系、`CURRENT_BASELINE.md` / `manifest.json` / `CHANGELOG.md` 状态锚点、最近记忆 fallback 统一成 `sourceType`、`score`、`confidence`、`reason`、`tokenEstimate` 候选，再按 `TopK` / `MaxTokens` 返回少量证据；过期、stale、负反馈记忆降权，不自动删除。用户说“不是这个 / 别按上次 / 不对 / 错了 / 以后不要”时写为负反馈，防止错误记忆反复出现。
+
+从 `0.5.78` 开始，超级大脑增加跨路由的“工程判断”能力：修复、优化、架构、性能、迁移、根因和最优方案任务会自动启用 `references/engineering-judgment.md`，普通问候和低风险小任务仍保持直接路径。`scripts/engineering-decision-gate.ps1` 强制区分 `FACT / INFERENCE / UNKNOWN`，事实必须绑定当前证据，根因必须标记 `verified / hypothesis / unknown`，关键未知需要最低成本判别测试；没有目标、约束、备选、权衡、标准和未知解消证据时，不允许声称“最优”。每个执行步骤都要有输入、输出、验收和停止条件。
 
 从 `0.5.72` 开始，超级大脑增加“目标路线锁”和“已验证模块集成一致性守卫”：`scripts/goal-route-lock.ps1` / `scripts/route-checkpoint.ps1` 负责记住用户已同意的主目标、路线、非目标和禁止漂移方向，发现偏航时输出 `ROUTE_DRIFT_DETECTED`；`scripts/verified-module-snapshot.ps1` / `scripts/integration-parity-check.ps1` 负责记录模块验证契约，并在接入主体时检查入口、参数、环境、依赖、状态、调用链和验收路径是否仍一致，发现变形时输出 `INTEGRATION_DRIFT_DETECTED`。完成标准拆分为 `module smoke OK`、`integration smoke OK`、`user-facing acceptance OK`，避免“模块测通但主体跑不通”。`scripts/causal-change-plan.ps1` 把结构化改动固定成因果计划：observed problem -> root cause -> known facts/prior changes -> proposed change -> expected optimization -> verification method -> residual risk；吸收 RCA、Theory of Change、Systems Thinking、OODA/PDCA/AAR、ADR 和 anti-overfitting lesson guard 的思路，要求先说明原因、假设、预期改善和验证方式，再修改和学习。
 

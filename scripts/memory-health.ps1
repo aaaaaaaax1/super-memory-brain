@@ -18,6 +18,13 @@ if (Test-Path $memoryPath) {
   $lines = @(Get-Content -LiteralPath $memoryPath -Encoding UTF8)
 }
 $nonEmpty = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+$records = @()
+$recordLineNumber = 0
+foreach ($line in $lines) {
+  $recordLineNumber += 1
+  if (-not [string]::IsNullOrWhiteSpace($line)) { $records += Get-SuperBrainMemoryLineRecord ([string]$line) $recordLineNumber }
+}
+$memoryBudget = Get-SuperBrainMemoryBudget $records '' '' $Root
 
 $tagCounts = [ordered]@{}
 foreach ($tag in @($policy.requiredTags)) {
@@ -132,7 +139,7 @@ foreach ($line in $decisionParticles) {
 }
 
 $result = [pscustomobject]@{
-  ok = (Test-Path $memoryPath)
+  ok = ((Test-Path $memoryPath) -and (-not $memoryBudget.enabled -or $memoryBudget.status -ne 'blocked'))
   memory = $memoryPath
   totalLines = $lines.Count
   nonEmptyLines = $nonEmpty.Count
@@ -141,6 +148,7 @@ $result = [pscustomobject]@{
   tooLongCount = $tooLong
   privatePatternHitCount = $privateHits
   maxMemoryChars = [int]$policy.maxMemoryChars
+  memoryLifecycle = $memoryBudget
   decisionMemoryCount = $decisionMemoryCount
   adrMemoryCount = $adrMemoryCount
   decisionGraphCount = $decisionGraph.Count
@@ -164,7 +172,7 @@ $result = [pscustomobject]@{
 if ($Json) {
   $result | ConvertTo-Json -Depth 8
 } else {
-  Write-Host "MEMORY_HEALTH ok=$($result.ok) totalLines=$($result.totalLines) nonEmpty=$($result.nonEmptyLines) duplicates=$($result.duplicateCount) untagged=$($result.untaggedCount) tooLong=$($result.tooLongCount) privateHits=$($result.privatePatternHitCount) decisionMemory=$($result.decisionMemoryCount) adrMemory=$($result.adrMemoryCount) decisionGraph=$($result.decisionGraphCount) adrGraph=$($result.adrGraphCount) adrCurrent=$($result.adrCurrentCount) adrSuperseded=$($result.adrSupersededCount) particles=$($result.decisionParticleCount) malformedParticles=$($result.malformedDecisionParticleCount) graphParseErrors=$($result.graphParseErrorCount) decisionCurrentConflicts=$($result.decisionCurrentConflictCount) summaries=$($result.summaryCount) negativeFeedback=$($result.negativeFeedbackCount) expires=$($result.expiresCount) expired=$($result.expiredCount) invalidExpiry=$($result.invalidExpiryCount)"
+  Write-Host "MEMORY_HEALTH ok=$($result.ok) totalLines=$($result.totalLines) nonEmpty=$($result.nonEmptyLines) duplicates=$($result.duplicateCount) untagged=$($result.untaggedCount) tooLong=$($result.tooLongCount) privateHits=$($result.privatePatternHitCount) budgetStatus=$($result.memoryLifecycle.status) budgetLines=$($result.memoryLifecycle.currentLines)/$($result.memoryLifecycle.maxLines) budgetChars=$($result.memoryLifecycle.currentChars)/$($result.memoryLifecycle.maxChars) decisionMemory=$($result.decisionMemoryCount) adrMemory=$($result.adrMemoryCount) decisionGraph=$($result.decisionGraphCount) adrGraph=$($result.adrGraphCount) adrCurrent=$($result.adrCurrentCount) adrSuperseded=$($result.adrSupersededCount) particles=$($result.decisionParticleCount) malformedParticles=$($result.malformedDecisionParticleCount) graphParseErrors=$($result.graphParseErrorCount) decisionCurrentConflicts=$($result.decisionCurrentConflictCount) summaries=$($result.summaryCount) negativeFeedback=$($result.negativeFeedbackCount) expires=$($result.expiresCount) expired=$($result.expiredCount) invalidExpiry=$($result.invalidExpiryCount)"
   foreach ($layer in $layerCounts.Keys) {
     Write-Host "LAYER $layer count=$($layerCounts[$layer])"
   }

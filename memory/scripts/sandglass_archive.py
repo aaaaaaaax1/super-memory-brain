@@ -112,6 +112,38 @@ def cold_migration(dry_run: bool = False) -> dict:
     return {"moved": moved, "dropped": dropped, "kept": kept}
 
 
+def rebuild_indexes(line_map: dict | None = None) -> dict:
+    """重建物理删改后的 Sandglass、SQLite FTS 和 Shadow Sand 行号索引。"""
+    result = {"ok": True, "lineMapEntries": len(line_map or {})}
+
+    try:
+        from sandglass_vault import rebuild_index
+        from sandglass_paths import _SANDGLASS, _SANDGLASS_IDX
+        token_count = rebuild_index()
+        result["sandglassIndex"] = {"ok": token_count >= 0 and (os.path.exists(_SANDGLASS_IDX) or not os.path.exists(_SANDGLASS)), "tokens": token_count}
+    except Exception as exc:
+        result["sandglassIndex"] = {"ok": False, "error": str(exc)}
+
+    try:
+        from sandglass_sqlite import sync_all
+        row_count = sync_all()
+        result["sqliteFts"] = {"ok": row_count >= 0, "rows": row_count}
+    except Exception as exc:
+        result["sqliteFts"] = {"ok": False, "error": str(exc)}
+
+    try:
+        from shadow_sand import rebuild_line_index
+        result["shadowSand"] = rebuild_line_index(line_map)
+    except Exception as exc:
+        result["shadowSand"] = {"ok": False, "error": str(exc)}
+
+    result["ok"] = all(
+        bool(result.get(name, {}).get("ok"))
+        for name in ("sandglassIndex", "sqliteFts", "shadowSand")
+    )
+    return result
+
+
 def search_archive(query: str, limit: int = 10) -> list:
     """搜索冷沙。返回 [(line_no, ts, text), ...]"""
     if not os.path.exists(_ARCHIVE):
