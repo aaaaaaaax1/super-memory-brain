@@ -1,13 +1,15 @@
 param(
   [string]$TeamTaskId = '',
+  [string]$StateRoot = '',
   [switch]$Json
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'team-task-common.ps1')
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
-$workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
+$workspace = Get-TeamTaskWorkspace $Root $StateRoot
 $teamRoot = Join-Path $workspace 'team-tasks'
 
 function Get-TeamTaskFiles([string]$Id) {
@@ -27,6 +29,10 @@ foreach ($file in Get-TeamTaskFiles $TeamTaskId) {
   $delegations = @($record.delegations)
   $codeCapable = @($delegations | Where-Object { $_.mode -eq 'code-capable' })
   $taskBlockers = @()
+  $decision = $record.commanderDecision
+  $integratedJoinSlots = if ($decision -and $decision.PSObject.Properties['integratedJoinSlots']) { @($decision.integratedJoinSlots) } else { @() }
+  $integratedDelegationIds = if ($decision -and $decision.PSObject.Properties['integratedDelegationIds']) { @($decision.integratedDelegationIds) } else { @() }
+  $join = Get-TeamTaskJoinStatus $record $integratedJoinSlots $integratedDelegationIds
 
   foreach ($delegation in $codeCapable) {
     $role = [string]$delegation.role
@@ -42,6 +48,7 @@ foreach ($file in Get-TeamTaskFiles $TeamTaskId) {
 
   if ($record.commanderDecision.status -notin @('accepted','verified')) { $taskBlockers += "commander_decision_not_final:$($record.commanderDecision.status)" }
   if ($record.verification.status -notin @('verified','passed')) { $taskBlockers += "verification_not_final:$($record.verification.status)" }
+  foreach ($joinBlocker in @($join.blockers)) { $taskBlockers += "join_$joinBlocker" }
 
   foreach ($blocker in $taskBlockers) {
     $blockers += [pscustomobject]@{ teamTaskId = $record.teamTaskId; blocker = $blocker; path = $file.FullName }
@@ -52,6 +59,9 @@ foreach ($file in Get-TeamTaskFiles $TeamTaskId) {
     userGoal = $record.userGoal
     dispatchLevel = $record.dispatchLevel
     codeCapableDelegationCount = @($codeCapable).Count
+    expectedJoinSlotCount = $join.expectedSlotCount
+    terminalJoinSlotCount = $join.terminalSlotCount
+    integratedJoinSlotCount = $join.integratedSlotCount
     commanderDecisionStatus = $record.commanderDecision.status
     verificationStatus = $record.verification.status
     gateStatus = if ($taskBlockers.Count -eq 0) { 'passed' } else { 'blocked' }

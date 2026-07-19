@@ -1,6 +1,6 @@
 [CmdletBinding(PositionalBinding=$false)]
 param(
-  [ValidateSet('Create','Status','List')]
+  [ValidateSet('Create','Status','List','AssessIntervention')]
   [string]$Action = 'Status',
   [string]$TaskId = '',
   [string]$Problem = '',
@@ -31,6 +31,14 @@ param(
   [string[]]$StepStopConditions = @(),
   [string[]]$AcceptanceCriteria = @(),
   [string[]]$Risks = @(),
+  [ValidateSet('none','marginal','material')]
+  [string]$ExpectedBenefitLevel = 'none',
+  [ValidateSet('none','low','material','high')]
+  [string]$RiskLevel = 'none',
+  [ValidateSet('none','inference','verified')]
+  [string]$EvidenceStrength = 'none',
+  [string]$ExpectedDelta = '',
+  [string]$Recommendation = '',
   [switch]$Json
 )
 
@@ -95,6 +103,44 @@ function Get-LatestDecision([string]$Value) {
   $latest = Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if (-not $latest) { return $null }
   try { return Get-Content -LiteralPath $latest.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+}
+
+if ($Action -eq 'AssessIntervention') {
+  $materialBenefit = ($ExpectedBenefitLevel -eq 'material')
+  $materialRisk = ($RiskLevel -in @('material','high'))
+  $grounded = ($EvidenceStrength -in @('inference','verified'))
+  $highUnknownRisk = ($RiskLevel -eq 'high' -and -not $grounded)
+  $shouldIntervene = (($materialBenefit -or $materialRisk) -and $grounded) -or $highUnknownRisk
+  $mode = if (-not $shouldIntervene) { 'silent' } elseif ($highUnknownRisk) { 'verify_or_contain' } else { 'recommend' }
+  $reason = if ($mode -eq 'silent') {
+    if ($materialBenefit -or $materialRisk) { 'material claim lacks a current evidence-backed inference' } else { 'expected benefit and risk are below the material threshold' }
+  } elseif ($mode -eq 'verify_or_contain') {
+    'high potential risk justifies verification or containment, but not a factual causal claim'
+  } elseif ($materialRisk) {
+    'material evidence-backed risk justifies proactive intervention'
+  } else {
+    'material evidence-backed expected benefit justifies proactive intervention'
+  }
+  $result = [pscustomobject]@{
+    ok = $true
+    checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    schema = 'super-brain.engineering-intervention-gate.v1'
+    version = (Get-SuperBrainManifest $Root).version
+    action = $Action
+    shouldIntervene = $shouldIntervene
+    mode = $mode
+    expectedBenefitLevel = $ExpectedBenefitLevel
+    riskLevel = $RiskLevel
+    evidenceStrength = $EvidenceStrength
+    evidence = @(Limit-Text (($FactEvidence + $Facts) -join '; ') 700)
+    expectedDelta = Limit-Text $ExpectedDelta 500
+    recommendation = Limit-Text $Recommendation 500
+    reason = $reason
+    guard = 'Marginal improvements stay silent. Material benefit/risk requires evidence-backed inference; unverified high risk may trigger only verify-or-contain action.'
+  }
+  Write-JsonUtf8NoBom $outPath $result 10
+  if ($Json) { Get-Content -LiteralPath $outPath -Raw -Encoding UTF8 } else { Write-Host "ENGINEERING_INTERVENTION_GATE intervene=$shouldIntervene mode=$mode reason=$reason" }
+  exit 0
 }
 
 if ($Action -eq 'List') {

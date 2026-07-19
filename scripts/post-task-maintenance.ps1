@@ -42,7 +42,9 @@ function Invoke-JsonStep([string]$Name, [scriptblock]$Body) {
 $steps = New-Object System.Collections.ArrayList
 [void]$steps.Add((Invoke-JsonStep 'workspace-lifecycle-manager' { & (Join-Path $PSScriptRoot 'workspace-lifecycle-manager.ps1') -Json -ApplySafe:$ApplySafe }))
 [void]$steps.Add((Invoke-JsonStep 'auto-hygiene-runner' { & (Join-Path $PSScriptRoot 'auto-hygiene-runner.ps1') -Json -ApplySafe:$ApplySafe }))
-[void]$steps.Add((Invoke-JsonStep 'self-improvement-queue' { & (Join-Path $PSScriptRoot 'self-improvement-queue.ps1') -Json -Summary $Summary -TaskId $TaskId -Evidence $Evidence }))
+[void]$steps.Add((Invoke-JsonStep 'user-adaptation' { & (Join-Path $PSScriptRoot 'user-adaptation.ps1') -Action $(if($ApplySafe){'Synthesize'}else{'Status'}) -Json }))
+[void]$steps.Add((Invoke-JsonStep 'self-improvement-queue' { & (Join-Path $PSScriptRoot 'self-improvement-queue.ps1') -Action $(if($ApplySafe){'Maintain'}else{'Status'}) -Json -Summary $Summary -TaskId $TaskId -Evidence $Evidence }))
+[void]$steps.Add((Invoke-JsonStep 'self-model' { & (Join-Path $PSScriptRoot 'self-model.ps1') -Action $(if($ApplySafe){'Refresh'}else{'Status'}) -Json }))
 [void]$steps.Add((Invoke-JsonStep 'update-state' { & (Join-Path $PSScriptRoot 'update-state.ps1') -AllowStaleVerify -Json }))
 $snapshotSummary = if ([string]::IsNullOrWhiteSpace($Summary)) { 'post-task maintenance' } else { $Summary }
 [void]$steps.Add((Invoke-JsonStep 'status-snapshot-writer' { & (Join-Path $PSScriptRoot 'status-snapshot-writer.ps1') -Summary $snapshotSummary -NextAction 'Continue with the next user task; safe maintenance has already run.' -Evidence (@($Evidence) + @('post-task-maintenance.ps1','workspace-lifecycle-manager.ps1','auto-hygiene-runner.ps1','self-improvement-queue.ps1')) -Json }))
@@ -66,7 +68,9 @@ $result = [pscustomobject]@{
   outputs = [pscustomobject]@{
     workspaceLifecycle = Join-Path $workspace 'last-workspace-lifecycle.json'
     memoryHygiene = Join-Path $workspace 'last-memory-hygiene.json'
+    userAdaptation = Join-Path $workspace 'user-adaptation\profile.json'
     selfImprovementQueue = Join-Path $workspace 'self-improvement-queue.json'
+    selfModel = Join-Path $workspace 'self-model.json'
     statusSnapshot = Join-Path $workspace 'last-status-snapshot.json'
   }
 }

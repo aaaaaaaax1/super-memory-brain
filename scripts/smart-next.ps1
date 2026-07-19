@@ -1,7 +1,9 @@
+[CmdletBinding(PositionalBinding=$false)]
 param(
-  [Parameter(ValueFromRemainingArguments=$true)]
+  [Parameter(Position=0,ValueFromRemainingArguments=$true)]
   [string[]]$Text,
   [string]$Workspace = '',
+  [string]$SessionKey = '',
   [switch]$Json
 )
 
@@ -10,6 +12,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = (Get-Location).Path }
+$workspaceKey = Get-SuperBrainWorkspaceKey $Workspace
+$hostSessionKey = Get-SuperBrainHostSessionKey $SessionKey
 
 function Convert-ToolJson([object[]]$Output, [string]$ScriptName) {
   $jsonStart = -1
@@ -20,6 +24,59 @@ function Convert-ToolJson([object[]]$Output, [string]$ScriptName) {
   return ((@($Output[$jsonStart..($Output.Count - 1)]) -join "`n") | ConvertFrom-Json)
 }
 function U([int[]]$Codes) { return -join ($Codes | ForEach-Object { [char]$_ }) }
+function Limit-SmartNextText([string]$Value,[int]$Max=220) {
+  if ([string]::IsNullOrWhiteSpace($Value) -or $Max -le 0) { return '' }
+  $clean = ($Value.Trim() -replace '\s+',' ')
+  if ($clean.Length -le $Max) { return $clean }
+  if ($Max -le 3) { return $clean.Substring(0,$Max) }
+  return $clean.Substring(0,$Max - 3).TrimEnd() + '...'
+}
+function Select-BoundedStrings([object[]]$Values,[int]$MaxItems=12,[int]$MaxChars=220,[switch]$PreserveTail) {
+  $items = @($Values | ForEach-Object { Limit-SmartNextText ([string]$_) $MaxChars } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($items.Count -le $MaxItems) { return @($items) }
+  if (-not $PreserveTail -or $MaxItems -lt 4) { return @($items | Select-Object -First $MaxItems) }
+  $tailCount = [Math]::Min(4,$MaxItems - 1)
+  $headCount = $MaxItems - $tailCount
+  return @(@($items | Select-Object -First $headCount) + @($items | Select-Object -Last $tailCount) | Select-Object -Unique)
+}
+function ConvertTo-BoundedRoutePlan([object[]]$Plans) {
+  return @($Plans | Select-Object -First 12 | ForEach-Object {
+    [pscustomobject]@{
+      name = Limit-SmartNextText ([string]$_.name) 120
+      category = Limit-SmartNextText ([string]$_.category) 60
+      role = Limit-SmartNextText ([string]$_.role) 80
+      score = [int]$_.score
+      applyAt = @(Select-BoundedStrings @($_.applyAt) 4 120)
+      verification = @(Select-BoundedStrings @($_.verification) 4 160)
+      mode = Limit-SmartNextText ([string]$_.mode) 80
+    }
+  })
+}
+function ConvertTo-BoundedClassification([object]$Classification) {
+  if (-not $Classification) { return $null }
+  return [pscustomobject]@{
+    mode = Limit-SmartNextText ([string]$Classification.mode) 40
+    topicAffinity = Limit-SmartNextText ([string]$Classification.topicAffinity) 120
+    targetLineId = Limit-SmartNextText ([string]$Classification.targetLineId) 120
+    targetLineLabel = Limit-SmartNextText ([string]$Classification.targetLineLabel) 100
+    confidence = Limit-SmartNextText ([string]$Classification.confidence) 20
+    matchedKeys = @(Select-BoundedStrings @($Classification.matchedKeys) 6 48)
+    candidateLineIds = @(Select-BoundedStrings @($Classification.candidateLineIds) 6 120)
+    needsClarification = [bool]$Classification.needsClarification
+    recommendedInstructionMode = Limit-SmartNextText ([string]$Classification.recommendedInstructionMode) 40
+    reason = Limit-SmartNextText ([string]$Classification.reason) 180
+    rawInstructionStored = $false
+  }
+}
+function Protect-SmartNextResolution([object]$Resolution,[string]$GuardText) {
+  if (-not $Resolution) { return $null }
+  $protected = Remove-SuperBrainExecutableActions $Resolution
+  $protected.nextAction = $GuardText
+  $protected.guard = $GuardText
+  if ($protected.workLineStatus -and $protected.workLineStatus.latestMessageClassification) { $protected.workLineStatus.latestMessageClassification = ConvertTo-BoundedClassification $protected.workLineStatus.latestMessageClassification }
+  if ($protected.latestMessageClassification) { $protected.latestMessageClassification = ConvertTo-BoundedClassification $protected.latestMessageClassification }
+  return $protected
+}
 function Test-EngineeringJudgmentIntent([string]$IntentName,[string]$Value) {
   if ($IntentName -eq 'add_or_optimize_feature') { return $true }
   $valueLower = $Value.ToLowerInvariant()
@@ -32,13 +89,24 @@ function Test-EngineeringJudgmentIntent([string]$IntentName,[string]$Value) {
   return $false
 }
 
-$inputText = (($Text -join ' ').Trim())
+$inputParts = @($Text | Select-Object -First 16 | ForEach-Object { Limit-SmartNextText ([string]$_) 300 })
+$inputText = Limit-SmartNextText (($inputParts -join ' ').Trim()) 1200
+$workspaceDisplay = Limit-SmartNextText $Workspace 260
 $intent = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'intent-router.ps1') -Text $inputText -Workspace $Workspace -Json 6>$null) 'intent-router.ps1'
 $capabilityMap = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'skill-capability-map.ps1') -Query $inputText -TopK 12 -Json 6>$null) 'skill-capability-map.ps1'
 $ruleCapabilities = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'skill-capability-map.ps1') -Query $inputText -Category 'rule' -TopK 4 -Json 6>$null) 'skill-capability-map.ps1'
-$continuation = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'auto-continuation.ps1') -Json 6>$null) 'auto-continuation.ps1'
+$visibleExecutionResolution = $null
+$visibleExecutionResolutionFailed = $false
+if (-not [string]::IsNullOrWhiteSpace($inputText)) {
+  try {
+    $resolutionRaw = @(& (Join-Path $PSScriptRoot 'execution-contract.ps1') -Action Resolve -WorkspaceKey $workspaceKey -SessionKey $hostSessionKey -VisibleUserInstruction $inputText -NoExit -Json 2>$null)
+    if ($resolutionRaw) { $visibleExecutionResolution = (($resolutionRaw -join "`n") | ConvertFrom-Json) }
+    if (-not $visibleExecutionResolution -or $visibleExecutionResolution.ok -ne $true) { $visibleExecutionResolutionFailed = $true }
+  } catch { $visibleExecutionResolutionFailed = $true }
+}
+$continuation = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'auto-continuation.ps1') -WorkspaceKey $workspaceKey -SessionKey $hostSessionKey -Json 6>$null) 'auto-continuation.ps1'
 $dashboardMode = if ($intent.intent -eq 'team_or_review') { 'Team' } elseif ($intent.intent -in @('status','release')) { 'Full' } else { 'Light' }
-$dashboard = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') -Mode $dashboardMode -Json 6>$null) 'super-brain-dashboard.ps1'
+$dashboard = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') -Mode $dashboardMode -WorkspaceKey $workspaceKey -SessionKey $hostSessionKey -Json 6>$null) 'super-brain-dashboard.ps1'
 $dispatchLearning = [pscustomobject]@{ ok=$true; recommendations=@() }
 if ($intent.intent -eq 'team_or_review') {
   $dispatchLearning = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'dispatch-learning.ps1') -Json 6>$null) 'dispatch-learning.ps1'
@@ -92,6 +160,7 @@ $zhSendMsg = U @(21457,28040,24687)
 $zhRead = U @(35835,21462)
 $zhClose = U @(20851,38381)
 $zhChannel = U @(36890,36947)
+$zhSubAgentAlias = (U @(23376)) + 'agent'
 $channelOpen = $inputText.Contains($zhOpenChannel) -or $inputText.Contains($zhOpenChannel2) -or ($inputText -match 'open subagent channel')
 $channelConnect = $inputText.Contains($zhConnectChannel) -or $inputText.Contains($zhConnectChannel2) -or ($inputText -match 'connect subagent channel')
 $channelSend = ($inputText.Contains($zhSendTo) -or $inputText.Contains($zhSendMsg) -or ($inputText -match 'send.+message'))
@@ -132,7 +201,7 @@ if ($intent.intent -eq 'workflow_preference_recall') {
       title = [string]$item.adr.title
       scope = [string]$item.adr.scope
     }
-    $nextAction = 'Answer with canonicalResponseContract.content and the current verified task facts; do not substitute generic Git commands.'
+    $nextAction = 'Answer with canonicalResponseContract.content and the current verified task facts; output Summary, Description, and Commit button text only; do not substitute generic Git commands or apology text.'
     $why += 'workflow_preference_exact_canonical_resolved'
   } else {
     $workflowPreferenceOk = $false
@@ -158,7 +227,7 @@ if ($intent.intent -eq 'workflow_preference_recall') {
       'scripts\cognitive-preflight.ps1 "<user command>" -Json',
       'scripts\cognitive-enforce.ps1 "<user command>" -Phase BeforeAct -Json',
       'scripts\runtime-drift-checkpoint.ps1 -Phase BeforeAct -ObservedAction "open fresh AgentBridge target channel" -Json',
-      'scripts\agent-bridge-channel.ps1 -Action Open -ChannelId <new-channel-id-or-omit-to-auto-create-fresh> -FromAgentId <agentId> -Alias "子agent" -Json',
+      "scripts\agent-bridge-channel.ps1 -Action Open -ChannelId <new-channel-id-or-omit-to-auto-create-fresh> -FromAgentId <agentId> -Alias `"$zhSubAgentAlias`" -Json",
       'do not create or launch a nested agent/worker/helper; the current conversation is the sub-agent target',
       'scripts\agent-bridge-channel.ps1 -Action WaitConnect -ChannelId <channelId> -AgentId <agentId> -WaitSeconds 900 -PollIntervalSeconds 5 -Json',
       'scripts\agent-bridge-channel.ps1 -Action WaitInbox -ChannelId <channelId> -AgentId <agentId> -WaitSeconds 900 -PollIntervalSeconds 5 -Json',
@@ -167,10 +236,10 @@ if ($intent.intent -eq 'workflow_preference_recall') {
     )
     $why += 'agent_bridge_channel_open_no_auto_close'
   } elseif ($channelConnect) {
-    $commands = @('scripts\agent-bridge-channel.ps1 -Action Connect -ChannelId <channelId> -OperatorAgentId <mainAgentId> -ToAgentId <targetAgentId> -Alias "子agent" -Json')
+    $commands = @("scripts\agent-bridge-channel.ps1 -Action Connect -ChannelId <channelId> -OperatorAgentId <mainAgentId> -ToAgentId <targetAgentId> -Alias `"$zhSubAgentAlias`" -Json")
     $why += 'agent_bridge_channel_connect'
   } elseif ($channelSend) {
-    $commands = @('scripts\agent-bridge-channel.ps1 -Action SendAndWait -Alias "子agent" -Summary "<message>" -WaitSeconds 60 -PollIntervalSeconds 2 -AutoAck -Json')
+    $commands = @("scripts\agent-bridge-channel.ps1 -Action SendAndWait -Alias `"$zhSubAgentAlias`" -Summary `"<message>`" -WaitSeconds 60 -PollIntervalSeconds 2 -AutoAck -Json")
     $why += 'agent_bridge_channel_send'
   } elseif ($channelRead) {
     $commands = @('scripts\agent-bridge-channel.ps1 -Action WaitReply -WaitSeconds 30 -PollIntervalSeconds 2 -AutoAck -Json')
@@ -223,6 +292,7 @@ if ($engineeringJudgmentRequired -and $intent.intent -ne 'add_or_optimize_featur
   Add-CompositionCommand 'scripts\cognitive-preflight.ps1 "<user command>" -Json'
   Add-CompositionCommand 'scripts\engineering-decision-gate.ps1 -Action Create -TaskId <taskId> -Problem <problem> -PainPoint <pain> -Objective <objective> -Facts <facts> -FactEvidence <evidence> -RootCauseStatus verified|hypothesis|unknown -RootCause <cause> -Constraints <constraints> -Options <options> -Tradeoffs <tradeoffs> -Criteria <criteria> -SelectedOption <option> -ExecutionSteps <steps> -StepInputs <inputs> -StepOutputs <outputs> -StepAcceptance <acceptance> -StepStopConditions <stops> -AcceptanceCriteria <final acceptance> -Risks <risks> -Json'
   Add-CompositionCommand 'scripts\cognitive-enforce.ps1 "<user command>" -TaskId <taskId> -Phase BeforeMutation -Json'
+  Add-CompositionCommand 'scripts\causal-change-review.ps1 -TaskId <taskId> -ActualResult <actual> -Evidence <evidence> -Decision keep|revise|rollback -Json (after mutation, before completion)'
   $why += 'engineering_judgment_active'
   if ($intent.intent -notin @('release','status','team_or_review','agent_bridge_channel','workflow_preference_recall')) { $nextAction = 'Build an evidence-bounded engineering decision, resolve critical unknowns with the cheapest discriminating test, then execute and verify in dependency order.' }
 }
@@ -237,28 +307,111 @@ $completionSkillAudit = [pscustomobject]@{
   expectedRoles = @($completionExpectedRoles)
   presentRoles = @($skillRoutePlan | ForEach-Object { [string]$_.role } | Select-Object -Unique)
   missingRoles = @($completionExpectedRoles | Where-Object { @($skillRoutePlan | ForEach-Object { [string]$_.role }) -notcontains $_ })
-  guard = 'Before completion, audit evidence grounding, engineering decision quality, rule/verifier/real-user-path/version/cache/learning roles, and mark only genuinely inapplicable roles as such; do not approve unevidenced completion.'
+  postMutationReview = [pscustomobject]@{ artifact='task-scoped causal-change-review.ps1 result'; requiredWhen='mutation-bearing work reaches completion'; command='scripts\causal-change-review.ps1 -TaskId <taskId> -ActualResult <actual> -Evidence <evidence> -Decision keep -Json'; acceptance='actual result and evidence are present, taskId matches, and decision=keep' }
+  guard = 'Before completion, audit evidence grounding, engineering decision quality, rule/verifier/real-user-path/version/cache/learning roles, and require a task-scoped causal review with decision=keep for mutation-bearing work; role presence alone is not evidence.'
 }
+$effectiveExecutionResolution = if ($visibleExecutionResolution) { $visibleExecutionResolution } elseif ($continuation.executionResolution) { $continuation.executionResolution } else { $null }
+$compactExecutionResolution = if ($visibleExecutionResolution) { ConvertTo-SuperBrainCompactExecutionResolution $visibleExecutionResolution } elseif ($continuation.executionResolution) { $continuation.executionResolution } else { $null }
+$compactDashboardWorkLines = if ($dashboard) { ConvertTo-SuperBrainCompactWorkLineStatus $dashboard.workLineStatus } else { $null }
+$classification = if ($compactExecutionResolution -and $compactExecutionResolution.latestMessageClassification) { $compactExecutionResolution.latestMessageClassification } elseif ($compactExecutionResolution -and $compactExecutionResolution.workLineStatus) { $compactExecutionResolution.workLineStatus.latestMessageClassification } else { $null }
+$topicAffinity = if ($classification) { [string]$classification.topicAffinity } else { '' }
+$resolvedTaskId = if ($effectiveExecutionResolution) { [string]$effectiveExecutionResolution.taskId } else { '' }
+$candidateTaskIds = if ($effectiveExecutionResolution -and $effectiveExecutionResolution.PSObject.Properties['candidateTaskIds']) { @($effectiveExecutionResolution.candidateTaskIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) } else { @() }
+$hasTaskScopedResolution = (([string]::IsNullOrWhiteSpace($resolvedTaskId) -eq $false) -or $candidateTaskIds.Count -gt 0)
+$needsConfirmation = ($effectiveExecutionResolution -and $effectiveExecutionResolution.needsConfirmation -eq $true) -or ($continuation.needsConfirmation -eq $true)
+$continuationHasTask = ($continuation.executionResolution -and -not [string]::IsNullOrWhiteSpace([string]$continuation.executionResolution.taskId))
+$isolatedSessionAccess = ($effectiveExecutionResolution -and [string]$effectiveExecutionResolution.sessionAccess -in @('foreign','unbound','session_required')) -or ($continuation.executionResolution -and [string]$continuation.executionResolution.sessionAccess -in @('foreign','unbound','session_required'))
+$continuityIntent = ([string]$intent.intent -in @('continue','historical_recovery','current_task_status','status'))
+$foreignContextContinuity = ($continuityIntent -and $effectiveExecutionResolution -and $effectiveExecutionResolution.foreignContextDetected -eq $true)
+$taskResolutionDenied = ($hasTaskScopedResolution -and $effectiveExecutionResolution -and $effectiveExecutionResolution.actionAuthorization -ne 'allowed')
+$continuationResolutionDenied = ($continuityIntent -and $continuationHasTask -and $continuation.actionWithheld -eq $true)
+$isolatedSessionDenied = ($isolatedSessionAccess -and ($hasTaskScopedResolution -or $continuityIntent))
+$authorizationDenied = ($visibleExecutionResolutionFailed -or $foreignContextContinuity -or $isolatedSessionDenied -or $taskResolutionDenied -or $continuationResolutionDenied)
+$requiresUserDisambiguation = ($classification -and $classification.needsClarification -eq $true) -or ($compactExecutionResolution -and $compactExecutionResolution.workLineStatus -and $compactExecutionResolution.workLineStatus.requiresUserDisambiguation -eq $true) -or ($continuation.requiresUserDisambiguation -eq $true)
+$unknownAffinity = ($hasTaskScopedResolution -and -not [string]::IsNullOrWhiteSpace($inputText) -and ([string]::IsNullOrWhiteSpace($topicAffinity) -or $topicAffinity -eq 'unknown'))
+$ambiguousAffinity = ($topicAffinity -eq 'ambiguous')
+$actionWithheld = ($authorizationDenied -or ($hasTaskScopedResolution -and ($needsConfirmation -or $requiresUserDisambiguation -or $unknownAffinity -or $ambiguousAffinity)))
+$continuationState = if ($authorizationDenied) { 'needs_confirmation' } elseif (-not $hasTaskScopedResolution) { 'not_applicable' } elseif ($ambiguousAffinity -or $requiresUserDisambiguation) { 'requires_user_disambiguation' } elseif ($unknownAffinity) { 'unknown_affinity' } elseif ($needsConfirmation) { 'needs_confirmation' } else { 'actionable' }
+$withheldAction = 'Action withheld: confirm or reconcile how the latest user instruction maps to the active work line before mutation.'
+if ($actionWithheld) {
+  $nextAction = $withheldAction
+  $commands = @()
+  $compactExecutionResolution = Protect-SmartNextResolution $compactExecutionResolution $withheldAction
+  $orcComposition.routePlan = @()
+  $completionSkillAudit.postMutationReview.command = ''
+} else {
+  $orcComposition.routePlan = @(ConvertTo-BoundedRoutePlan @($skillRoutePlan))
+}
+if ($compactExecutionResolution -and $compactExecutionResolution.latestMessageClassification) {
+  $compactExecutionResolution.latestMessageClassification = ConvertTo-BoundedClassification $compactExecutionResolution.latestMessageClassification
+}
+if ($compactExecutionResolution -and $compactExecutionResolution.workLineStatus -and $compactExecutionResolution.workLineStatus.latestMessageClassification) {
+  $compactExecutionResolution.workLineStatus.latestMessageClassification = ConvertTo-BoundedClassification $compactExecutionResolution.workLineStatus.latestMessageClassification
+}
+$allPresentRoles = @($skillRoutePlan | ForEach-Object { [string]$_.role } | Where-Object { $_ } | Select-Object -Unique)
+$orderedPresentRoles = @(@($completionExpectedRoles | Where-Object { $allPresentRoles -contains $_ }) + @($allPresentRoles | Where-Object { $completionExpectedRoles -notcontains $_ }))
+$completionSkillAudit.expectedRoles = @(Select-BoundedStrings @($completionExpectedRoles) 12 80)
+$completionSkillAudit.presentRoles = @(Select-BoundedStrings @($orderedPresentRoles) 12 80)
+$completionSkillAudit.missingRoles = @(Select-BoundedStrings @($completionExpectedRoles | Where-Object { $allPresentRoles -notcontains $_ }) 12 80)
+$completionSkillAudit.source = Limit-SmartNextText ([string]$completionSkillAudit.source) 100
+$completionSkillAudit.auditMode = Limit-SmartNextText ([string]$completionSkillAudit.auditMode) 80
+$completionSkillAudit.guard = Limit-SmartNextText ([string]$completionSkillAudit.guard) 240
+$completionSkillAudit.postMutationReview.artifact = Limit-SmartNextText ([string]$completionSkillAudit.postMutationReview.artifact) 120
+$completionSkillAudit.postMutationReview.requiredWhen = Limit-SmartNextText ([string]$completionSkillAudit.postMutationReview.requiredWhen) 120
+$completionSkillAudit.postMutationReview.command = Limit-SmartNextText ([string]$completionSkillAudit.postMutationReview.command) 220
+$completionSkillAudit.postMutationReview.acceptance = Limit-SmartNextText ([string]$completionSkillAudit.postMutationReview.acceptance) 180
+$workflowPreferenceOutput = if ($intent.workflowPreference) {
+  [pscustomobject]@{
+    id = Limit-SmartNextText ([string]$intent.workflowPreference.id) 100
+    decisionKey = Limit-SmartNextText ([string]$intent.workflowPreference.decisionKey) 120
+    query = Limit-SmartNextText ([string]$intent.workflowPreference.query) 180
+    scope = Limit-SmartNextText ([string]$intent.workflowPreference.scope) 80
+    matchedPhrase = Limit-SmartNextText ([string]$intent.workflowPreference.matchedPhrase) 120
+  }
+} else { $null }
+$canonicalResponseOutput = [pscustomobject]@{
+  ok = [bool]$canonicalResponseContract.ok
+  status = Limit-SmartNextText ([string]$canonicalResponseContract.status) 60
+  decisionKey = Limit-SmartNextText ([string]$canonicalResponseContract.decisionKey) 120
+  content = Limit-SmartNextText ([string]$canonicalResponseContract.content) 900
+  source = Limit-SmartNextText ([string]$canonicalResponseContract.source) 220
+  tags = Limit-SmartNextText ([string]$canonicalResponseContract.tags) 180
+  title = Limit-SmartNextText ([string]$canonicalResponseContract.title) 120
+  scope = Limit-SmartNextText ([string]$canonicalResponseContract.scope) 80
+  activeCount = [int]$canonicalResponseContract.activeCount
+}
+$baseMutationAuthorized = if ($visibleExecutionResolution) { $visibleExecutionResolution.actionAuthorization -eq 'allowed' -and [bool]$visibleExecutionResolution.claimAllowed -and $visibleExecutionResolution.needsConfirmation -ne $true } else { [bool]$continuation.mutationAuthorized }
 
 $result = [pscustomobject]@{
   ok = ($intent.ok -ne $false -and $orcComposition.enabled -eq $true -and $workflowPreferenceOk)
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-  version = $dashboard.version
+  version = Limit-SmartNextText ([string]$dashboard.version) 40
   input = $inputText
-  workspace = $Workspace
-  intent = $intent.intent
-  dashboardMode = $dashboardMode
+  workspace = $workspaceDisplay
+  workspaceKey = $workspaceKey
+  intent = Limit-SmartNextText ([string]$intent.intent) 80
+  dashboardMode = Limit-SmartNextText ([string]$dashboardMode) 20
   dashboardOk = $dashboard.ok
-  dashboardRisks = @($dashboard.risks)
-  blockingConditions = @($continuation.blockers)
+  dashboardRisks = @(Select-BoundedStrings @($dashboard.risks) 6 180)
+  executionResolution = $compactExecutionResolution
+  continuityStateCard = if ($compactExecutionResolution) { $compactExecutionResolution.continuityStateCard } else { $null }
+  workLineStatus = if ($compactExecutionResolution) { $compactExecutionResolution.workLineStatus } else { $compactDashboardWorkLines }
+  latestMessageClassification = if ($compactExecutionResolution) { $compactExecutionResolution.latestMessageClassification } else { $null }
+  needsConfirmation = [bool]$needsConfirmation
+  requiresUserDisambiguation = [bool]$requiresUserDisambiguation
+  topicAffinity = Limit-SmartNextText $topicAffinity 120
+  continuationState = $continuationState
+  actionWithheld = [bool]$actionWithheld
+  workLineMutationAuthorized = (-not $actionWithheld -and $baseMutationAuthorized)
+  blockingConditions = @(Select-BoundedStrings @($continuation.blockers) 6 180)
   confidence = $confidence
-  nextAction = $nextAction
-  why = @($why)
-  commands = @($commands)
+  nextAction = Limit-SmartNextText $nextAction 240
+  why = @(Select-BoundedStrings @($why) 12 120)
+  commands = @(Select-BoundedStrings @($commands) 12 420 -PreserveTail)
   orcComposition = $orcComposition
   engineeringJudgment = [pscustomobject]@{
     required = $engineeringJudgmentRequired
-    activationReasons = @($engineeringActivationReasons | Select-Object -Unique)
+    activationReasons = @(Select-BoundedStrings @($engineeringActivationReasons | Select-Object -Unique) 6 80)
     method = 'references/engineering-judgment.md'
     decisionGate = 'engineering-decision-gate.ps1'
     epistemicClasses = @('FACT','INFERENCE','UNKNOWN')
@@ -266,10 +419,12 @@ $result = [pscustomobject]@{
     outputContract = @('Judgment','Evidence','Best option','Execution chain','Acceptance/Risk')
   }
   completionSkillAudit = $completionSkillAudit
-  blockers = @($continuation.blockers)
-  dispatchRecommendations = @($dispatchLearning.recommendations | Select-Object -First 3)
-  workflowPreference = $intent.workflowPreference
-  canonicalResponseContract = $canonicalResponseContract
+  blockers = @(Select-BoundedStrings @($continuation.blockers) 6 180)
+  dispatchRecommendations = @(
+    if (-not $actionWithheld) { Select-BoundedStrings @($dispatchLearning.recommendations) 3 220 }
+  )
+  workflowPreference = $workflowPreferenceOutput
+  canonicalResponseContract = $canonicalResponseOutput
 }
 
 if ($Json) { $result | ConvertTo-Json -Depth 12 } else { Write-Host "SMART_NEXT intent=$($result.intent) mode=$($result.dashboardMode) action=$($result.nextAction) blockers=$(@($result.blockers).Count)" }

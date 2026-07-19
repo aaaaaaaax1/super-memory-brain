@@ -1,6 +1,28 @@
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Describe 'Super Brain repair regression guards' {
+  It 'keeps first-load bootstrap able to detect and repair the formal MCP binding' {
+    $bootstrap = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\first-load-bootstrap.ps1')
+    foreach ($marker in @('super-brain.first-load-bootstrap.v1','-RepairMcp','mcpBindingOk','memory-root.txt','rawPromptStored = $false','needsNewTask')) { $bootstrap.Contains($marker) | Should Be $true }
+  }
+
+  It 'isolates Codex home during runtime registration and rejects mismatched roots' {
+    $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install-runtime.ps1')
+    foreach ($marker in @('$env:CODEX_HOME = $CodexHome','MCP_BINDING_MISMATCH','Assert-McpBinding','NEXSANDBASE_HOME')) { $runtime.Contains($marker) | Should Be $true }
+  }
+
+  It 'makes bootstrap the single non-interactive install orchestrator' {
+    $bootstrap = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\bootstrap.ps1')
+    foreach ($marker in @('one-click-install','first-load-bootstrap.ps1','verify-package.ps1','Open a new Codex task')) { $bootstrap.Contains($marker) | Should Be $true }
+    $bat = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install.bat')
+    $bat.Contains('goto bootstrap') | Should Be $true
+    $ui = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install-ui.ps1')
+    $menu = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install-menu.ps1')
+    $ui.Contains("Invoke-SuperBrainScript 'bootstrap.ps1' @('-MemoryMode','Shared')") | Should Be $true
+    $menu.Contains("Invoke-SuperBrainScript 'bootstrap.ps1' @('-MemoryMode','Shared')") | Should Be $true
+    $ui.Contains("`$globalInstallButton.Add_Click({ Invoke-SuperBrainScript 'install.ps1'") | Should Be $false
+  }
+
   It 'routes every required completion audit role explicitly' {
     $json = & (Join-Path $Root 'scripts\smart-next.ps1') -Text 'completion skill audit verify test regression before completion' -Json
     if ($LASTEXITCODE -ne 0) { throw 'smart-next completion audit failed' }
@@ -9,6 +31,8 @@ Describe 'Super Brain repair regression guards' {
     $result.completionSkillAudit.auditRequested | Should Be $true
     @($result.completionSkillAudit.missingRoles).Count | Should Be 0
     foreach ($role in $expected) { @($result.completionSkillAudit.presentRoles) -contains $role | Should Be $true }
+    $result.completionSkillAudit.postMutationReview.artifact | Should Be 'task-scoped causal-change-review.ps1 result'
+    $result.completionSkillAudit.postMutationReview.acceptance | Should Match 'decision=keep'
   }
 
   It 'keeps status snapshots aligned with dashboard and latest verification' {
@@ -16,8 +40,78 @@ Describe 'Super Brain repair regression guards' {
     $verify = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-package.ps1')
     $writer.Contains('ok = ($dashboard.ok -eq $true)') | Should Be $true
     $writer.Contains('verifyCheckedAt') | Should Be $true
+    $writer.Contains('[switch]$AllowActiveCheckpoint') | Should Be $true
+    $writer.Contains('$dashboardParameters.AllowActiveCheckpoint = $true') | Should Be $true
     $verify.Contains('verify-package final status') | Should Be $true
     $verify.Contains('final status snapshot matches latest verification') | Should Be $true
+    $verify.Contains('-AllowActiveCheckpoint -Json') | Should Be $true
+  }
+
+  It 'uses the active checkpoint for status continuity without mutating it' {
+    . (Join-Path $Root 'scripts\common.ps1')
+    $stateRoot = Join-Path $TestDrive 'scoped-status-state'
+    $workspace = Join-Path $stateRoot 'workspace'
+    $checkpointRoot = Join-Path $workspace 'runtime-state\checkpoints\active'
+    New-Item -ItemType Directory -Force -Path $checkpointRoot | Out-Null
+    $workspaceKey = Get-SuperBrainWorkspaceKey (Join-Path $TestDrive 'scoped-project')
+    $taskId = 'scoped-status-task'
+    $checkpointPath = Join-Path $checkpointRoot ($taskId + '.json')
+    $contextPath = Join-Path $workspace 'current-task-context.json'
+    $checkpoint = [pscustomobject]@{ taskId=$taskId; status='active'; workspaceKey=$workspaceKey; currentStep='keep scoped state'; nextAction='continue scoped state'; blockers=@(); evidence=@('scoped evidence') }
+    $context = [pscustomobject]@{ taskId=$taskId; status='active'; stale=$false; workspaceKey=$workspaceKey; expiresAt=(Get-Date).AddHours(1).ToString('o'); acceptedGoal='scoped goal' }
+    [IO.File]::WriteAllText($checkpointPath,($checkpoint|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($contextPath,($context|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+    $version = [string](Get-SuperBrainManifest $Root).version
+    [IO.File]::WriteAllText((Join-Path $workspace 'last-verify-package.json'),([pscustomobject]@{ok=$true;version=$version;checkedAt='test'}|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $workspace 'last-hot-refresh.json'),'{"ok":true,"checkedAt":"test"}',[Text.UTF8Encoding]::new($false))
+    $beforeHash = (Get-FileHash -LiteralPath $checkpointPath -Algorithm SHA256).Hash
+    $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
+    try {
+      $env:SUPER_BRAIN_STATE_ROOT = $stateRoot
+      $raw = @(& (Join-Path $Root 'scripts\status-snapshot-writer.ps1') -WorkspaceKey $workspaceKey -AllowActiveCheckpoint -Json)
+      $result = (($raw -join "`n") | ConvertFrom-Json)
+      $result.continuity.taskId | Should Be $taskId
+      $result.continuity.source | Should Be 'runtime-state/checkpoints/active'
+      $result.continuity.consistency | Should Be 'consistent'
+      (Get-FileHash -LiteralPath $checkpointPath -Algorithm SHA256).Hash | Should Be $beforeHash
+    } finally {
+      $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot
+    }
+  }
+
+  It 'ranks live status evidence ahead of changelog history' {
+    $raw = @(& (Join-Path $Root 'scripts\recall-search.ps1') -Query 'current super-memory-brain version and status' -TopK 3 -MaxTokens 1200 -Json)
+    $parsed = (($raw -join "`n") | ConvertFrom-Json)
+    $items = @(foreach ($item in $parsed) { $item })
+    $items.Count -ge 1 | Should Be $true
+    @('memory\workspace\status-card.json','memory\workspace\super-brain-state.json') -contains [string]$items[0].source | Should Be $true
+    $items[0].reason | Should Be 'state_recall_priority'
+    ([double]$items[0].ageDays -lt 2) | Should Be $true
+    ([int]$items[0].sourcePriority -le 20) | Should Be $true
+    ([int]$items[0].sourcePriority -lt [int]$items[-1].sourcePriority) | Should Be $true
+  }
+
+  It 'rejects a memory evaluation fixture that cites itself as evidence' {
+    $fixtureName = '.tmp-self-referential-memory-eval.json'
+    $fixturePath = Join-Path (Join-Path $Root 'tests') $fixtureName
+    $fixture = @([pscustomobject]@{
+      id = 'self-reference-must-fail'
+      question = 'self reference'
+      mode = 'staticSources'
+      sources = @('tests/' + $fixtureName)
+      mustContain = @('self-reference-must-fail')
+      mustNotContain = @()
+    }) | ConvertTo-Json -Depth 6
+    try {
+      [IO.File]::WriteAllText($fixturePath, $fixture, [Text.UTF8Encoding]::new($false))
+      $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\memory-eval.ps1') -TestsPath $fixturePath -Mode static -Json 2>$null)
+      $LASTEXITCODE | Should Be 1
+      $result = (($raw -join "`n") | ConvertFrom-Json)
+      $result.ok | Should Be $false
+      @($result.cases[0].invalidSources).Count | Should Be 1
+    } finally {
+      if (Test-Path -LiteralPath $fixturePath) { Remove-Item -LiteralPath $fixturePath -Force }
+    }
   }
 
   It 'persists hot refresh apply status even in Json mode' {
@@ -44,6 +138,23 @@ Describe 'Super Brain repair regression guards' {
     $text.TrimEnd().EndsWith('exit 0') | Should Be $true
   }
 
+  It 'treats nullable doctor values as present aggregation fields' {
+    $verify = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-package.ps1')
+    $verify.Contains("@('riskSummary','risks','lastMemoryEval','lastTaskVerification'") | Should Be $true
+    $verify.Contains('$doctorFields -notcontains $_') | Should Be $true
+  }
+
+  It 'keeps Pester state isolated and task lifecycle findings visible' {
+    $runner = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\test-pester.ps1')
+    foreach ($marker in @('super-brain-pester-','SUPER_BRAIN_STATE_ROOT','Copy-Item','Remove-Item')) { $runner.Contains($marker) | Should Be $true }
+    $index = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\task-index.ps1')
+    foreach ($marker in @('[switch]$IncludeDiagnostic','Test-DiagnosticTaskId')) { $index.Contains($marker) | Should Be $true }
+    $audit = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\task-lifecycle-audit.ps1')
+    foreach ($marker in @('super-brain.task-lifecycle-audit.v1','diagnosticCards','zeroPendingActiveCards','staleUnboundActiveCards','automaticContinuationSafe')) { $audit.Contains($marker) | Should Be $true }
+    $doctor = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\doctor.ps1')
+    foreach ($marker in @('task-lifecycle-audit.ps1','diagnostic_task_state_present','zero_pending_active_tasks','stale_unbound_active_tasks','task_pointer_divergence')) { $doctor.Contains($marker) | Should Be $true }
+  }
+
   It 'keeps completion guard input binding and version-owned recall fixtures current' {
     $guard = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\completion-guard.ps1')
     $bump = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\version-bump.ps1')
@@ -58,19 +169,32 @@ Describe 'Super Brain repair regression guards' {
     @($bump.ToCharArray() | Where-Object { [int]$_ -gt 127 }).Count | Should Be 0
   }
 
-  It 'initializes completion guard workspace before selecting the verified task' {
+  It 'keeps package self-verification detached from stale task pointers' {
     $verify = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-package.ps1')
     $workspaceInit = '$workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) ''workspace'''
-    $taskLookup = '$lastTaskForGuardPath = Join-Path $workspace ''last-task-verification.json'''
     $verify.IndexOf($workspaceInit) -ge 0 | Should Be $true
-    $verify.IndexOf($taskLookup) -gt $verify.IndexOf($workspaceInit) | Should Be $true
+    $verify.Contains('$lastTaskForGuardPath') | Should Be $false
     $verify.Contains('completion guard failed taskId=') | Should Be $true
+    $verify.Contains('-AllowActiveCheckpoint -ContractOnly -PackageVerificationInProgress') | Should Be $true
+    $guard = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\completion-guard.ps1')
+    $guard.Contains('[switch]$ContractOnly') | Should Be $true
+    $guard.Contains("if (`$PackageVerificationInProgress) { `$TaskId = '' }") | Should Be $true
+    $guard.Contains('-not $ContractOnly -and [string]::IsNullOrWhiteSpace($TaskId)') | Should Be $true
   }
 
-  It 'runs the CI completion guard against the last verified task' {
+  It 'runs the CI completion guard as a task-neutral contract check' {
     $ci = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\ci.ps1')
-    foreach ($marker in @('last-task-verification.json','$completionGuardArgs','-TaskId','completion_guard_task_lookup_failed')) { $ci.Contains($marker) | Should Be $true }
+    foreach ($marker in @('$completionGuardArgs','-AllowActiveCheckpoint','-ContractOnly','-PackageVerificationInProgress')) { $ci.Contains($marker) | Should Be $true }
+    foreach ($forbidden in @('completion_guard_task_lookup_failed','$completionGuardTaskFound')) { $ci.Contains($forbidden) | Should Be $false }
     $ci.IndexOf('$completionGuardArgs') -lt $ci.IndexOf("Run-Step 'completion-guard'") | Should Be $true
+    foreach ($step in @('super-brain-dashboard','status-snapshot-writer','health-summary','brain-status')) {
+      ([regex]::Match($ci,"Run-Step '$step'.*",'Multiline').Value).Contains('-AllowActiveCheckpoint') | Should Be $true
+    }
+    $health = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\health-summary.ps1')
+    $brain = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\brain.ps1')
+    $health.Contains('[switch]$AllowActiveCheckpoint') | Should Be $true
+    $health.Contains('$dashboardArgs.AllowActiveCheckpoint = $true') | Should Be $true
+    $brain.Contains('-AllowActiveCheckpoint:$AllowActiveCheckpoint') | Should Be $true
   }
 
   It 'keeps bounded memory lifecycle policy and admission enforcement current' {
@@ -87,11 +211,39 @@ Describe 'Super Brain repair regression guards' {
     foreach ($marker in @('Get-SuperBrainMemoryBudget','MEMORY_BUDGET_CHECK_FAILED','memory budget blocked')) { $write.Contains($marker) | Should Be $true }
   }
 
+  It 'keeps runtime state and backups on the four-layer layout contract' {
+    $common = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\common.ps1')
+    $backup = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\backup.ps1')
+    $lifecycle = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\workspace-lifecycle-manager.ps1')
+    $share = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\prepare-share.ps1')
+    foreach ($marker in @('runtime-layout.json','SUPER_BRAIN_STATE_ROOT','Get-SuperBrainArchiveRoot','Get-SuperBrainInstallBackupRoot')) { $common.Contains($marker) | Should Be $true }
+    foreach ($marker in @('[switch]$IncludeWorkspace','generatedWorkspaceExcluded','workspace_critical','backup-manifest.json')) { $backup.Contains($marker) | Should Be $true }
+    $lifecycle.Contains('oversized_workspace_json') | Should Be $true
+    foreach ($marker in @('Invoke-SuperBrainTaskStateStore','Reconcile','Compact','blocked_pending_transaction','archiveTaskStateJournalsBehindSnapshots')) { $lifecycle.Contains($marker) | Should Be $true }
+    foreach ($item in @('maintenance-policy.json','route-map.json','capabilities.json','runtime-layout.example.json')) { $share.Contains("'$item'") | Should Be $true }
+    $share.Contains('Generated source/share trees never need local edit backups') | Should Be $true
+    $share.Contains('Remove-Item -LiteralPath $generated.FullName -Force') | Should Be $true
+    foreach ($scriptName in @('install.ps1','install-agent.ps1','hot-refresh-skills.ps1','cleanup-install-backups.ps1','install-ui.ps1')) {
+      (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root "scripts\$scriptName")).Contains('Get-SuperBrainInstallBackupRoot') | Should Be $true
+    }
+    (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-package.ps1')).Contains('four-layer runtime layout') | Should Be $true
+    (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-share.ps1')).Contains('runtime-layout.example.json') | Should Be $true
+  }
+
   It 'surfaces bounded memory pressure through hygiene and optimization advice' {
     $hygiene = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\auto-hygiene-runner.ps1')
     $advisor = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\optimize-advisor.ps1')
     foreach ($marker in @('Get-SuperBrainMemoryLifecyclePolicy','stale_history','memoryLifecycle','budgetOverflow','Invoke-RebuildMemoryIndexes','lineMap','indexRebuild','derivedIndexes')) { $hygiene.Contains($marker) | Should Be $true }
     foreach ($marker in @('memory_budget_exceeded','memory_budget_near_limit','memoryBudgetStatus','memory-health.ps1')) { $advisor.Contains($marker) | Should Be $true }
+  }
+
+  It 'keeps optimize advisor Json free of nested backup retention output' {
+    $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\optimize-advisor.ps1') -Json 2>$null)
+    $text = ($raw -join "`n").Trim()
+    $result = $text | ConvertFrom-Json
+    $text.Contains('BACKUP_RETENTION_') | Should Be $false
+    $null -ne $result.ok | Should Be $true
+    $null -ne $result.signals.backupRetentionOk | Should Be $true
   }
 
   It 'enumerates Sandglass JSON rows before candidate parsing and keeps profile recall narrow' {
@@ -147,7 +299,7 @@ finally:
     $tempScripts = Join-Path $tempMemory 'scripts'
     New-Item -ItemType Directory -Force -Path $tempScripts | Out-Null
     $vendor = Join-Path $Root 'vendor\NexSandglass-Agent-DedicatedMemory'
-    foreach ($file in @('sandglass_paths.py','sandglass_vault.py','sandglass_sqlite.py','shadow_sand.py','sandglass_archive.py')) {
+    foreach ($file in @('sandglass_paths.py','sandglass_lock.py','sandglass_vault.py','sandglass_sqlite.py','shadow_sand.py','sandglass_archive.py')) {
       Copy-Item -LiteralPath (Join-Path $vendor $file) -Destination (Join-Path $tempScripts $file) -Force
     }
     $python = @'
@@ -245,12 +397,250 @@ print(json.dumps({
     }
   }
 
+  It 'binds intent-router text correctly for named and positional callers' {
+    $named = (& (Join-Path $Root 'scripts\intent-router.ps1') -Text 'fix broken cache' -Workspace $Root -Json | ConvertFrom-Json)
+    $positional = (& (Join-Path $Root 'scripts\intent-router.ps1') 'fix broken cache' -Workspace $Root -Json | ConvertFrom-Json)
+    $named.intent | Should Be 'fix_bug'
+    $positional.intent | Should Be 'fix_bug'
+    $positional.input | Should Be 'fix broken cache'
+    $positional.workspace | Should Be $Root
+  }
+
+  It 'keeps generic agent role questions on the direct path' {
+    $howConfigure = 'agent ' + (-join (@(24590,20040,37197,32622) | ForEach-Object { [char]$_ }))
+    $whatCanDo = 'agent ' + (-join (@(33021,20570,20160,20040) | ForEach-Object { [char]$_ }))
+    foreach ($query in @($howConfigure,$whatCanDo)) {
+      $result = (& (Join-Path $Root 'scripts\intent-router.ps1') -Text $query -Json | ConvertFrom-Json)
+      $result.intent | Should Be 'general_task'
+      @($result.dispatchHints) -contains 'negative_agent_trigger' | Should Be $true
+    }
+  }
+
+  It 'keeps routing policy aligned with strict production behavior' {
+    $routeMap = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'route-map.json') | ConvertFrom-Json
+    $routeMap.phase | Should Be 'phase6-strict-routing'
+    @($routeMap.routes | Where-Object { $_.PSObject.Properties['knownBaselineGaps'] }).Count | Should Be 0
+    $system = @($routeMap.routes | Where-Object { $_.route -eq 'system_status' }) | Select-Object -First 1
+    @($system.read) -contains 'references/install-refresh.md' | Should Be $false
+    @($system.read) -contains 'memory/workspace/status-card.json' | Should Be $true
+    $capabilities = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'capabilities.json') | ConvertFrom-Json
+    $capabilities.phase | Should Be 'phase6-strict-capabilities'
+  }
+
+  It 'does not let privacy authorization bypass package verification' {
+    $guardText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\completion-guard.ps1')
+    $guardText.Contains('if ($AllowPrivacyRisk -and -not $verifyOk)') | Should Be $false
+
+    . (Join-Path $Root 'scripts\common.ps1')
+    $verifyPath = Join-Path (Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace') 'last-verify-package.json'
+    $backup = if (Test-Path -LiteralPath $verifyPath) { [IO.File]::ReadAllText($verifyPath,[Text.Encoding]::UTF8) } else { $null }
+    try {
+      $fake = [pscustomobject]@{ ok=$false; version='test'; checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } | ConvertTo-Json
+      [IO.File]::WriteAllText($verifyPath,$fake,[Text.UTF8Encoding]::new($false))
+      $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\completion-guard.ps1') -ContractOnly -AllowPrivacyRisk -AllowActiveCheckpoint -Json 2>$null)
+      $result = (($raw -join "`n") | ConvertFrom-Json)
+      $verifyCheck = @($result.checks | Where-Object { $_.name -eq 'verify-package' }) | Select-Object -First 1
+      $verifyCheck.ok | Should Be $false
+      $result.allowPrivacyRisk | Should Be $true
+      $result.packageVerificationInProgress | Should Be $false
+    } finally {
+      if ($null -eq $backup) { Remove-Item -LiteralPath $verifyPath -Force -ErrorAction SilentlyContinue }
+      else { [IO.File]::WriteAllText($verifyPath,$backup,[Text.UTF8Encoding]::new($false)) }
+    }
+  }
+
+  It 'limits package self-verification bypass to contract-only validation' {
+    $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\completion-guard.ps1') -PackageVerificationInProgress -Json 2>&1)
+    $LASTEXITCODE | Should Be 1
+    ($raw -join "`n").Contains('PACKAGE_VERIFICATION_IN_PROGRESS_REQUIRES_CONTRACT_ONLY') | Should Be $true
+  }
+
+  It 'never authorizes task completion during package self-verification' {
+    $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\completion-guard.ps1') -ContractOnly -PackageVerificationInProgress -TaskId 'task-stale-foreign' -AllowPrivacyRisk -AllowActiveCheckpoint -Json 2>$null)
+    $result = (($raw -join "`n") | ConvertFrom-Json)
+    $result.packageVerificationInProgress | Should Be $true
+    $result.completionAuthorized | Should Be $false
+    $result.taskId | Should Be ''
+  }
+
+  It 'keeps internal intent-router calls on the named Text contract' {
+    $result = (& (Join-Path $Root 'scripts\script-call-contract.ps1') -Json | ConvertFrom-Json)
+    $result.ok | Should Be $true
+    $result.violationCount | Should Be 0
+    $result.checkedCalls -gt 0 | Should Be $true
+  }
+
+  It 'tracks new routing and hook files in install UI regression inputs' {
+    $regression = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install-ui-regression.ps1')
+    foreach ($path in @(
+      'modules\skill-pool-router\SKILL.md',
+      'modules\skill-pool-router\scripts\manage-skill-pool.ps1',
+      'modules\skill-pool-router\scripts\skill-catalog.ps1',
+      'scripts\install-codex-user-prompt-hook.ps1',
+      'scripts\codex-user-prompt-hook.ps1',
+      'scripts\routing-kernel.ps1',
+      'scripts\task-link-store.ps1',
+      'scripts\task-state-store.ps1',
+      'scripts\script-call-contract.ps1',
+      'scripts\completion-guard.ps1',
+      'scripts\status-snapshot-writer.ps1',
+      'scripts\health-summary.ps1',
+      'scripts\brain.ps1',
+      'scripts\smoke-test.ps1',
+      'scripts\verify-package.ps1',
+      'scripts\ci.ps1'
+    )) {
+      $regression.Contains("'$path'") | Should Be $true
+    }
+  }
+
+  It 'keeps named-skill lookup on the compact index fast path' {
+    $manager = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'modules\skill-pool-router\scripts\manage-skill-pool.ps1')
+    foreach ($marker in @("skill-name-index.tsv","Write-TextAtomic `$lookupPath","Write-Index 'reindex'","Write-Index 'activate'","Write-Index 'apply'")) {
+      $manager.Contains($marker) | Should Be $true
+    }
+    $manager.Contains("skill-catalog.ps1") | Should Be $true
+    $manager.Contains("Get-SkillCatalogFiles `$active") | Should Be $true
+    $catalog = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'modules\skill-pool-router\scripts\skill-catalog.ps1')
+    $catalog.Contains("Get-ChildItem -LiteralPath `$Root -Directory -Force") | Should Be $true
+    $catalog.Contains("Get-ChildItem -LiteralPath `$directory.FullName -Recurse -Filter 'SKILL.md'") | Should Be $true
+
+    $hook = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\codex-user-prompt-hook.ps1')
+    $compactLookup = $hook.IndexOf("skill-name-index.tsv")
+    $fallbackScan = $hook.IndexOf('if($entries.Count-eq0)')
+    $compactLookup -ge 0 | Should Be $true
+    $fallbackScan -gt $compactLookup | Should Be $true
+    $hook.Contains('Select-Object -Skip 1') | Should Be $true
+    $hook.Contains('if($parts.Count-ne5){continue}') | Should Be $true
+    $hook.Contains('if($usedCompactIndex)') | Should Be $true
+  }
+
+  It 'keeps the explicit free-image skill in the protected hot profile' {
+    $manager = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'modules\skill-pool-router\scripts\manage-skill-pool.ps1')
+    $manager.Contains('$freeImageFolder = -join (@(20813,36153,29983,22270)') | Should Be $true
+    ([regex]::Matches($manager,'\$freeImageFolder')).Count | Should Be 3
+  }
+
+  It 'counts a linked skill through the shared catalog enumerator' {
+    $active = Join-Path $TestDrive 'linked-active'
+    $target = Join-Path $TestDrive 'linked-target'
+    New-Item -ItemType Directory -Force -Path $active,$target | Out-Null
+    [IO.File]::WriteAllText((Join-Path $target 'SKILL.md'),"---`nname: linked-skill`ndescription: Linked skill test.`n---`n",[Text.UTF8Encoding]::new($false))
+    $link = Join-Path $active 'linked-skill'
+    New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+    . (Join-Path $Root 'modules\skill-pool-router\scripts\skill-catalog.ps1')
+    $files = @(Get-SkillCatalogFiles $active)
+    $files.Count | Should Be 1
+    $files[0].FullName.Contains('linked-skill') | Should Be $true
+  }
+
+  It 'resolves an active linked skill by its declared name before checking cold storage' {
+    $active = Join-Path $TestDrive 'resolve-linked-active'
+    $target = Join-Path $TestDrive 'resolve-linked-target'
+    $cold = Join-Path $TestDrive 'resolve-linked-cold'
+    New-Item -ItemType Directory -Force -Path $active,$target | Out-Null
+    [IO.File]::WriteAllText((Join-Path $target 'SKILL.md'),"---`nname: Smag`ndescription: Linked active resolver test.`n---`n",[Text.UTF8Encoding]::new($false))
+    New-Item -ItemType Junction -Path (Join-Path $active 'share-mini-imagegen') -Target $target | Out-Null
+
+    $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'modules\skill-pool-router\scripts\manage-skill-pool.ps1') -Action Resolve -ActiveRoot $active -ColdRoot $cold -SkillName Smag -Json 2>$null)
+    $LASTEXITCODE | Should Be 0
+    $result = (($raw -join "`n") | ConvertFrom-Json)
+    $result.status | Should Be 'resolved_active_in_place'
+    $result.skill.name | Should Be 'Smag'
+    $result.skill.skillFile.Contains('share-mini-imagegen') | Should Be $true
+    $result.checkedColdIndex | Should Be $false
+  }
+
+  It 'exposes and hides a cold skill through a reversible active junction' {
+    $active = Join-Path $TestDrive 'expose-active'
+    $cold = Join-Path $TestDrive 'expose-cold'
+    $skillRoot = Join-Path $cold 'exact-skill'
+    New-Item -ItemType Directory -Force -Path $active,$skillRoot | Out-Null
+    $skillFile = Join-Path $skillRoot 'SKILL.md'
+    $skillText = "---`nname: exact-skill`ndescription: Exact skill exposure test.`n---`n"
+    [IO.File]::WriteAllText($skillFile,$skillText,[Text.UTF8Encoding]::new($true))
+
+    $manager = Join-Path $Root 'modules\skill-pool-router\scripts\manage-skill-pool.ps1'
+    $invalid = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $manager -Action Expose -ActiveRoot $active -ColdRoot $cold -SkillName exact-skill -Json 2>&1)
+    $LASTEXITCODE | Should Be 1
+    ($invalid -join "`n").Contains('SKILL_POOL_CODEX_FRONTMATTER_INVALID') | Should Be $true
+    Test-Path -LiteralPath (Join-Path $active 'exact-skill') | Should Be $false
+
+    [IO.File]::WriteAllText($skillFile,$skillText,[Text.UTF8Encoding]::new($false))
+    $exposed = ((@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $manager -Action Expose -ActiveRoot $active -ColdRoot $cold -SkillName exact-skill -Json 2>$null) -join "`n") | ConvertFrom-Json)
+    $exposed.ok | Should Be $true
+    $exposed.coldPreserved | Should Be $true
+    (Get-Item -LiteralPath (Join-Path $active 'exact-skill') -Force).LinkType | Should Be 'Junction'
+    Test-Path -LiteralPath (Join-Path $skillRoot 'SKILL.md') | Should Be $true
+
+    $hidden = ((@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $manager -Action Hide -ActiveRoot $active -ColdRoot $cold -SkillName exact-skill -Json 2>$null) -join "`n") | ConvertFrom-Json)
+    $hidden.ok | Should Be $true
+    $hidden.coldPreserved | Should Be $true
+    Test-Path -LiteralPath (Join-Path $active 'exact-skill') | Should Be $false
+    Test-Path -LiteralPath (Join-Path $skillRoot 'SKILL.md') | Should Be $true
+  }
+
+  It 'backs up hook configuration and trusts only the discovered hook hash' {
+    $installer = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install-codex-user-prompt-hook.ps1')
+    foreach ($marker in @(
+      'Backup-File $hooksPath;Backup-File $configPath',
+      "Send-Rpc 2 'hooks/list'",
+      "EnvironmentVariables['CODEX_HOME']=`$ProtocolCodexHome",
+      "Where-Object{[string]`$_.sourcePath-eq`$hooksPath}",
+      'trusted_hash=[string]$hook.currentHash',
+      "Send-Rpc 3 'config/batchWrite'",
+      'CODEX_HOOK_WINDOWS_POWERSHELL_BOM_PRIME',
+      'if(-not$ReportOnly){Restore-Backups}'
+    )) {
+      $installer.Contains($marker) | Should Be $true
+    }
+  }
+
+  It 'keeps optional extensions opt-in during normal installation' {
+    $install = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install.ps1')
+    ([regex]::Matches($install,'if \(\$Extensions\.Count -gt 0\)')).Count | Should Be 2
+    $rollback = [regex]::Match($install,'function Restore-Backups.*?^}',[Text.RegularExpressions.RegexOptions]'Singleline, Multiline').Value
+    $rollback.Contains('Remove-Item -LiteralPath $entry.dest -Recurse -Force') | Should Be $true
+    $rollback.Contains('elseif ($entry.created)') | Should Be $true
+    $rollback.Contains('Removed newly created skill during rollback') | Should Be $true
+    $common = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\common.ps1')
+    $sourceBlock = [regex]::Match($common,'function Get-SuperBrainSourceItems.*?return @\(\$items\)','Singleline').Value
+    $sourceBlock.Contains("name='agent-bridge'") | Should Be $false
+    $sourceBlock.Contains('if ($Extensions.Count -gt 0)') | Should Be $true
+    $install.Contains('$targetCodexSkills.Equals($defaultCodexSkills,[StringComparison]::OrdinalIgnoreCase)') | Should Be $true
+    $install.Contains("-Action Reindex -ActiveRoot `$CodexSkills -ColdRoot `$coldSkillRoot") | Should Be $true
+    $install.Contains("throw 'SKILL_POOL_REINDEX_FAILED'") | Should Be $true
+    $smoke = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\smoke-test.ps1')
+    $smoke.Contains('if ($Extensions.Count -gt 0)') | Should Be $true
+  }
+
+  It 'requires explicit install-backup pruning and refreshes governed memory markers' {
+    $install = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install.ps1')
+    foreach ($marker in @(
+      '[CmdletBinding(PositionalBinding=$false)]',
+      '[switch]$PruneBackups',
+      'if (-not $PruneBackups) { return }',
+      'if ($PruneBackups)',
+      'cleanup-install-backups.ps1 -Apply',
+      'function Refresh-InstalledMemoryRootMarkers',
+      "package-root.txt",
+      'Refresh-InstalledMemoryRootMarkers $ZCodeSkills $ZCodeMemoryRoot',
+      'Refresh-InstalledMemoryRootMarkers $CodexSkills $CodexMemoryRoot'
+    )) {
+      $install.Contains($marker) | Should Be $true
+    }
+    $verify = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-package.ps1')
+    foreach ($marker in @('runtime backup residue absent','invalid script install roots absent',"`$_.Name -match '\.bak-'")) {
+      $verify.Contains($marker) | Should Be $true
+    }
+  }
+
   It 'does not fabricate unknown or superseded decisions' {
     $unknown = @((& (Join-Path $Root 'scripts\decision-search.ps1') -Key 'nonexistent-decision-repair-regression-7f3a9c2e' -CurrentOnly -Relation decides -Json | ConvertFrom-Json) | Where-Object { $_ -ne $null })
     @($unknown).Count | Should Be 0
 
-    $stale = @((& (Join-Path $Root 'scripts\decision-search.ps1') -Key 'codex-g1-first-line-display-rule' -CurrentOnly -Relation decides -Json | ConvertFrom-Json) | Where-Object { $_ -ne $null })
-    $current = @((& (Join-Path $Root 'scripts\decision-search.ps1') -Key 'codex-g1-first-line-display-rule-v2' -CurrentOnly -Relation decides -Json | ConvertFrom-Json) | Where-Object { $_ -ne $null })
+    $stale = @((& (Join-Path $Root 'scripts\decision-search.ps1') -Key 'codex-g1-first-line-display-rule-v2' -CurrentOnly -Relation decides -Json | ConvertFrom-Json) | Where-Object { $_ -ne $null })
+    $current = @((& (Join-Path $Root 'scripts\decision-search.ps1') -Key 'codex-g1-first-line-display-rule-v3' -CurrentOnly -Relation decides -Json | ConvertFrom-Json) | Where-Object { $_ -ne $null })
     @($stale).Count | Should Be 0
     @($current).Count | Should Be 1
     ([string]$current[0].tags).Contains('[CURRENT]') | Should Be $true
@@ -281,7 +671,7 @@ print(json.dumps({
     foreach ($card in @($result.evidenceCards)) {
       @($card.tags) -contains '[CURRENT]' | Should Be $true
       @($card.tags) -contains '[VERIFIED]' | Should Be $true
-      $card.relevanceStatus | Should Be 'matched'
+      $card.relevanceStatus | Should Be 'anchor_matched'
     }
   }
 
@@ -353,6 +743,111 @@ print(json.dumps({
     @($beforeCompletion.violations) -contains 'engineering-decision-gate' | Should Be $true
   }
 
+  It 'requires current task post-mutation review evidence instead of reusing a foreign task' {
+    $stateRoot = Join-Path $TestDrive 'post-mutation-review-state'
+    $workspace = Join-Path $stateRoot 'workspace'
+    $taskId = 'task-post-mutation-review'
+    $version = [string]((Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version)
+    $writeJson = {
+      param([string]$Path,[object]$Value)
+      $parent = Split-Path -Parent $Path
+      if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+      [IO.File]::WriteAllText($Path,($Value | ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+    }
+    & $writeJson (Join-Path $workspace 'last-verify-package.json') ([pscustomobject]@{ok=$true;version=$version;checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss')})
+    & $writeJson (Join-Path $workspace 'last-hot-refresh.json') ([pscustomobject]@{ok=$true;checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss')})
+    & $writeJson (Join-Path $workspace 'last-task-verification.json') ([pscustomobject]@{ok=$true;taskId=$taskId;version=$version;checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss');summary='updated one file';changed=@('scripts/example.ps1');commands=@('focused test');constraintsPreserved=$true})
+    & $writeJson (Join-Path $workspace 'current-task-context.json') ([pscustomobject]@{ok=$true;version=$version;status='active';stale=$false;expiresAt=(Get-Date).AddHours(1).ToString('yyyy-MM-dd HH:mm:ss');taskId=$taskId;acceptedGoal='update a file';acceptedRoute=@('execute -> verify')})
+    $roles = @('pre_action_constraint','challenge_gate','evidence_grounding','engineering_decision','review_verifier','test_strategy','real_user_path_verifier','version_record_keeper','cache_freshness_checker','skill_gap_repair')
+    $capabilities = @($roles | ForEach-Object { [pscustomobject]@{name="test-$($_)";category='rule';role=$_;canDo=@('focused verification');cannotDo=@();triggers=@('completion');applyAt=@('before_completion');verification=@('test evidence')} })
+    & $writeJson (Join-Path $workspace 'skill-capability-map.json') ([pscustomobject]@{capabilities=$capabilities})
+    & $writeJson (Join-Path (Join-Path $workspace 'guard-state\change-causality-reviews') 'foreign-task\review.json') ([pscustomobject]@{ok=$true;taskId='foreign-task';gaps=@();actualResult='foreign verification passed';evidence=@('foreign regression');expectedVsActual=[pscustomobject]@{decision='keep';expectedPresent=$true;actualPresent=$true}})
+    $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
+    try {
+      $env:SUPER_BRAIN_STATE_ROOT = $stateRoot
+      $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\completion-guard.ps1') -TaskId $taskId -AllowPrivacyRisk -AllowActiveCheckpoint -Json 2>$null)
+      $missingReview = (($raw -join "`n") | ConvertFrom-Json)
+      $missingCheck = @($missingReview.checks | Where-Object { $_.name -eq 'post-mutation-review' }) | Select-Object -First 1
+      $missingReview.postMutationReviewRequired | Should Be $true
+      $missingCheck.ok | Should Be $false
+      $missingCheck.evidence | Should Match 'missing task-scoped causal review'
+
+      $planPath = Join-Path (Join-Path $workspace 'guard-state\change-causality') $taskId
+      & $writeJson (Join-Path $planPath 'plan.json') ([pscustomobject]@{ok=$true;version=$version;taskId=$taskId;planId='current-plan';expectedOptimization='focused verification remains task scoped';verificationMethod='run targeted regression'})
+      $reviewPath = Join-Path (Join-Path $workspace 'guard-state\change-causality-reviews') $taskId
+      & $writeJson (Join-Path $reviewPath 'review.json') ([pscustomobject]@{ok=$true;version=$version;taskId=$taskId;planTaskId=$taskId;planTaskMatch=$true;planVersion=$version;verificationMethod='run targeted regression';gaps=@();actualResult='focused verification remains task scoped';evidence=@('targeted regression');expectedVsActual=[pscustomobject]@{decision='keep';expectedPresent=$true;actualPresent=$true;weakTermMatch=$true}})
+      $rawAfterReview = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\completion-guard.ps1') -TaskId $taskId -AllowPrivacyRisk -AllowActiveCheckpoint -Json 2>$null)
+      $withReview = (($rawAfterReview -join "`n") | ConvertFrom-Json)
+      $withReviewCheck = @($withReview.checks | Where-Object { $_.name -eq 'post-mutation-review' }) | Select-Object -First 1
+      $withReviewCheck.ok | Should Be $true
+      $withReview.postMutationReview.decision | Should Be 'keep'
+    } finally {
+      $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot
+    }
+  }
+
+  It 'rejects a current task review when only a foreign global causal plan exists' {
+    $stateRoot = Join-Path $TestDrive 'foreign-global-causal-plan-state'
+    $workspace = Join-Path $stateRoot 'workspace'
+    $taskId = 'task-causal-plan-isolation'
+    $foreignTaskId = 'task-causal-plan-foreign'
+    $version = [string]((Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version)
+    $writeJson = {
+      param([string]$Path,[object]$Value)
+      $parent = Split-Path -Parent $Path
+      if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+      [IO.File]::WriteAllText($Path,($Value | ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+    }
+    & $writeJson (Join-Path $workspace 'last-verify-package.json') ([pscustomobject]@{ok=$true;version=$version;packageRoot=$Root;checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss')})
+    & $writeJson (Join-Path $workspace 'last-hot-refresh.json') ([pscustomobject]@{ok=$true;version=$version;packageRoot=$Root;checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss')})
+    & $writeJson (Join-Path $workspace 'last-task-verification.json') ([pscustomobject]@{ok=$true;taskId=$taskId;version=$version;packageRoot=$Root;checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss');summary='updated one file';changed=@('scripts/example.ps1');commands=@('focused test');constraintsPreserved=$true})
+    & $writeJson (Join-Path $workspace 'current-task-context.json') ([pscustomobject]@{ok=$true;version=$version;status='active';stale=$false;expiresAt=(Get-Date).AddHours(1).ToString('yyyy-MM-dd HH:mm:ss');taskId=$taskId;acceptedGoal='update a file';acceptedRoute=@('execute -> verify')})
+    & $writeJson (Join-Path $workspace 'skill-capability-map.json') ([pscustomobject]@{capabilities=@()})
+    & $writeJson (Join-Path (Join-Path $workspace 'change-causality') 'foreign-plan.json') ([pscustomobject]@{ok=$true;version=$version;taskId=$foreignTaskId;planId='foreign-plan';expectedOptimization='foreign optimization evidence';verificationMethod='foreign verification'})
+    $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
+    try {
+      $env:SUPER_BRAIN_STATE_ROOT = $stateRoot
+      $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\causal-change-review.ps1') -TaskId $taskId -ActualResult 'foreign optimization evidence' -Evidence 'foreign plan should not be accepted' -Decision keep -Json 2>$null)
+      $exitCode = $LASTEXITCODE
+      $result = (($raw -join "`n") | ConvertFrom-Json)
+      $exitCode | Should Be 1
+      $result.ok | Should Be $false
+      $result.planSelection | Should Be 'none'
+      $result.planTaskMatch | Should Be $false
+      @($result.gaps | Where-Object { $_.code -eq 'missing_causal_change_plan' }).Count | Should Be 1
+      Test-Path -LiteralPath (Join-Path (Join-Path $workspace 'guard-state\change-causality') $taskId) | Should Be $false
+    } finally {
+      $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot
+    }
+  }
+
+  It 'rejects an explicit cross-task causal plan and reports the binding fields' {
+    $stateRoot = Join-Path $TestDrive 'explicit-cross-task-causal-plan-state'
+    $workspace = Join-Path $stateRoot 'workspace'
+    $taskId = 'task-causal-plan-current'
+    $foreignTaskId = 'task-causal-plan-foreign-explicit'
+    $version = [string]((Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version)
+    $planPath = Join-Path $TestDrive 'foreign-explicit-plan.json'
+    $plan = [pscustomobject]@{ok=$true;version=$version;taskId=$foreignTaskId;planId='foreign-explicit-plan';expectedOptimization='current optimization evidence';verificationMethod='current verification'}
+    [IO.File]::WriteAllText($planPath,($plan | ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+    $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
+    try {
+      $env:SUPER_BRAIN_STATE_ROOT = $stateRoot
+      $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\causal-change-review.ps1') -TaskId $taskId -PlanPath $planPath -ActualResult 'current optimization evidence' -Evidence 'explicit plan binding regression' -Decision keep -Json 2>$null)
+      $exitCode = $LASTEXITCODE
+      $result = (($raw -join "`n") | ConvertFrom-Json)
+      $exitCode | Should Be 1
+      $result.ok | Should Be $false
+      $result.planSelection | Should Be 'explicit_path'
+      $result.planTaskId | Should Be $foreignTaskId
+      $result.planTaskMatch | Should Be $false
+      $result.planVersion | Should Be $version
+      @($result.gaps | Where-Object { $_.code -eq 'causal_plan_task_mismatch' }).Count | Should Be 1
+    } finally {
+      $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot
+    }
+  }
+
   It 'activates engineering judgment for engineering work but not greetings' {
     $hello = (& (Join-Path $Root 'scripts\smart-next.ps1') -Text 'hello' -Json | ConvertFrom-Json)
     $hello.engineeringJudgment.required | Should Be $false
@@ -361,5 +856,24 @@ print(json.dumps({
       $result.engineeringJudgment.required | Should Be $true
       $result.engineeringJudgment.decisionGate | Should Be 'engineering-decision-gate.ps1'
     }
+  }
+
+  It 'stays silent for marginal optimization opportunities' {
+    $result = (& (Join-Path $Root 'scripts\engineering-decision-gate.ps1') -Action AssessIntervention -ExpectedBenefitLevel marginal -RiskLevel low -EvidenceStrength verified -ExpectedDelta 'small formatting improvement' -Recommendation 'defer' -Json | ConvertFrom-Json)
+    $result.ok | Should Be $true
+    $result.shouldIntervene | Should Be $false
+    $result.mode | Should Be 'silent'
+  }
+
+  It 'intervenes for material evidence-backed risk' {
+    $result = (& (Join-Path $Root 'scripts\engineering-decision-gate.ps1') -Action AssessIntervention -RiskLevel material -EvidenceStrength inference -Facts @('the current write path can lose an update') -FactEvidence @('live write-path inspection') -Recommendation 'pause and verify before mutation' -Json | ConvertFrom-Json)
+    $result.ok | Should Be $true
+    $result.shouldIntervene | Should Be $true
+    $result.mode | Should Be 'recommend'
+  }
+
+  It 'normalizes duplicate current decisions by retaining only the latest current record' {
+    $scriptText = Get-Content -LiteralPath (Join-Path $Root 'scripts\graph-normalize.ps1') -Raw -Encoding UTF8
+    foreach($marker in @('outIndex','Select-Object -First ($ordered.Count - 1)',"-replace '\[CURRENT\]', '[HISTORY]'")) { $scriptText.Contains($marker) | Should Be $true }
   }
 }

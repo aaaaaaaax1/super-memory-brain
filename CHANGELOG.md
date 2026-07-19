@@ -1,5 +1,129 @@
 # Changelog
 
+## 0.5.96
+
+- Add adaptive FTS5-first and IDX-fallback recall, cut warm p95 latency by about 97% on the measured path, and repair Windows mixed reader/writer index replacement without increasing startup context.
+- Generalize evidence admission with token-boundary matching, identity/alias coverage, temporal-target precedence, current-snapshot conflict suppression, generic verified profile-field recall, and package-state intent gating; keep direct canonical-key priority only for explicit keys.
+- Close SQLite FTS connections, retain the IDX mtime cache across complete-index hits, and remove the heavy thinking-stack import from the IDX tokenizer path to keep Windows cleanup and cold recall bounded.
+- Add a non-publishable isolated recall diagnostic with 46 base cases plus 70 deterministic query variants across exact, alias, fuzzy, temporal, task, profile, graph, long-term, conflict, and unknown categories; final local run reached 100% Recall@1/3, 100% unknown abstention, and 24.48 ms warm p95.
+- Preserve 12/12 recall evaluation and unknown-fact abstention; pass 736 mixed index operations with zero failures/errors/temp files, Pester 242/242, and package verification.
+- Keep the sealed 0.5.95 v13 holdout unconsumed and non-transferable; 0.5.96 remains `not_scored` until new independent evidence exists.
+
+## 0.5.95
+
+- Add a strict cold autonomy evidence ledger: evaluator counts derive only from verified task outcomes, governed authorizations, and linked closed corrections; generic completion and caller-supplied counts no longer qualify.
+
+## 0.5.94
+
+- Replace self-weighted intelligence claims with official paired A/B benchmark evidence, add objective benchmark provenance and comparability guards, and close remaining bounded product-routing gaps.
+- Mark every `intelligence-eval.ps1` result as `internal_acceptance_only`; it can no longer be presented as an objective intelligence score.
+- Add pinned SWE-bench Verified, BFCL, LongMemEval, and tau3-bench protocols with official artifact hashes, same-model A/B controls, blind judging, raw rates, paired deltas, confidence intervals, and no cross-benchmark aggregate.
+- Keep objective status at `not_scored` until an actual official paired run is completed; benchmark execution that consumes model/API/container resources remains a separate confirmed operation.
+- Repair the three consumed-v9 language families through bounded binding/introduction/redesign/cross-service semantics while preserving read-only dependency and architecture requests.
+- Pass Pester 230/230, strict routing 48/48, package verification, and full CI 28/28 without expanding global startup context.
+
+## 0.5.93
+
+- Generalize product-flow intent routing across bounded attachment and replacement language, reject unsupported autobiographical timeline/device recall, and preserve read-only routing negatives.
+- Keep read-only process/status requests direct while routing bounded workflow integration and structural replacement through the product coherence gate.
+- Pass Pester 227/227, strict routing 48/48, and full CI 28/28 without expanding global startup context.
+- Consume independent v9 exactly once: 57/60 holdout cases pass, calibration gap is 5%, personal control plane scores 9.33/10, autonomous brain scores 9.36/10, and every formal gate is achieved.
+- Preserve three v9 product/structural-language misses as residual risk; do not retune or rerun the consumed set.
+
+## 0.5.92
+
+- Isolate Pester state, audit task lifecycle integrity, exclude diagnostic task cards, surface lifecycle risks in doctor, and preserve task-scoped continuation.
+
+## 0.5.91
+
+- Route structural and product-flow mutations through the collaboration gate before incidental bug wording, while preserving direct bug diagnosis and strict route behavior.
+- Treat structural change plus a mutation action as collaboration intent even when the request omits explicit feature nouns.
+- Let product-flow intent win over incidental failure-state wording, while direct repair prompts remain on the bug diagnosis route.
+- Keep the change inside the cold routing kernel and intent router; global startup context remains unchanged.
+- Preserve 0.5.90 v5 as consumed historical evidence and require a new v6 for current scoring.
+- Consume v6 once under evidence binding v2: 48/52 pass, personal control plane scores 9.01/10, autonomous brain scores 9.04/10, and the 7.69% gap passes both anti-overfit limits.
+- Achieve both formal targets without changing policy weights, thresholds, or startup context; preserve four implicit Chinese workflow paraphrase misses as measured future work.
+
+## 0.5.90
+
+- Unify product-flow semantics across intent routing and collaboration planning, and bind intelligence evidence to both native runtime and PowerShell behavior sources.
+- Replace duplicate intent/why-plan feature vocabularies with one shared routing-kernel classification for local, workflow, and structural changes.
+- Expand workflow action families without adding global startup text; daily greetings, recall, and cold start keep the same loading path.
+- Advance intelligence evidence binding to v2 with manifest, native runtime, routing, planning, hook, continuity, policy, and entry-skill hashes.
+- Keep 0.5.89 v4 scores historical and require a new sealed v5 before publishing 0.5.90 scores.
+- Consume v5 once under evidence binding v2: 47/52 pass, personal scores 8.78/10, autonomous scores 8.82/10, and the 9.62% gap leaves only the personal target unmet.
+- Preserve four real v5 intent-priority failures and one over-escaped file-marker failure for future-version work; do not retune or rerun v5.
+
+## 0.5.89
+
+- Repair behavior generalization for product-flow routing, Playwright reliability fallback, personal-fact abstention, and final-report consumption hashing without expanding startup context.
+- Recognize Chinese workflow-integration verbs as a semantic family instead of a single phrase, and classify English Playwright failure language before explicit browser-act fallback routing.
+- Reject non-profile memories for personal facts while preserving verified, field-matched profile recall for identity, education, family, school, and pet facts.
+- Make Windows PowerShell behavior fixtures encoding-safe and bind consumption markers to the final `consumed=true` report bytes.
+- Treat 0.5.88 v3 scores as historical only; require a new sealed v4 holdout before publishing 0.5.89 scores.
+- Consume the independent v4 holdout exactly once: 44/52 pass, personal control plane scores 8.08/10, autonomous brain scores 8.14/10, and the 15.38% calibration gap blocks both targets.
+- Preserve v4 strengths as evidence: browser routing 10/10, unknown-personal-fact abstention 8/8, execution continuity 10/10, and evaluation integrity 2/2.
+- Preserve the eight v4 failures for future-version work instead of tuning 0.5.89: seven product-flow semantic/classification failures and one case-sensitive cold-document contract failure.
+
+## 0.5.88
+
+- Add a task/workspace/version-bound execution contract so visible conversation wins after disconnect or compaction, stale checkpoints cannot reauthorize old work, and missing or conflicting evidence returns `unknown` before mutation.
+- Add observable engineering behavior holdouts for product-coherent feature routing, structural-change discussion, unknown-personal-fact abstention, and Playwright-first browser automation with browser-act restricted to explicit or reliability fallback.
+- Unify `install.bat`, the graphical global-install button, and the console global-install action on the complete `bootstrap.ps1` orchestrator while preserving focused hot-refresh and diagnostic entrypoints.
+- Repair Sandglass regression isolation by including the lock dependency, then pass repair 56/56, execution continuity 8/8, usability 7/7, behavior 4/4, route 3/3, runtime regression, and concurrent index rebuild 96/96.
+- Bind score claims to the evaluated version: retain 0.5.87's consumed holdout as historical evidence and require a fresh sealed holdout before publishing 0.5.88 formal intelligence scores.
+- Complete the fresh 0.5.88 sealed evaluation without post-result tuning: 47/52 holdout cases pass, personal control plane scores 8.78/10, autonomous brain scores 8.82/10, and the 9.62% generalization gap remains an explicit measured limitation.
+- Preserve five blind failure families for future-version work: one Chinese product-flow paraphrase, two English Playwright fallback phrasings, and two unknown personal-fact recall leaks; consumed v3 cannot be reused to claim improvement.
+
+## 0.5.87
+
+- Add a lightweight native Python runtime with bounded local recall, status, recent-memory, health, and CLI entrypoints so the Skill remains a thin routing layer.
+- Register a narrow read-only stdio MCP with `brain_recall`, `brain_status`, and `brain_recent`; install-time checks use a contract-only bootstrap mode for empty memory roots and full recall regression for populated roots.
+- Add nested JSON-RPC tool-payload replay coverage, include the native runtime in manifest and public share packages, and remove Python cache artifacts from generated shares.
+- Add a verified-outcome bridge from successful task verification to governed user adaptation, accepting at most three enumerated signals per task.
+- Require matching task/workspace verification, require closed correction candidates for correction-derived signals, and reject summary, transcript, freeform, and applied-packet inference.
+- Scope learned workflows by project plus workflow, preserve normal three-task/two-context promotion, deduplicate repeated task evidence, and keep the route entirely cold with no startup-context increase.
+- Add context-scoped adaptation values so problem-complete verification applies to debugging/review without displacing normal coding defaults or increasing startup context.
+- Add 19 focused user-adaptation tests covering preview non-mutation, rejection paths, scope isolation, context filtering, budgets, correction lifecycle, duplicate handling, and task-verification integration.
+
+## 0.5.86
+
+- Guarantee exact named-skill routing without default substitution, add bounded non-blocking route metrics, and advance TaskStateStore to staged WAL materialization with reconcile and archive-only snapshot compaction.
+- Repair the `免费生图` skill's UTF-8 BOM/frontmatter scan failure, expose its cold source through a reversible active junction, and protect the exact name from Smag substitution in both prompt-hook routing and pool reapplication.
+- Keep T0/T1/T2 route observability bounded to counters, 64 latency samples, p95, and resolved names; raw prompts are never stored and metric lock contention cannot block a route.
+- Move context, checkpoint, and task-card writers to staged `Commit`; preserve owner/session/workspace/lease evidence, recover prepared transactions, and reject compaction while any transaction is incomplete.
+- Treat an explicit `ApprovedPlan` at the configured checkpoint threshold as execution authorization even when status wording appears first; run autonomous-executor E2E under a short isolated state root so verification cannot clear unrelated task checkpoints or exceed Windows path limits.
+- Add regression coverage for crashes after materialization, six concurrent same-task commits, lifecycle-driven compaction, and approved-plan continuation.
+- Add governed user adaptation with enumerated observations, explicit and repeated-evidence promotion, workflow/project/global precedence, contradiction blocking, disable/forget tombstones, and a three-directive/120-token packet budget.
+- Capture only strong durable collaboration preferences in the Codex prompt hook; test mode remains non-mutating, ordinary prompts stay silent, and raw prompt bodies are never stored.
+- Feed relevant adaptation packets into cognitive preflight only, synthesize observations only during `post-task-maintenance.ps1 -ApplySafe`, and include nested internal scripts in share builds.
+- Pass the consumed 52-case personalization holdout at 50/52 with a 3.85% calibration gap; formal intelligence scores are 9.47/10 for the personal control plane and 9.49/10 for the autonomous brain.
+
+## 0.5.85
+
+- Add TaskStateStore P0 with task-scoped append-only events, monotonic revisions and CAS, rebuildable projections, write-through integration, and explicit no-merge conflict audits.
+
+## 0.5.84
+
+- Separate source, runtime, mutable state, and archives; bound backups; archive malformed evidence; and repair public source export coverage.
+- Make install-backup pruning explicit, disable positional installer binding, refresh governed state-root markers, and reject runtime-local backup residue or misplaced install roots.
+
+## 0.5.83
+
+- Correct continuity precedence and recall freshness, and reject self-referential memory evaluation evidence.
+
+## 0.5.82
+
+- Complete cold-skill keyword routing with normalized aliases and a compact translation-aware on-demand fallback.
+
+## 0.5.81
+
+- Restore cold-skill exact-name and conservative capability routing without increasing startup context.
+
+## 0.5.80
+
+- Added task-scoped concurrent runtime state, one low-noise routing kernel, independent privacy/package verification, bounded composite-key task links, symlink-aware skill discovery, stale-index fallback, and a 1.8k startup router.
+
 ## 0.5.79
 
 - Added bounded memory lifecycle with global and per-layer budgets, write admission, expiry-aware hygiene planning, and budget-aware health and optimization signals.

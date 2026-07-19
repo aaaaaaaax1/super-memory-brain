@@ -73,7 +73,8 @@ $blockers = New-Object System.Collections.ArrayList
 $lowerAction = ($ObservedAction + ' ' + $Query).ToLowerInvariant()
 
 if (-not (Is-Fresh $preflight)) { Add-Violation $violations 'missing_or_stale_cognitive_preflight' 'cognitive-preflight missing or stale before runtime action' }
-if ($enforce -and $enforce.ok -ne $true) { Add-Violation $violations 'cognitive_enforce_failed' "violations=$(@($enforce.violations).Count)" }
+$enforceApplies = $enforce -and (Is-Fresh $enforce) -and ([string]::IsNullOrWhiteSpace($Query) -or [string]$enforce.query -eq $Query)
+if ($enforceApplies -and $enforce.ok -ne $true) { Add-Violation $violations 'cognitive_enforce_failed' "violations=$(@($enforce.violations).Count) query=$($enforce.query)" }
 if ($constraints -and @($constraints.conflicts).Count -gt 0) { Add-Violation $violations 'accepted_constraint_conflict' "conflicts=$(@($constraints.conflicts).Count) guardHash=$($constraints.guardHash)" }
 
 if ($Phase -eq 'BeforeCompletion') {

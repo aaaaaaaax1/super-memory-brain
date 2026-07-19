@@ -72,7 +72,8 @@ try {
   $null = Run-JsonAllowFail 'integration-parity-check.ps1' @('-TaskId',$oldTask,'-Module','negative-context-demo','-CurrentEntrypoint','demo','-IntegrationCommand','old-e2e','-UserAcceptanceEvidence','old accepted','-ModuleSmokeOk','-IntegrationSmokeOk','-UserAcceptanceOk')
   $staleParity = Run-JsonAllowFail 'completion-guard.ps1' @('-TaskId',$freshTask,'-AllowPrivacyRisk','-AllowActiveCheckpoint')
   $parityScope = @($staleParity.checks | Where-Object { $_.name -eq 'task-scoped-integration-parity' }) | Select-Object -First 1
-  Add-Check 'old-integration-parity-cannot-satisfy-current-task' ($parityScope -and $parityScope.ok -ne $true) "completionOk=$($staleParity.ok) scopedParityOk=$($parityScope.ok) requiredTask=negative-fresh-task-no-parity"
+  $foreignParityNotReused = ($parityScope -and $parityScope.ok -eq $true -and [string]$parityScope.evidence -eq 'none')
+  Add-Check 'old-integration-parity-cannot-satisfy-current-task' ($foreignParityNotReused -and $staleParity.ok -ne $true) "completionOk=$($staleParity.ok) scopedParityOk=$($parityScope.ok) evidence=$($parityScope.evidence) requiredTask=negative-fresh-task-no-parity"
   $null = Run-JsonAllowFail 'current-task-context.ps1' @('-Action','Create','-TaskId',$newTask,'-AcceptedGoal','negative e2e current task','-AcceptedRoute','negative checks')
 } catch { Add-Check 'old-integration-parity-cannot-satisfy-current-task' $false $_.Exception.Message }
 

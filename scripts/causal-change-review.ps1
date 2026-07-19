@@ -19,6 +19,8 @@ $reviewRoot = Join-Path $workspace 'change-causality-reviews'
 $scopeRoot = Join-Path $workspace 'guard-state'
 $taskPlanRoot = Join-Path $scopeRoot 'change-causality'
 $taskReviewRoot = Join-Path $scopeRoot 'change-causality-reviews'
+$currentVersion = [string](Get-SuperBrainManifest $Root).version
+$taskIdProvided = -not [string]::IsNullOrWhiteSpace($TaskId)
 foreach ($dir in @($workspace,$reviewRoot,$taskPlanRoot,$taskReviewRoot)) { if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null } }
 $outPath = Join-Path $workspace 'last-causal-change-review.json'
 
@@ -33,24 +35,40 @@ function Add-Gap($List,[string]$Code,[string]$EvidenceText,[string]$Severity='me
 function Read-JsonFile([string]$Path){ if(Test-Path -LiteralPath $Path){ try{ return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json }catch{} }; return $null }
 function Safe-TaskId([string]$Value) { if ([string]::IsNullOrWhiteSpace($Value)) { return '' }; $safe=(($Value -replace '[^A-Za-z0-9._-]+','-').Trim('-')).ToLowerInvariant(); if ([string]::IsNullOrWhiteSpace($safe)) { return '' }; if ($safe.Length -gt 120) { return $safe.Substring(0,120) }; return $safe }
 function Get-TaskDir([string]$Base,[string]$Value) { $safe=Safe-TaskId $Value; if ([string]::IsNullOrWhiteSpace($safe)) { return '' }; $dir=Join-Path $Base $safe; if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }; return $dir }
-function Get-PlanSearchRoots { $roots=@(); $taskDir=Get-TaskDir $taskPlanRoot $TaskId; if(-not [string]::IsNullOrWhiteSpace($taskDir)){ $roots += $taskDir }; $roots += $planRoot; return @($roots | Select-Object -Unique) }
+function Get-PlanSearchRoots {
+  if ($taskIdProvided) {
+    $safe = Safe-TaskId $TaskId
+    if ([string]::IsNullOrWhiteSpace($safe)) { return @() }
+    return @(Join-Path $taskPlanRoot $safe)
+  }
+  return @($planRoot)
+}
+function Find-PlanCandidate([string]$SearchRoot,[string]$RequiredTaskId='') {
+  if (-not (Test-Path -LiteralPath $SearchRoot)) { return $null }
+  foreach ($file in @(Get-ChildItem -LiteralPath $SearchRoot -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object @{Expression='LastWriteTime';Descending=$true}, @{Expression='Name';Descending=$false})) {
+    $obj = Read-JsonFile $file.FullName
+    if (-not $obj) { continue }
+    if ([string]::IsNullOrWhiteSpace($RequiredTaskId) -or [string]$obj.taskId -eq $RequiredTaskId) {
+      return [pscustomobject]@{ path=$file.FullName; value=$obj }
+    }
+  }
+  return $null
+}
 
 $plan = $null
-if (-not [string]::IsNullOrWhiteSpace($PlanPath)) { $plan = Read-JsonFile $PlanPath }
-if (-not $plan -and -not [string]::IsNullOrWhiteSpace($TaskId)) {
-  $candidate = $null
+$planSelection = 'none'
+if (-not [string]::IsNullOrWhiteSpace($PlanPath)) {
+  $plan = Read-JsonFile $PlanPath
+  $planSelection = 'explicit_path'
+} else {
   foreach ($searchRoot in Get-PlanSearchRoots) {
-    $candidate = Get-ChildItem -LiteralPath $searchRoot -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Where-Object {
-      try { $o = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json; [string]$o.taskId -eq $TaskId -or [string]$o.relatedGoalHash -eq $TaskId } catch { $false }
-    } | Select-Object -First 1
-    if ($candidate) { break }
-  }
-  if ($candidate) { $plan = Read-JsonFile $candidate.FullName; $PlanPath = $candidate.FullName }
-}
-if (-not $plan) {
-  foreach ($searchRoot in Get-PlanSearchRoots) {
-    $latest = Get-ChildItem -LiteralPath $searchRoot -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($latest) { $plan = Read-JsonFile $latest.FullName; $PlanPath = $latest.FullName; break }
+    $candidate = Find-PlanCandidate $searchRoot $(if ($taskIdProvided) { $TaskId } else { '' })
+    if ($candidate) {
+      $plan = $candidate.value
+      $PlanPath = $candidate.path
+      $planSelection = if ($taskIdProvided) { 'task_scoped' } else { 'global_latest' }
+      break
+    }
   }
 }
 
@@ -60,8 +78,24 @@ if ([string]::IsNullOrWhiteSpace($ActualResult)) { Add-Gap $gaps 'missing_actual
 if (@($Evidence).Count -eq 0) { Add-Gap $gaps 'missing_review_evidence' 'Evidence is required before keeping/revising a causal hypothesis.' 'medium' }
 if ($Decision -eq 'unknown') { Add-Gap $gaps 'missing_keep_revise_rollback_decision' 'Decision should state keep, revise, or rollback after checking evidence.' 'medium' }
 
+$planTaskId = if ($plan) { [string]$plan.taskId } else { '' }
+$planVersion = if ($plan) { [string]$plan.version } else { '' }
+$planTaskMatch = if ($plan) {
+  if ($taskIdProvided) { $planTaskId -eq $TaskId }
+  else { [string]::IsNullOrWhiteSpace($planTaskId) }
+} else { $false }
+if ($plan -and -not $planTaskMatch) {
+  $required = if ($taskIdProvided) { $TaskId } else { '<unscoped plan>' }
+  Add-Gap $gaps 'causal_plan_task_mismatch' "Causal plan taskId '$planTaskId' does not match required taskId '$required'." 'high'
+}
+if ($plan -and $planVersion -ne $currentVersion) {
+  Add-Gap $gaps 'causal_plan_version_mismatch' "Causal plan version '$planVersion' does not match current package version '$currentVersion'." 'high'
+}
+if ($plan -and $plan.ok -ne $true) { Add-Gap $gaps 'causal_plan_not_valid' 'Causal plan must have ok=true before it can support a review.' 'high' }
 $expected = if ($plan) { [string]$plan.expectedOptimization } else { '' }
 $verification = if ($plan) { [string]$plan.verificationMethod } else { '' }
+if ($plan -and [string]::IsNullOrWhiteSpace($expected)) { Add-Gap $gaps 'missing_expected_optimization' 'Causal plan must define expectedOptimization before expected-vs-actual review.' 'high' }
+if ($plan -and [string]::IsNullOrWhiteSpace($verification)) { Add-Gap $gaps 'missing_verification_method' 'Causal plan must define verificationMethod before expected-vs-actual review.' 'high' }
 $actualLower = $ActualResult.ToLowerInvariant()
 $expectedLower = $expected.ToLowerInvariant()
 $matched = $false
@@ -80,11 +114,15 @@ $result = [pscustomobject]@{
   ok = ($gaps.Count -eq 0)
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
   schema = 'super-brain.causal-change-review.v1'
-  version = (Get-SuperBrainManifest $Root).version
+  version = $currentVersion
   reviewId = $id
   taskId = Limit-Text $TaskId 120
   planPath = $PlanPath
+  planSelection = $planSelection
   planId = if($plan){$plan.planId}else{''}
+  planTaskId = Limit-Text $planTaskId 120
+  planTaskMatch = $planTaskMatch
+  planVersion = $planVersion
   observedProblem = if($plan){$plan.observedProblem}else{''}
   expectedOptimization = Limit-Text $expected 700
   verificationMethod = Limit-Text $verification 700

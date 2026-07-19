@@ -46,6 +46,7 @@ function New-AgentSkillCandidate([string]$Name, [string]$Path, [string]$Reason) 
 }
 
 $requiredScripts = @(
+  'bootstrap.ps1',
   'install.ps1',
   'install-agent.ps1',
   'install-ui.ps1',

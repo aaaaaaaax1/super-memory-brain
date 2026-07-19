@@ -8,6 +8,7 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'internal\user-adaptation-core.ps1')
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -73,6 +74,8 @@ $procedureExpectations = New-Object System.Collections.ArrayList
 [void]$cards.Add((New-Card 'user_hard_rule' 'Do not make the user repeatedly remind the agent; repeated feedback must become a proactive execution constraint.' 'user feedback: do not repeatedly remind me' 0.99 $true))
 [void]$cards.Add((New-Card 'user_hard_rule' 'When a multi-layer or long-running task is unfinished, report only progress/process summary, remaining steps, blockers, and next action; never word a partial layer as if the whole task is complete.' 'user feedback: unfinished tasks must not look completed' 0.99 $true))
 [void]$driftGuards.Add('partial_progress_reported_as_final_completion')
+[void]$cards.Add((New-Card 'user_hard_rule' 'After completing one line of a multi-line task, list the main line, the line completed now, unfinished lines, and the next line; follow the latest explicit user priority, otherwise resume the suspended parent.' 'user feedback: multi-line task closeout and priority' 0.99 $true))
+[void]$driftGuards.Add('multi_line_closeout_or_priority_lost')
 [void]$cards.Add((New-Card 'cognitive_control' 'Before executing, recall relevant decisions, accepted constraints, similar experiences, and known failure modes; memory is an execution control layer, not only storage.' '0.5.70 cognitive execution loop' 0.98 $true))
 
 [void]$cards.Add((New-Card 'cognitive_control' 'Use memory types deliberately: semantic memory for stable facts, episodic memory for prior task traces/failures, procedural memory for reusable workflows/checklists, and working memory for current task state.' '0.5.70 cognitive execution loop / CoALA-LangChain-style memory separation' 0.92 $true))
@@ -122,12 +125,37 @@ if ($skillCapabilityMap) {
 # Intent classification.
 $intent = $null
 try {
-  $intentRaw = @(& (Join-Path $PSScriptRoot 'intent-router.ps1') $inputText -Json 2>$null)
+  $intentRaw = @(& (Join-Path $PSScriptRoot 'intent-router.ps1') -Text $inputText -Json 2>$null)
   if ($intentRaw) { $intent = (($intentRaw -join "`n") | ConvertFrom-Json) }
 } catch {}
 $intentName = if ($intent -and $intent.intent) { [string]$intent.intent } else { 'general_task' }
 $engineeringActivation = Get-EngineeringJudgmentActivation $intentName
 $engineeringRequired = ($engineeringActivation.required -eq $true)
+$userAdaptationContext = if ($lower -match 'debug|fix|repair|bug|failure|root cause|\u8c03\u8bd5|\u4fee\u590d|\u6545\u969c|\u6839\u56e0') { 'debugging' }
+  elseif ($lower -match 'review|audit|inspect|\u5ba1\u67e5|\u5ba1\u6838|\u68c0\u67e5') { 'review' }
+  elseif ($lower -match 'design|ui|ux|layout|\u8bbe\u8ba1|\u754c\u9762|\u5e03\u5c40') { 'design' }
+  elseif ($lower -match 'release|publish|deploy|\u53d1\u5e03|\u90e8\u7f72|\u4e0a\u7ebf') { 'release' }
+  elseif ($lower -match 'plan|architecture|migration|tradeoff|\u89c4\u5212|\u67b6\u6784|\u8fc1\u79fb|\u65b9\u6848') { 'planning' }
+  elseif ($intentName -eq 'add_or_optimize_feature' -or $lower -match 'code|implement|refactor|module|\u4ee3\u7801|\u5f00\u53d1|\u529f\u80fd|\u91cd\u6784|\u6a21\u5757') { 'coding' }
+  else { 'general' }
+$userAdaptationPacket = [pscustomobject]@{ok=$true;enabled=$true;applies=$false;context=$userAdaptationContext;directiveCount=0;tokenEstimate=0;directives=@();preferences=@();rawPromptStored=$false;guard='Current explicit user instruction always wins.'}
+try {
+  $userAdaptationPacket = Get-UserAdaptationPacket -Root $Root -Context $userAdaptationContext -WorkspaceKey (Get-SuperBrainWorkspaceKey) -WorkflowKey $intentName
+  $adaptationPreferences = @($userAdaptationPacket.preferences)
+  $adaptationDirectives = @($userAdaptationPacket.directives)
+  for ($adaptationIndex = 0; $adaptationIndex -lt [Math]::Min($adaptationPreferences.Count,$adaptationDirectives.Count); $adaptationIndex++) {
+    $preference = $adaptationPreferences[$adaptationIndex]
+    [void]$cards.Add((New-Card 'user_adaptation' ([string]$adaptationDirectives[$adaptationIndex]) ("user-adaptation/$($preference.scope)/$($preference.habitKey)") ([double]$preference.confidence) $false))
+  }
+} catch {}
+if($intentName -eq 'add_or_optimize_feature' -or ($intent -and @($intent.dispatchHints) -contains 'collaborative_intent')){
+  [void]$cards.Add((New-Card 'product_coherence' 'Treat a feature as a product capability, not an isolated function: state the real outcome, product role, existing entry-to-result flow, non-goals, affected state, and acceptance before mutation.' 'references/collaborative-intent.md' 0.98 $true))
+  [void]$cards.Add((New-Card 'bounded_autonomy' 'Reversible alone is insufficient. Classify the change as direct, align, or discuss using goal clarity, product impact, blast radius, rollback quality, external effects, wrong-direction cost, and verification cost.' 'references/collaborative-intent.md' 0.98 $true))
+  [void]$cards.Add((New-Card 'risk_based_verification' 'Use the smallest useful verification budget: targeted check for local work, core path plus one regression for workflow work, integration and rollback checks for structural work.' 'references/collaborative-intent.md' 0.96 $true))
+  [void]$driftGuards.Add('feature_implemented_without_product_role')
+  [void]$driftGuards.Add('feature_flow_integration_not_checked')
+  [void]$procedureExpectations.Add([pscustomobject]@{ cardId='collaborative-intent'; source='references/collaborative-intent.md'; stepFlow=@('state the real outcome and product role','map existing entry, state, output, and follow-up','classify direct/align/discuss autonomy tier','name non-goals and minimum verification','stop before mutation when a material product branch remains'); verificationChecklist=@('intent_contract_present','product_role_present','flow_integration_present','non_goals_present','verification_budget_proportional'); driftGuards=@('feature_implemented_without_product_role','feature_flow_integration_not_checked') })
+}
 if ($engineeringRequired) {
   [void]$cards.Add((New-Card 'engineering_judgment' 'Separate FACT, INFERENCE, and UNKNOWN. Every fact requires named current evidence; memory and plausible explanations remain inference until verified.' 'references/engineering-judgment.md' 0.99 $true))
   [void]$cards.Add((New-Card 'engineering_judgment' 'Label root cause as verified, hypothesis, or unknown. Hypotheses and unknown causes require the cheapest discriminating test before causal certainty.' 'references/engineering-judgment.md' 0.99 $true))
@@ -242,10 +270,21 @@ foreach ($guard in @('acting_without_recalling_constraints','ignoring_user_hard_
   [void]$driftGuards.Add($guard)
 }
 
-$hardCards = @($cards | Where-Object { $_.hard })
-if ($engineeringRequired) { $hardCards = @($hardCards | Where-Object { $_.kind -eq 'engineering_judgment' }) + @($hardCards | Where-Object { $_.kind -ne 'engineering_judgment' }) }
+$priorityKinds = @()
+if ($userAdaptationPacket.applies) { $priorityKinds += 'user_adaptation' }
+if ($intentName -eq 'add_or_optimize_feature' -or ($intent -and @($intent.dispatchHints) -contains 'collaborative_intent')) {
+  $priorityKinds += @('product_coherence','bounded_autonomy','risk_based_verification','accepted_constraint')
+}
+if ($engineeringRequired) { $priorityKinds += 'engineering_judgment' }
+
+# Keep task-specific execution controls visible within the compact card budget.
+$priorityCards = @($cards | Where-Object { $_.kind -in $priorityKinds })
+$otherCards = @($cards | Where-Object { $_.kind -notin $priorityKinds })
+$orderedCards = @($priorityCards + $otherCards)
+$hardCards = @($orderedCards | Where-Object { $_.hard })
 $mustPreserve = @($hardCards | Select-Object -First $MaxItems | ForEach-Object { $_.claim })
-$shouldRecall = @($cards | Where-Object { -not $_.hard } | Select-Object -First $MaxItems | ForEach-Object { $_.claim })
+$shouldRecall = @($orderedCards | Where-Object { -not $_.hard } | Select-Object -First $MaxItems | ForEach-Object { $_.claim })
+$visibleCardLimit = [Math]::Max($MaxItems * 2, $MaxItems)
 
 $result = [pscustomobject]@{
   ok = $true
@@ -256,11 +295,12 @@ $result = [pscustomobject]@{
   intent = $intentName
   cognitiveMode = 'memory_driven_execution_control'
   required = $true
-  cards = @($cards | Select-Object -First ([Math]::Max($MaxItems * 2, $MaxItems)))
+  cards = @($orderedCards | Select-Object -First $visibleCardLimit)
   mustPreserve = @($mustPreserve)
   shouldRecall = @($shouldRecall)
   driftGuards = @($driftGuards | Select-Object -Unique)
   procedureExpectations = @($procedureExpectations)
+  userAdaptation = $userAdaptationPacket
   engineeringJudgment = [pscustomobject]@{
     required = $engineeringRequired
     activationReasons = @($engineeringActivation.reasons)

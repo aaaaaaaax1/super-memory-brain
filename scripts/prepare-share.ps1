@@ -67,6 +67,7 @@ package-root.txt
 memory-root.txt
 .memory-scope.json
 memory-sharing-policy.json
+runtime-layout.json
 
 # Generated caches
 __pycache__/
@@ -96,12 +97,12 @@ memory/workspace/last-*.log
 
 function ConvertTo-PublicText([string]$Text) {
   $memoryBase = Get-SuperBrainMemoryBaseRoot $Root
+  $workspaceRoot = Split-Path -Parent $Root
   $replacements = @(
     @{ From = $Root; To = '<package-root>' },
     @{ From = $memoryBase; To = '<memory-root>' },
-    @{ From = $env:USERPROFILE; To = '<user-home>' },
-    @{ From = '<user-home>'; To = '<user-home>' },
-    @{ From = 'G:\Ai\Zcode项目'; To = '<workspace-root>' }
+    @{ From = $workspaceRoot; To = '<workspace-root>' },
+    @{ From = $env:USERPROFILE; To = '<user-home>' }
   )
   $result = $Text
   foreach ($replacement in $replacements) {
@@ -145,7 +146,7 @@ Write-Utf8NoBom (Join-Path $Destination $MarkerName) "super-memory-brain-share`n
 
 $manifest = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
-$items = @('README.md','QUICK_START.md','COMMANDS.md','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','super-memory-brain','modules','references','tests','extensions')
+$items = @('README.md','QUICK_START.md','COMMANDS.md','FRIEND_INSTALL.md','install.bat','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','maintenance-policy.json','intelligence-policy.json','objective-benchmark-policy.json','route-map.json','capabilities.json','runtime-layout.example.json','runtime','super-memory-brain','modules','references','tests','extensions')
 foreach ($item in $items) {
   $src = Join-Path $Root $item
   if (Test-Path $src) {
@@ -153,12 +154,20 @@ foreach ($item in $items) {
   }
 }
 
+# Generated source/share trees never need local edit backups or temporary files.
+foreach ($generated in @(Get-ChildItem -LiteralPath $Destination -Recurse -Force -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)(\.bak(?:-|$)|\.tmp(?:\.|$))' })) {
+  Remove-Item -LiteralPath $generated.FullName -Force
+}
+
 $scriptDest = Join-Path $Destination 'scripts'
 New-Item -ItemType Directory -Force -Path $scriptDest | Out-Null
 foreach ($script in $manifest.scripts) {
   $src = Join-Path (Join-Path $Root 'scripts') $script
   if (-not (Test-Path $src)) { throw "Manifest script missing: $script" }
-  Copy-Item -LiteralPath $src -Destination (Join-Path $scriptDest $script) -Force
+  $destinationScript = Join-Path $scriptDest $script
+  $destinationParent = Split-Path -Parent $destinationScript
+  if (-not (Test-Path -LiteralPath $destinationParent)) { New-Item -ItemType Directory -Force -Path $destinationParent | Out-Null }
+  Copy-Item -LiteralPath $src -Destination $destinationScript -Force
 }
 
 $mem = Join-Path $Destination 'memory'
@@ -176,6 +185,14 @@ foreach ($f in $files) {
     Copy-Item -LiteralPath $src -Destination (Join-Path $runtime $f) -Force
     Copy-Item -LiteralPath $src -Destination (Join-Path $vendorDest $f) -Force
   }
+}
+
+# Tests may have generated Python caches in the source tree; never publish them.
+foreach ($cacheDir in @(Get-ChildItem -LiteralPath $Destination -Recurse -Directory -Force -Filter '__pycache__' -ErrorAction SilentlyContinue)) {
+  Remove-Item -LiteralPath $cacheDir.FullName -Recurse -Force
+}
+foreach ($cacheFile in @(Get-ChildItem -LiteralPath $Destination -Recurse -File -Force -Filter '*.pyc' -ErrorAction SilentlyContinue)) {
+  Remove-Item -LiteralPath $cacheFile.FullName -Force
 }
 
 $docPatterns = @('README*','LICENSE*','NOTICE*')

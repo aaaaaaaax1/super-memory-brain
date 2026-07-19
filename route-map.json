@@ -1,0 +1,346 @@
+{
+    "schemaVersion":  1,
+    "phase":  "phase6-strict-routing",
+    "createdFrom":  "strict-route-regression-20260714",
+    "hotPathRule":  "Classify intent first, read at most one hot/primary reference, then follow secondary references only when the primary route explicitly requires them.",
+    "routes":  [
+                    {
+                        "route":  "normal_chat",
+                       "triggers":  [
+                                        "ordinary chat",
+                                        "simple explanation",
+                                        "false trigger negative"
+                                    ],
+                       "read":  [
+
+                                ],
+                       "doNotRead":  [
+                                         "super-memory-brain/SKILL.md",
+                                         "references/*",
+                                         "manifest.json"
+                                     ],
+                       "memoryBehavior":  "none",
+                        "userVisibleNoise":  "no G1/status/process narration"
+                    },
+                    {
+                        "route":  "browser_automation",
+                        "triggers":  [
+                                         "browser automation",
+                                         "Playwright",
+                                         "browser-act"
+                                     ],
+                        "read":  [
+                                     "playwright skill by default"
+                                 ],
+                        "doNotRead":  [
+                                          "browser-act skill unless explicitly requested or Playwright is unreliable"
+                                      ],
+                        "memoryBehavior":  "persist only the selected route and reason; never persist the raw prompt",
+                        "userVisibleNoise":  "state the selected browser route only when it affects execution",
+                        "selection":  {
+                                          "default":  "playwright",
+                                          "fallback":  "browser-act",
+                                          "fallbackConditions":  [
+                                                                     "explicit user request",
+                                                                     "Playwright cannot reliably complete the task"
+                                                                 ]
+                                      }
+                    },
+                    {
+                        "route":  "bare_wake",
+                       "triggers":  [
+                                        "Super Brain",
+                                        "G1",
+                                        "explicit Super Brain control"
+                                    ],
+                       "read":  [
+                                    "super-memory-brain/SKILL.md"
+                                ],
+                       "doNotRead":  [
+                                         "manifest.json",
+                                         "scripts/verify-package.ps1",
+                                         "deep recall"
+                                     ],
+                       "memoryBehavior":  "no durable memory by default",
+                       "userVisibleNoise":  "short ready/control response"
+                   },
+                   {
+                       "route":  "current_task_status",
+                       "triggers":  [
+                                        "task status",
+                                        "current progress",
+                                        "where are we",
+                                        "next step"
+                                    ],
+                       "read":  [
+                                    "references/status-recovery.md"
+                                ],
+                       "doNotRead":  [
+                                         "doctor",
+                                         "CI",
+                                         "verify-package",
+                                         "broad recall"
+                                     ],
+                       "memoryBehavior":  "visible/checkpoint first",
+                       "userVisibleNoise":  "no system health dump",
+                       "secondaryColdReferences":  [
+                                                       "references/task-identity-index.md via references/status-recovery.md only"
+                                                   ]
+                   },
+                   {
+                       "route":  "system_status",
+                       "triggers":  [
+                                        "Super Brain status",
+                                        "version status",
+                                        "G1 health"
+                                    ],
+                       "read":  [
+                                    "super-memory-brain/SKILL.md",
+                                    "memory/workspace/super-brain-state.json",
+                                    "memory/workspace/status-card.json"
+                                ],
+                       "doNotRead":  [
+                                         "references/install-refresh.md unless explicit maintenance",
+                                         "full package verify unless requested"
+                                     ],
+                       "memoryBehavior":  "lightweight state first",
+                       "userVisibleNoise":  "compact health/state summary"
+                   },
+                   {
+                       "route":  "current_session_continue",
+                       "triggers":  [
+                                        "continue current explanation",
+                                        "resume visible task"
+                                    ],
+                       "read":  [
+                                    "visible context",
+                                    "current checklist"
+                                ],
+                       "doNotRead":  [
+                                         "deep recall",
+                                         "cross-session recall"
+                                     ],
+                       "memoryBehavior":  "visible context first",
+                       "userVisibleNoise":  "no memory process narration"
+                   },
+                   {
+                       "route":  "historical_recovery",
+                       "triggers":  [
+                                        "continue previous",
+                                        "last time",
+                                        "another session"
+                                    ],
+                       "read":  [
+                                    "references/status-recovery.md"
+                                ],
+                       "doNotRead":  [
+                                         "doctor",
+                                         "CI"
+                                     ],
+                       "memoryBehavior":  "checkpoint then summary recall",
+                       "userVisibleNoise":  "compact evidence only",
+                       "secondaryColdReferences":  [
+                                                       "references/task-identity-index.md via references/status-recovery.md only"
+                                                   ]
+                   },
+                   {
+                       "route":  "memory_recall",
+                       "triggers":  [
+                                        "还记得",
+                                        "do you remember",
+                                        "recall a stable preference, decision, or rule"
+                                    ],
+                       "read":  [
+                                    "references/memory-governance.md"
+                                ],
+                       "doNotRead":  [
+                                         "raw transcript history",
+                                         "foreign workspace checkpoints",
+                                         "deep recall when bounded evidence is sufficient"
+                                     ],
+                       "memoryBehavior":  "bounded evidence-card recall with calibrated relevance; previous-session wording still routes to historical recovery",
+                       "userVisibleNoise":  "answer from current verified evidence or abstain"
+                   },
+                   {
+                       "route":  "agent_bridge_channel",
+                       "triggers":  [
+                                        "explicit agent channel",
+                                        "explicit subagent channel",
+                                        "agent bridge",
+                                        "open/connect/send/read/close channel"
+                                    ],
+                       "read":  [
+                                    "references/agent-bridge.md"
+                                ],
+                       "doNotRead":  [
+                                         "host explorer help",
+                                         "host worker help"
+                                     ],
+                       "memoryBehavior":  "no durable memory by default; compatibility only",
+                       "userVisibleNoise":  "legacy/manual-only bridge route only"
+                   },
+                   {
+                       "route":  "privacy_memory_gate",
+                       "triggers":  [
+                                        "remember API key",
+                                        "remember token",
+                                        "store secret"
+                                    ],
+                       "read":  [
+                                    "references/memory-governance.md"
+                                ],
+                       "doNotRead":  [
+                                         "Sandglass write",
+                                         "raw transcript storage"
+                                     ],
+                       "memoryBehavior":  "refuse durable secret write",
+                       "userVisibleNoise":  "brief privacy boundary"
+                   },
+                   {
+                       "route":  "memory_write_candidate",
+                       "triggers":  [
+                                        "remember preference",
+                                        "stable rule",
+                                        "project decision"
+                                    ],
+                       "read":  [
+                                    "references/memory-governance.md"
+                                ],
+                       "doNotRead":  [
+                                         "secret storage",
+                                         "raw transcript storage"
+                                     ],
+                       "memoryBehavior":  "compact candidate with conflict check",
+                       "userVisibleNoise":  "brief confirmation only"
+                   },
+                   {
+                       "route":  "workflow_preference_recall",
+                       "triggers":  [
+                                        "terse request matching a configured canonical workflow preference",
+                                        "git怎么写",
+                                        "git呢",
+                                        "怎么提交",
+                                        "提交怎么写"
+                                    ],
+                       "read":  [
+                                    "references/memory-governance.md"
+                                ],
+                       "doNotRead":  [
+                                         "deep recall",
+                                         "generic command templates"
+                                     ],
+                       "memoryBehavior":  "one bounded exact canonical recall; current verified record only",
+                       "hardGate":  "No unique current verified record means no answer-format invention; resolved record requires Summary, Description, and Commit button text only; no generic Git commands or apology.",
+                       "userVisibleNoise":  "return the canonical requested format directly"
+                   },
+                   {
+                       "route":  "direct_answer",
+                       "triggers":  [
+                                        "simple code",
+                                        "small regex",
+                                        "single direct answer"
+                                    ],
+                       "read":  [
+
+                                ],
+                       "doNotRead":  [
+                                         "skill-orchestrator/SKILL.md",
+                                         "capabilities.json",
+                                         "deep recall"
+                                     ],
+                       "memoryBehavior":  "none",
+                       "userVisibleNoise":  "no route narration"
+                   },
+                   {
+                       "route":  "orc_complex_routing",
+                       "triggers":  [
+                                        "multi-step",
+                                        "migration",
+                                        "tests",
+                                        "release",
+                                        "cross-domain work"
+                                    ],
+                       "read":  [
+                                    "references/orc-routing.md",
+                                    "capabilities.json"
+                                ],
+                       "doNotRead":  [
+                                         "load-all-skills"
+                                     ],
+                       "memoryBehavior":  "memory only when continuity matters",
+                       "userVisibleNoise":  "concise route plan"
+                   },
+                   {
+                       "route":  "collaborative_intent",
+                       "triggers":  [
+                                        "add feature",
+                                        "feature request",
+                                        "product behavior",
+                                        "user flow",
+                                        "connect capability",
+                                        "wire into existing flow",
+                                        "improve module",
+                                        "faster module",
+                                        "功能",
+                                        "新功能",
+                                        "增加功能",
+                                        "工作流",
+                                        "自动化"
+                                    ],
+                       "read":  [
+                                    "references/collaborative-intent.md"
+                                ],
+                       "doNotRead":  [
+                                         "full project history",
+                                         "all memory bodies",
+                                         "load-all-skills"
+                                     ],
+                       "memoryBehavior":  "project model first; shared experience only as compact promoted evidence cards",
+                       "userVisibleNoise":  "two-to-four sentence intent contract for meaningful feature work"
+                   },
+                   {
+                       "route":  "maintenance_hot_refresh",
+                       "triggers":  [
+                                        "refresh Super Brain",
+                                        "hot-refresh",
+                                        "install",
+                                        "repair"
+                                    ],
+                       "read":  [
+                                    "references/install-refresh.md"
+                                ],
+                       "doNotRead":  [
+                                         "deep recall",
+                                         "destructive install without approval"
+                                     ],
+                       "memoryBehavior":  "none by default",
+                       "userVisibleNoise":  "approval-aware maintenance",
+                       "secondaryColdReferences":  [
+                                                       "references/package-shape.md via references/install-refresh.md only"
+                                                   ]
+                   },
+                   {
+                       "route":  "single_agent_subagent_workflow",
+                       "triggers":  [
+                                        "subagent execution",
+                                        "subagent review",
+                                        "subagent verification",
+                                        "executor subagent",
+                                        "reviewer subagent",
+                                        "verifier subagent"
+                                    ],
+                       "read":  [
+                                    "references/single-agent-subagent-workflow.md",
+                                    "references/orc-routing.md"
+                                ],
+                       "doNotRead":  [
+                                         "references/agent-bridge.md",
+                                         "agent-bridge-channel.ps1",
+                                         "host explorer help",
+                                         "host worker help"
+                                     ],
+                       "memoryBehavior":  "no durable memory by default; evidence-only closeout when required",
+                       "userVisibleNoise":  "structured task/result/audit cards only"
+                   }
+               ]
+}

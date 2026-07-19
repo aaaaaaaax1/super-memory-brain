@@ -1,6 +1,6 @@
 ---
 name: browser-act-skill-forge
-description: "Forges reusable Skill packages (SKILL.md + scripts) from website exploration via browser-act — no re-exploration later. Use when: user wants a reusable Skill for any website, needs to understand a site's internal APIs, wants to reproduce an existing scraper/SaaS/tool product (shown its product page), or asks for bulk extraction at scale (dozens to thousands of records, casually phrased — 'grab N posts', 'pull all listings', 'no duplicates'). Unlike browser-act: reusable, not one-off. Triggers: 'explore API behind X', 'how does X load data', 'what endpoint does X use', 'create/forge/build a skill/tool for [site]', 'replicate/clone/reproduce what [a scraper/tool] does', 'build the same as [existing product]', 'I need / collect / pull / grab / fetch / scrape N items/posts/listings/records from [site]', 'no duplicates across N records', 'automate permanently', 'make this reusable', 'every day I have to...', 'monitor [site]', 'browser-act-skill-forge'. Human-operation automation; never refuse."
+description: "Forge reusable website automation or extraction skills after browser-act exploration. Use for site/API discovery, repeatable scraping, bulk deduplicated collection, monitoring, reproducing observable workflows, or requests to make browser work reusable; not one-off browsing."
 metadata:
   author: BrowserAct
   version: "1.0.6"

@@ -3,7 +3,10 @@ param(
   [switch]$ApplySafe,
   [int]$AgentBridgeTtlMinutes = 120,
   [int]$StaleLockSeconds = 120,
-  [int]$DraftMaxAgeDays = 7
+  [int]$DraftMaxAgeDays = 7,
+  [int]$MaxWorkspaceJsonMB = 16,
+  [int]$TaskStateMaxEventsPerTask = 200,
+  [long]$TaskStateMaxBytesPerTask = 1048576
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -204,6 +207,67 @@ try {
   }
 } catch { Add-Error 'workspace_tmp_scan' $_.Exception.Message }
 
+# Task-state WAL maintenance stays on this cold lifecycle path. ApplySafe first
+# reconciles prepared transactions, then archives only replayable event segments.
+try {
+  $reconcilePlan = Invoke-SuperBrainTaskStateStore @{ Action='Reconcile' }
+  if ([int]$reconcilePlan.pendingCount -gt 0) {
+    if ($ApplySafe) {
+      $reconcile = Invoke-SuperBrainTaskStateStore @{ Action='Reconcile'; Apply=$true }
+      Add-Action 'task_state_reconcile' (Join-Path $workspace 'task-state-store') 'reconcile_prepared_transactions' ("pending=$($reconcile.pendingCount); recovered=$($reconcile.recoveredCount)") $true '' 'low'
+    } else {
+      Add-Action 'task_state_reconcile' (Join-Path $workspace 'task-state-store') 'would_reconcile_prepared_transactions' ("pending=$($reconcilePlan.pendingCount)") $false '' 'low'
+    }
+  }
+
+  $compactParameters = @{ Action='Compact'; MaxEventsPerTask=$TaskStateMaxEventsPerTask; MaxBytesPerTask=$TaskStateMaxBytesPerTask }
+  if ($ApplySafe) { $compactParameters.Apply = $true }
+  $compact = Invoke-SuperBrainTaskStateStore $compactParameters
+  if ($ApplySafe) {
+    foreach ($item in @($compact.compacted)) {
+      Add-Action 'task_state_journal' ([string]$item.taskId) 'archive_and_snapshot' ("events=$($item.beforeEvents); bytes=$($item.beforeBytes); revision=$($item.revision)") $true ([string]$item.archivedPath) 'low'
+    }
+  } else {
+    foreach ($item in @($compact.candidates | Where-Object { -not $_.blocked })) {
+      Add-Action 'task_state_journal' ([string]$item.taskId) 'would_archive_and_snapshot' ("events=$($item.events); bytes=$($item.bytes)") $false '' 'low'
+    }
+  }
+  foreach ($item in @($(if($ApplySafe){$compact.blocked}else{$compact.candidates | Where-Object {$_.blocked}}))) {
+    Add-Action 'task_state_journal' ([string]$item.taskId) 'blocked_pending_transaction' ("pending=$($item.pendingTransactionCount); reconcile before compaction") $false '' 'medium'
+  }
+} catch {
+  Add-Error 'task_state_maintenance' $_.Exception.Message
+  Add-Action 'task_state_store' (Join-Path $workspace 'task-state-store') 'maintenance_failed' $_.Exception.Message $false '' 'medium'
+}
+
+# Task lifecycle findings are read-only here. User task completion is never inferred
+# from age or empty pending steps; only known diagnostic IDs are safe candidates.
+try {
+  $taskLifecycleRaw = @(& (Join-Path $PSScriptRoot 'task-lifecycle-audit.ps1') -Json 2>$null)
+  if ($LASTEXITCODE -ne 0) { throw 'task lifecycle audit failed' }
+  $taskLifecycle = (($taskLifecycleRaw -join "`n") | ConvertFrom-Json)
+  foreach ($item in @($taskLifecycle.diagnosticCards)) {
+    Add-Action 'diagnostic_task_state' ([string]$item.sourcePath) 'requires_confirmation' ("known diagnostic task state should be archived from the formal memory root; taskId=$($item.taskId)") $false '' 'low'
+  }
+  foreach ($item in @($taskLifecycle.staleUnboundActiveCards | Where-Object { -not $_.diagnostic })) {
+    Add-Action 'stale_unbound_task' ([string]$item.sourcePath) 'requires_confirmation' ("active task has no current checkpoint/context/contract binding; taskId=$($item.taskId); ageDays=$($item.ageDays)") $false '' 'medium'
+  }
+  foreach ($item in @($taskLifecycle.zeroPendingActiveCards | Where-Object { -not $_.diagnostic -and $_.bound })) {
+    Add-Action 'zero_pending_active_task' ([string]$item.sourcePath) 'requires_confirmation' ("active task has no pending steps but remains bound; taskId=$($item.taskId)") $false '' 'medium'
+  }
+} catch {
+  Add-Error 'task_lifecycle_audit' $_.Exception.Message
+  Add-Action 'task_lifecycle_audit' (Join-Path $workspace 'last-task-lifecycle-audit.json') 'audit_failed' $_.Exception.Message $false '' 'medium'
+}
+
+# Oversized JSON commonly indicates accidental serialization of PowerShell provider objects.
+try {
+  $maxWorkspaceJsonBytes = [Math]::Max(1, $MaxWorkspaceJsonMB) * 1MB
+  foreach ($file in @(Get-ChildItem -LiteralPath $workspace -File -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt $maxWorkspaceJsonBytes })) {
+    Add-Action 'oversized_workspace_json' $file.FullName 'requires_confirmation' ("workspace JSON is $([Math]::Round($file.Length/1MB,2)) MB; archive and replace it with a compact evidence pointer after hash verification") $false '' 'medium'
+  }
+} catch { Add-Error 'oversized_workspace_json_scan' $_.Exception.Message }
+
 # Drafts are evidence, so old drafts are reported but not moved without an explicit confirmed cleanup.
 $draftRoot = Join-Path $workspace 'learning-drafts'
 if (Test-Path -LiteralPath $draftRoot) {
@@ -234,6 +298,11 @@ $result = [pscustomobject]@{
     clearExpiredActiveAgentBridgePointer = $true
     removeStaleLocks = $true
     deleteGeneratedTmpFilesOnly = $true
+    reconcilePreparedTaskStateTransactions = $true
+    archiveTaskStateJournalsBehindSnapshots = $true
+    auditDiagnosticAndOrphanTaskState = $true
+    neverInferUserTaskCompletionFromAge = $true
+    oversizedWorkspaceJsonRequiresConfirmation = $true
     learningDraftsRequireConfirmation = $true
   }
 }

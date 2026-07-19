@@ -1,6 +1,6 @@
 ---
 name: skill-orchestrator
-description: Internal ORC routing layer for Super Memory Brain after the public `super-memory-brain` entry skill is explicitly active. Use only for non-trivial routing decisions, smallest-useful skill/tool selection, workflow coordination, evidence-gated review, or Agent Bridge coordination. Do not claim the public Super Brain trigger; do not load full ORC for simple direct answers where visible context is enough.
+description: "Internal ORC router used only after Super Memory Brain is active. Use for non-trivial multi-domain routing, smallest-useful skill/tool selection, workflow coordination, evidence review, or Agent Bridge; skip simple direct tasks."
 ---
 
 ## Installed Root Markers
@@ -112,6 +112,11 @@ The user should not need to remember skill names.
 Use `capabilities.json` and existing package scripts as the cold source of truth
 for capability ownership instead of embedding a full skill catalog here.
 
+Context budget is an execution constraint. Select the smallest useful skill set,
+load bodies only after routing, and reject always-on catalogs, long examples,
+command manuals, or memory payloads. Any expansion of startup text or skill
+metadata must report its measured size delta and stay within the package guard.
+
 ## Memory Governance
 
 ORC schedules memory work; G1 governs memory admission.
@@ -185,6 +190,13 @@ Subagents provide evidence-backed reports only. Commander decides. Code-capable
 subagents require explicit authorization with file boundaries, verification
 commands, rollback notes, and drift-guard supervision.
 
+Choose `team_parallel` whenever two or more sidecars are independent, bounded,
+and non-blocking for the controller's immediate critical path. Keep writes
+disjoint. The controller continues the critical path locally, integrates each
+result once, and rejects unverified findings. Internal subagents must not call
+`execution-contract.ps1`, alter current-task state, write durable memory, or
+resume/complete a parent task; stateful probes use an isolated `StateRoot`.
+
 Agent Bridge is separate from delegation:
 
 - `agent_bridge_channel` opens/connects/sends/reads a local channel.
@@ -199,8 +211,8 @@ Use tools when live evidence/action is required or materially faster.
 - Prefer `rg`/`rg --files` for search.
 - Use structured parsers/APIs when available.
 - Use package scripts for package behavior instead of retyping large logic.
-- Browser operations default to `browser-act` unless Playwright is explicitly
-  requested or needed for Playwright tests/workflows.
+- Browser operations default to Playwright. Use `browser-act` only when the user
+  explicitly requests it or Playwright cannot reliably complete the operation.
 - Web/current/recommendation/high-stakes facts require current source checks.
 
 Ask before destructive cleanup, broad overwrites, global bootstrap/hook rewrites,

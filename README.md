@@ -2,10 +2,12 @@
 
 `super-memory-brain-package` 是一个可分发的超级记忆大脑技能包。它把一个统一入口技能、三个功能模块、NexSandglass 本地记忆引擎、安装脚本、状态检查脚本和本地记忆目录放在一起，方便安装、备份、迁移和查看。
 
+默认安装入口是包根目录的 `install.bat`（分享包也带此入口），它转发到统一 `scripts\bootstrap.ps1` 完成技能、hook、正式记忆根、MCP 和集成验证。首次加载“超级大脑”时，hook 还会自主检查 MCP 是否存在、是否绑定当前包和正式记忆根；发现过期或临时路径时会自动修复并要求新任务重新发现 MCP。图形界面和交互菜单是备用入口，分别使用 `install.bat ui` 和 `install.bat console`。朋友安装和隐私边界见 `FRIEND_INSTALL.md`。
+
 ## 当前版本
 
 ```text
-0.5.79
+0.5.96
 ```
 
 版本信息见：
@@ -14,6 +16,21 @@
 manifest.json
 CHANGELOG.md
 ```
+
+## 客观评测边界
+
+`scripts\intelligence-eval.ps1` 只用于包内回归验收，其加权值不是客观智能分。
+当前外部客观状态是 `not_scored`。可比较结论必须在相同模型、版本、工具、
+预算和环境下做基础 Codex 与 Codex+超级大脑的官方基准配对 A/B，只改变
+`super_memory_brain_enabled`，并保留盲评和官方 harness 工件。
+
+```powershell
+scripts\objective-benchmark.ps1 -Action Plan -Json
+scripts\objective-benchmark.ps1 -Action Evaluate -ResultsPath <paired-run.json> -ReportPath <report.json> -Json
+```
+
+报告只给出每个公开基准的原始通过率、配对增益、置信区间和胜负数，不把
+SWE-bench、BFCL、LongMemEval、tau3-bench 拼成自定义总分。
 
 ## 扩展和技能能力中心
 
@@ -189,7 +206,7 @@ G1审记，ORC调度，沙漏只存稳态；隐私记忆需确认并标 [PRIVACY
 - `scripts\workspace-lifecycle-manager.ps1` 处理过期 `session-binding.json`、过期/关闭 Agent Bridge 临时通道、陈旧 active pointer、陈旧锁、生成型 tmp 文件。
 - `scripts\auto-hygiene-runner.ps1` 对过长记忆和精确重复记忆做证据归档后压缩/清理；物理删改后同步重建 Sandglass、SQLite FTS、Shadow Sand 和图谱行号；隐私命中只提示确认，不自动删除。
 - `scripts\post-task-maintenance.ps1` 在任务验证后串起生命周期维护、记忆卫生、自改进队列、状态快照。
-- `scripts\self-improvement-queue.ps1` 把遗漏、自动化缺口、反复提醒、逻辑断点变成候选项；候选项默认不改技能、不发布、不越权。
+- `scripts\self-improvement-queue.ps1` 用稳定问题家族管理遗漏、自动化缺口和逻辑断点。`Status` 零写入，`Collect` 只更新家族计数，`Resolve` 必须携带验证证据，`Maintain` 同步反思终态并把关闭、重复、陈旧或超预算实例写入可恢复归档；活跃候选默认不超过 32 个，且不改技能、不发布、不越权。
 
 压缩/续接时的优先级固定为：可见上文 → 压缩摘要/记录 → checkpoint/status/ledger/最近工具结果 → 长期记忆补充。长期记忆不能覆盖更新的可见上下文。
 
@@ -221,6 +238,8 @@ memory_mode: auto / force / off
 ```
 
 检索默认使用 Hybrid Recall：把 Sandglass 搜索、`memory\graph.jsonl` 决策/版本关系、`CURRENT_BASELINE.md` / `manifest.json` / `CHANGELOG.md` 状态锚点、最近记忆 fallback 统一成 `sourceType`、`score`、`confidence`、`reason`、`tokenEstimate` 候选，再按 `TopK` / `MaxTokens` 返回少量证据；过期、stale、负反馈记忆降权，不自动删除。用户说“不是这个 / 别按上次 / 不对 / 错了 / 以后不要”时写为负反馈，防止错误记忆反复出现。
+
+从 `0.5.96` 开始，Sandglass 候选检索采用自适应稀疏链：先用本地 FTS5 完成低延迟关联召回，候选不足时再调用 IDX 模糊索引，全部未命中时才进入旧四路路由兜底；随后仍由 `BrainCore` 统一执行图关系、来源、时效、置信度和未知事实拒答。该路径不增加启动文本，也不要求向量模型或外部图数据库。
 
 从 `0.5.78` 开始，超级大脑增加跨路由的“工程判断”能力：修复、优化、架构、性能、迁移、根因和最优方案任务会自动启用 `references/engineering-judgment.md`，普通问候和低风险小任务仍保持直接路径。`scripts/engineering-decision-gate.ps1` 强制区分 `FACT / INFERENCE / UNKNOWN`，事实必须绑定当前证据，根因必须标记 `verified / hypothesis / unknown`，关键未知需要最低成本判别测试；没有目标、约束、备选、权衡、标准和未知解消证据时，不允许声称“最优”。每个执行步骤都要有输入、输出、验收和停止条件。
 
@@ -477,7 +496,7 @@ scripts\install-agent.ps1 -AgentName my-agent -SkillRoot "D:\SomeAgent\skills" -
 scripts\migrate-memory-layout.ps1 -Apply
 ```
 
-安装时会自动刷新真实 `session-start` hook 里的超级大脑路径，让新会话指向当前这份包。安装脚本会先备份已有 skill，失败时自动回滚；换电脑或移动目录后，重新运行 `install.ps1` 即可更新 hook 路径。
+安装时会自动刷新真实 `session-start` hook 里的超级大脑路径，让新会话指向当前这份包。安装脚本会先备份已有 skill，失败时自动回滚；默认不会清理历史安装备份，只有显式使用 `-PruneBackups`（可配合 `-KeepBackups`）或运行 `cleanup-install-backups.ps1 -Apply` 才会删除旧备份。换电脑或移动目录后，重新运行 `install.ps1` 即可更新 hook 路径。
 
 热加载约定：已安装 skill 正文保持轻量副本，运行时通过 `package-root.txt` 和 `memory-root.txt` 动态指向当前包和当前记忆根。`memory-mode.ps1`、`install-agent.ps1` 或手动更新 marker 后，不需要重写 skill 正文；下一次加载该 skill 时会读取最新 root marker。改动包内技能/规则/runtime 后，应主动运行 `scripts\hot-refresh-skills.ps1 -AllKnown` 轻量刷新已安装 Agent 技能副本、root marker 和 memory runtime；如果 Agent 缓存了技能内容，则新开会话后生效。
 

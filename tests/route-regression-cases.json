@@ -1,8 +1,8 @@
 {
     "schemaVersion":  1,
-    "phase":  "phase2-regression-cases",
-    "createdFrom":  "baseline-observed-route-results.json",
-    "strictRule":  "Default mode allows known_baseline_gap; Strict mode fails every gap and is required before Phase 6 completion.",
+    "phase":  "phase6-strict-regression-cases",
+    "createdFrom":  "strict-route-regression-20260714",
+    "strictRule":  "Strict mode is required; no baseline routing mismatch is accepted.",
     "cases":  [
                   {
                       "id":  "normal-chat-hello",
@@ -102,8 +102,8 @@
                       "tags":  [
                                    "status"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "system-status",
@@ -131,8 +131,8 @@
                                    "status",
                                    "zh"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "zh-where-now-status",
@@ -151,8 +151,8 @@
                                    "zh",
                                    "semantic"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "continue-current-explain",
@@ -194,8 +194,8 @@
                       "tags":  [
                                    "continue"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "zh-continuation-last",
@@ -215,8 +215,8 @@
                                    "continue",
                                    "zh"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "agent-bridge-open",
@@ -226,8 +226,8 @@
                       "tags":  [
                                    "agent_bridge"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "zh-agent-bridge-open",
@@ -255,8 +255,8 @@
                                    "agent_bridge",
                                    "zh"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "zh-subagent-bridge-open",
@@ -302,8 +302,8 @@
                                    "agent_bridge",
                                    "zh"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "false-trigger-user-agent",
@@ -314,8 +314,8 @@
                                    "negative",
                                    "agent"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "negative-agent-word-meaning",
@@ -343,8 +343,8 @@
                                    "agent",
                                    "zh"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "negative-user-agent-zh",
@@ -370,8 +370,8 @@
                                    "negative",
                                    "agent"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "negative-brain-confused",
@@ -404,8 +404,8 @@
                                    "memory",
                                    "privacy"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "zh-memory-privacy-api-key",
@@ -444,8 +444,8 @@
                                    "privacy",
                                    "zh"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "stable-preference-memory",
@@ -456,8 +456,8 @@
                                    "memory",
                                    "preference"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "zh-memory-preference",
@@ -482,12 +482,12 @@
                                    "preference",
                                    "zh"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "workflow-preference-git-how-to-write",
-                      "prompt":  "git\u600e\u4e48\u5199",
+                      "prompt":  "git怎么写",
                       "workspace":  "G:\\Atoapi",
                       "expectedRoute":  "workflow_preference_recall",
                       "observer":  "intent-router",
@@ -501,7 +501,7 @@
                   },
                   {
                       "id":  "workflow-preference-git-question",
-                      "prompt":  "git\u5462",
+                      "prompt":  "git呢",
                       "workspace":  "G:\\Atoapi",
                       "expectedRoute":  "workflow_preference_recall",
                       "observer":  "intent-router",
@@ -515,7 +515,7 @@
                   },
                   {
                       "id":  "workflow-preference-how-to-commit",
-                      "prompt":  "\u600e\u4e48\u63d0\u4ea4",
+                      "prompt":  "怎么提交",
                       "workspace":  "G:\\Atoapi",
                       "expectedRoute":  "workflow_preference_recall",
                       "observer":  "intent-router",
@@ -529,7 +529,7 @@
                   },
                   {
                       "id":  "workflow-preference-commit-how-to-write",
-                      "prompt":  "\u63d0\u4ea4\u600e\u4e48\u5199",
+                      "prompt":  "提交怎么写",
                       "workspace":  "G:\\Atoapi",
                       "expectedRoute":  "workflow_preference_recall",
                       "observer":  "intent-router",
@@ -543,7 +543,7 @@
                   },
                   {
                       "id":  "workflow-preference-git-spaced-punctuation",
-                      "prompt":  "Git \u600e\u4e48\u5199\uff1f",
+                      "prompt":  "Git 怎么写？",
                       "workspace":  "G:\\Atoapi",
                       "expectedRoute":  "workflow_preference_recall",
                       "observer":  "intent-router",
@@ -558,7 +558,7 @@
                   },
                   {
                       "id":  "workflow-preference-commit-message-how-to-write",
-                      "prompt":  "\u63d0\u4ea4\u4fe1\u606f\u600e\u4e48\u5199",
+                      "prompt":  "提交信息怎么写",
                       "workspace":  "G:\\Atoapi",
                       "expectedRoute":  "workflow_preference_recall",
                       "observer":  "intent-router",
@@ -572,7 +572,7 @@
                   },
                   {
                       "id":  "workflow-preference-commit-en-how-to-write",
-                      "prompt":  "commit\u600e\u4e48\u5199",
+                      "prompt":  "commit怎么写",
                       "workspace":  "G:\\Atoapi",
                       "expectedRoute":  "workflow_preference_recall",
                       "observer":  "intent-router",
@@ -586,7 +586,7 @@
                   },
                   {
                       "id":  "workflow-preference-negative-outside-scope",
-                      "prompt":  "git\u600e\u4e48\u5199",
+                      "prompt":  "git怎么写",
                       "workspace":  "G:\\OtherProject",
                       "expectedRoute":  "normal_chat",
                       "observer":  "intent-router",
@@ -632,8 +632,8 @@
                                    "orc",
                                    "budget"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "maintenance-hot-refresh",
@@ -643,8 +643,8 @@
                       "tags":  [
                                    "maintenance"
                                ],
-                      "knownBaselineGap":  true,
-                      "mustFixBeforePhase6":  true
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
                   },
                   {
                       "id":  "single-agent-subagent-modify",
@@ -707,6 +707,119 @@
                                ],
                       "knownBaselineGap":  false,
                       "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "natural-feature-integration-en",
+                      "prompt":  "help connect image generation into the existing project",
+                      "expectedRoute":  "add_or_optimize_feature",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "feature",
+                                   "semantic",
+                                   "engineering"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "natural-feature-wiring-en",
+                      "prompt":  "wire this into the existing user journey",
+                      "expectedRoute":  "add_or_optimize_feature",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "feature",
+                                   "semantic"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "natural-feature-integration-zh",
+                      "promptUnicodeCodes":  [
+                                                 24110,
+                                                 25105,
+                                                 25226,
+                                                 22270,
+                                                 29255,
+                                                 29983,
+                                                 25104,
+                                                 33021,
+                                                 21147,
+                                                 25509,
+                                                 20837,
+                                                 29616,
+                                                 26377,
+                                                 39033,
+                                                 30446
+                                             ],
+                      "expectedRoute":  "add_or_optimize_feature",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "feature",
+                                   "semantic",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "natural-optimization-zh",
+                      "promptUnicodeCodes":  [
+                                                 25226,
+                                                 36825,
+                                                 20010,
+                                                 27169,
+                                                 22359,
+                                                 25913,
+                                                 24471,
+                                                 26356,
+                                                 24555
+                                             ],
+                      "expectedRoute":  "add_or_optimize_feature",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "optimization",
+                                   "engineering",
+                                   "zh"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id": "natural-memory-recall-zh",
+                      "promptUnicodeCodes": [36824,35760,24471,27983,35272,22120,33258,21160,21270,29616,22312,20248,20808,29992,20160,20040,24037,20855,21527],
+                      "expectedRoute": "memory_recall",
+                      "observer": "intent-router",
+                      "tags": ["memory", "recall", "semantic", "zh"],
+                      "knownBaselineGap": false,
+                      "mustFixBeforePhase6": false
+                  },
+                  {
+                      "id": "natural-historical-recall-zh",
+                      "promptUnicodeCodes": [36824,35760,24471,19978,27425,30340,20219,21153,21527],
+                      "expectedRoute": "historical_recovery",
+                      "observer": "intent-router",
+                      "tags": ["memory", "historical", "semantic", "zh"],
+                      "knownBaselineGap": false,
+                      "mustFixBeforePhase6": false
+                  },
+                  {
+                      "id": "browser-default-playwright",
+                      "prompt": "Inspect the rendered invoice page in the browser.",
+                      "expectedRoute": "browser_automation",
+                      "observer": "intent-router",
+                      "tags": ["browser", "playwright", "default"],
+                      "knownBaselineGap": false,
+                      "mustFixBeforePhase6": false
+                  },
+                  {
+                      "id": "browser-fallback-explicit-unreliable",
+                      "prompt": "Playwright cannot reliably finish this browser check; fall back to browser-act.",
+                      "expectedRoute": "browser_automation",
+                      "observer": "intent-router",
+                      "tags": ["browser", "browser-act", "fallback"],
+                      "knownBaselineGap": false,
+                      "mustFixBeforePhase6": false
                   }
               ]
 }

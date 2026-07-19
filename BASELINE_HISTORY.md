@@ -1,9 +1,187 @@
 # BASELINE_HISTORY
 
+## 0.5.96
+
+Date: 2026-07-18
+Status: [CURRENT][VERIFIED]
+Change:
+- Add adaptive FTS5-first and IDX-fallback recall, cut warm p95 latency by about 97% on the measured path, and repair Windows mixed reader/writer index replacement without increasing startup context.
+- Preserve 12/12 recall evaluation and unknown-fact abstention; pass 736 mixed index operations with zero failures/errors/temp files, Pester 242/242, and package verification.
+- Keep the sealed 0.5.95 v13 holdout unconsumed and non-transferable; 0.5.96 remains `not_scored` until new independent evidence exists.
+Supersedes: 0.5.95
+Rollback: Restore 0.5.95 scripts/docs/manifest/baseline if 0.5.96 changes need to be disabled temporarily.
+
+## 0.5.95
+
+Date: 2026-07-18
+Status: [HISTORY][VERIFIED]
+Change:
+- Add a strict cold autonomy evidence ledger: evaluator counts derive only from verified task outcomes, governed authorizations, and linked closed corrections; generic completion and caller-supplied counts no longer qualify.
+Supersedes: 0.5.94
+Rollback: Restore 0.5.94 scripts/docs/manifest/baseline if 0.5.95 changes need to be disabled temporarily.
+
+## 0.5.94
+
+Date: 2026-07-17
+Status: [HISTORY][VERIFIED]
+Change:
+- Replace self-weighted intelligence claims with official paired A/B benchmark evidence, add objective benchmark provenance and comparability guards, and close remaining bounded product-routing gaps.
+- Reclassify v2-v9 values as internal acceptance metrics and set current objective status to `not_scored`.
+- Add official-source paired A/B validation for SWE-bench Verified, BFCL, LongMemEval, and tau3-bench with no custom aggregate intelligence score.
+- Repair all three v9 residual language families and preserve read-only routing negatives.
+- Pass Pester 230/230 and full CI 28/28; external objective benchmark execution remains `not_scored` rather than inferred from local tests.
+Supersedes: 0.5.93
+Rollback: Restore 0.5.93 scripts/docs/manifest/baseline if 0.5.94 changes need to be disabled temporarily.
+
+## 0.5.93
+
+Date: 2026-07-17
+Status: [HISTORY][VERIFIED]
+Change:
+- Generalize product-flow intent routing across bounded attachment and replacement language, reject unsupported autobiographical timeline/device recall, and preserve read-only routing negatives.
+- Pass Pester 227/227 and full CI 28/28 without expanding global startup text.
+- Consume the independent 60-case v9 holdout once at 57/60 with a 5% calibration gap, scoring 9.33 personal and 9.36 autonomous; all formal gates pass.
+- Reclassified in 0.5.94: the v9 values are internal acceptance evidence only and are not objective or externally comparable scores.
+- Preserve three remaining product/structural-language misses as measured risk instead of retuning or rerunning v9.
+Supersedes: 0.5.92
+Rollback: Restore 0.5.92 scripts/docs/manifest/baseline if 0.5.93 changes need to be disabled temporarily.
+
+## 0.5.92
+
+Date: 2026-07-17
+Status: [HISTORY][VERIFIED]
+Change:
+- Isolate Pester state, audit task lifecycle integrity, exclude diagnostic task cards, surface lifecycle risks in doctor, and preserve task-scoped continuation.
+Supersedes: 0.5.91
+Rollback: Restore 0.5.91 scripts/docs/manifest/baseline if 0.5.92 changes need to be disabled temporarily.
+
+## 0.5.91
+
+Date: 2026-07-17
+Status: [HISTORY][VERIFIED]
+Change:
+- Route structural and product-flow mutations through the collaboration gate before incidental bug wording, while preserving direct bug diagnosis and strict route behavior.
+- Keep the prioritization mechanism cold, preserve strict route behavior, and require fresh v6 evidence for 0.5.91.
+- Consume v6 under behavior-source binding v2 at 48/52, scoring 9.01 personal and 9.04 autonomous with all formal gates achieved.
+- Preserve four implicit Chinese workflow paraphrase misses as measured future work instead of retuning or rerunning consumed v6.
+Supersedes: 0.5.90
+Rollback: Restore 0.5.90 scripts/docs/manifest/baseline if 0.5.91 changes need to be disabled temporarily.
+
+## 0.5.90
+
+Date: 2026-07-17
+Status: [HISTORY][VERIFIED]
+Change:
+- Unify product-flow semantics across intent routing and collaboration planning, and bind intelligence evidence to both native runtime and PowerShell behavior sources.
+- Keep the shared classifier cold and require v2 behavior-source hashes for formal evaluation evidence.
+- Preserve consumed v4 as historical evidence and require a fresh v5 for 0.5.90.
+- Consume v5 under behavior-source binding v2 at 47/52, scoring 8.78 personal and 8.82 autonomous; preserve remaining intent-priority failures for the next version.
+Supersedes: 0.5.89
+Rollback: Restore 0.5.89 scripts/docs/manifest/baseline if 0.5.90 changes need to be disabled temporarily.
+
+## 0.5.89
+
+Date: 2026-07-17
+Status: [HISTORY][VERIFIED]
+Change:
+- Repair behavior generalization for product-flow routing, Playwright reliability fallback, personal-fact abstention, and final-report consumption hashing without expanding startup context.
+- Preserve known verified personal facts through field-matched profile recall while unrelated memories and unknown facts abstain.
+- Bind the holdout consumption marker to the final report bytes and require fresh v4 evidence for current scores.
+- Consume independent v4 at 44/52 with scores 8.08 personal and 8.14 autonomous; retain the failed product-flow semantic family as a future-version repair target.
+Supersedes: 0.5.88
+Rollback: Restore 0.5.88 scripts/docs/manifest/baseline if 0.5.89 changes need to be disabled temporarily.
+
+## 0.5.88
+
+Date: 2026-07-17
+Status: [HISTORY][VERIFIED]
+Change:
+- Add compaction-safe execution contracts, observable engineering behavior gates, and explicit abstention/fallback routes.
+- Unify all one-click global installation surfaces on `bootstrap.ps1` and preserve distinct refresh/diagnostic lifecycle ownership.
+- Keep 0.5.87 formal scores historical until a new independent sealed holdout evaluates 0.5.88.
+Supersedes: 0.5.87
+Rollback: Restore 0.5.87 routing, hook, execution-contract, installer, tests, manifest, and baseline files if 0.5.88 needs to be disabled temporarily.
+
+## 0.5.87
+
+Date: 2026-07-16
+Status: [HISTORY][VERIFIED]
+Change:
+- Add bounded verified-outcome adaptation behind matching successful task/workspace verification, with project-scoped workflows, correction closure, deduplication, context-scoped problem verification, and no raw-text or applied-packet inference.
+- Add the native Python runtime and narrow read-only MCP with full recall and nested JSON-RPC contract replay.
+- Make empty-memory bootstrap validation contract-only, include runtime files in manifest/share coverage, and keep generated Python caches out of public packages.
+Supersedes: 0.5.86
+Rollback: Restore 0.5.86 observer, task-verification, adaptation-core, policy, tests, manifest, and baseline files if verified-outcome learning needs to be disabled temporarily.
+
+## 0.5.86
+
+Date: 2026-07-16
+Status: [HISTORY][VERIFIED]
+Change:
+- Guarantee exact named-skill routing without default substitution, add bounded non-blocking route metrics, and advance TaskStateStore to staged WAL materialization with reconcile and archive-only snapshot compaction.
+- Add bounded governed user adaptation and validate it with a consumed 52-case personalization holdout, reaching formal scores of 9.47/10 personal and 9.49/10 autonomous with a 3.85% overfit gap.
+Supersedes: 0.5.85
+Rollback: Restore 0.5.85 scripts/docs/manifest/baseline if 0.5.86 changes need to be disabled temporarily.
+
+## 0.5.85
+
+Date: 2026-07-15
+Status: [HISTORY][VERIFIED]
+Change:
+- Add TaskStateStore P0 with task-scoped append-only events, monotonic revisions and CAS, rebuildable projections, write-through integration, and explicit no-merge conflict audits.
+Supersedes: 0.5.84
+Rollback: Restore 0.5.84 scripts/docs/manifest/baseline if 0.5.85 changes need to be disabled temporarily.
+
+## 0.5.84
+
+Date: 2026-07-15
+Status: [HISTORY][VERIFIED]
+Change:
+- Separate source, runtime, mutable state, and archives; bound backups; archive malformed evidence; and repair public source export coverage.
+- Make install-backup pruning explicit, disable positional installer binding, refresh governed state-root markers, and reject runtime-local backup residue or misplaced install roots.
+Supersedes: 0.5.83
+Rollback: Restore 0.5.83 scripts/docs/manifest/baseline if 0.5.84 changes need to be disabled temporarily.
+
+## 0.5.83
+
+Date: 2026-07-15
+Status: [HISTORY][VERIFIED]
+Change:
+- Correct continuity precedence and recall freshness, and reject self-referential memory evaluation evidence.
+Supersedes: 0.5.82
+Rollback: Restore 0.5.82 scripts/docs/manifest/baseline if 0.5.83 changes need to be disabled temporarily.
+
+## 0.5.82
+
+Date: 2026-07-15
+Status: [HISTORY][VERIFIED]
+Change:
+- Complete cold-skill keyword routing with normalized aliases and a compact translation-aware on-demand fallback.
+Supersedes: 0.5.81
+Rollback: Restore 0.5.81 scripts/docs/manifest/baseline if 0.5.82 changes need to be disabled temporarily.
+
+## 0.5.81
+
+Date: 2026-07-15
+Status: [HISTORY][VERIFIED]
+Change:
+- Restore cold-skill exact-name and conservative capability routing without increasing startup context.
+Supersedes: 0.5.80
+Rollback: Restore 0.5.80 scripts/docs/manifest/baseline if 0.5.81 changes need to be disabled temporarily.
+
+## 0.5.80
+
+Date: 2026-07-14
+Status: [HISTORY][VERIFIED]
+Change:
+- Added task-scoped concurrent runtime state, one low-noise routing kernel, independent privacy/package verification, bounded composite-key task links, symlink-aware skill discovery, stale-index fallback, and a 1.8k startup router.
+Supersedes: 0.5.79
+Rollback: Restore 0.5.79 scripts/docs/manifest/baseline if 0.5.80 changes need to be disabled temporarily.
+
 ## 0.5.79
 
 Date: 2026-07-13
-Status: [CURRENT][VERIFIED]
+Status: [HISTORY][VERIFIED]
 Change:
 - Added bounded memory lifecycle with global and per-layer budgets, write admission, expiry-aware hygiene planning, and budget-aware health and optimization signals.
 Supersedes: 0.5.78

@@ -1,5 +1,5 @@
 {
-  "version": "0.5.78",
+  "version": "0.5.80",
   "memoryShortcut": "memory:auto；G1 governs, ORC routes, Sandglass hybrid recall only on semantic/keyword recall; stable state only; private memory requires confirmation and [PRIVACY].",
   "memoryModes": [
     "auto",
@@ -11,6 +11,7 @@
     "agent",
     "sessionId",
     "taskId",
+    "workspaceKey",
     "timestamp",
     "status",
     "source",
@@ -18,7 +19,34 @@
   ],
   "checkpointLifecycle": {
     "preExecution": "write active checkpoint before long-running or pre-approved tasks with platform, agent, session/task code, timestamp, current step, and blockers",
-    "completion": "clear or supersede the active checkpoint after verification and write a completed state with evidence and next action"
+    "minimumAutoCheckpointSteps": 3,
+    "requireApprovedPlan": true,
+    "completion": "automatically complete only the matching active checkpoint after successful verification; failed or missing verification leaves it active"
+  },
+  "executionContract": {
+    "priority": ["visible conversation tail", "current task execution contract", "phase checkpoint", "governed memory"],
+    "latestOnlyPerTask": true,
+    "maxAgeHours": 168,
+    "rawTranscriptAllowed": false,
+    "newUserInstructionRequiresReconciliation": true,
+    "unknownOrConflictPolicy": "do not infer the latest action; require confirmation before mutation",
+    "invalidatedWorkGuard": true,
+    "midTaskInstructionPolicy": {
+      "defaultMode": "side_branch",
+      "modes": ["continue", "side_branch", "replace"],
+      "parentReturnStack": true,
+      "maxDepth": 4,
+      "rawTranscriptStored": false,
+      "resumeCommand": "execution-contract.ps1 -Action ResumeParent",
+      "replaceRequiresExplicitIntent": true
+    }
+  },
+  "taskIdentityIndex": {
+    "identityMode": "composite-key-upsert",
+    "workspaceIsolation": "automatic continuation requires a matching workspaceKey; legacy or foreign checkpoints require explicit selection",
+    "maxSessionTaskLinks": 256,
+    "maxTaskMemoryLinks": 512,
+    "completedRetentionDays": 120
   },
   "preflight": {
     "enabled": true,
@@ -50,7 +78,15 @@
     "optimalityRequirements": ["objective", "constraints", "at least two feasible options", "tradeoffs", "criteria", "evidence-backed facts", "resolution evidence for decision-changing unknowns"],
     "executionStepRequirements": ["input", "output", "acceptance", "stopCondition"],
     "outputContract": ["Judgment", "Evidence", "Best option", "Execution chain", "Acceptance/Risk"],
-    "decisionGate": "scripts/engineering-decision-gate.ps1"
+    "decisionGate": "scripts/engineering-decision-gate.ps1",
+    "interventionPolicy": {
+      "threshold": "intervene only when expected benefit is material or risk is material/high",
+      "minorOptimizationBehavior": "silent",
+      "materialBenefitMinimumEvidence": "inference",
+      "materialRiskMinimumEvidence": "inference",
+      "highRiskWithoutEvidence": "intervene only to verify or contain the risk; do not assert it as fact",
+      "outputFields": ["evidence", "expectedDelta", "risk", "recommendation"]
+    }
   },
   "requiredTags": [
     "[CURRENT]",
@@ -150,9 +186,26 @@
       "stateTokens": 220,
       "evidenceTokens": 500,
       "rawFallbackTokens": 160,
-      "cardSnippetTokens": 56,
+      "cardSnippetTokens": 96,
       "maxEvidenceCards": 4,
       "defaultOutput": "evidenceCard"
+    },
+    "dynamic": {
+      "enabled": true,
+      "candidateMultiplier": 12,
+      "minCandidatePool": 48,
+      "maxCandidatePool": 120,
+      "maxQueryVariants": 4,
+      "anchorMinLength": 4,
+      "fullScanFallback": true,
+      "fullScanMaxLines": 2000,
+      "snippetMode": "query_centered_session_turn",
+      "adaptiveSparse": {
+        "enabled": true,
+        "fallbackCandidateCount": 6,
+        "legacyFallbackOnMiss": true,
+        "legacyFallbackMaxQueries": 1
+      }
     },
     "aliasNormalization": {
       "enabled": true,
@@ -205,6 +258,29 @@
         ]
       ]
     },
+    "semanticAliasGroups": [
+      ["浏览器自动化", "browser automation", "Playwright", "browser-act", "browser-automation-tool-priority"],
+      ["工程判断", "工程设计师", "engineering judgment", "evidence-bounded engineering judgment", "FACT", "INFERENCE", "UNKNOWN"],
+      ["主动介入", "主动干预", "proactive engineering intervention", "proactive-engineering-intervention-threshold", "material benefit", "material risk"],
+      ["smart-hit", "smart hit", "关闭规则", "透明转发", "atoapi-smart-hit-boundary", "transparent forwarding", "no prefix wait", "prompt_cache"],
+      ["记忆卫生", "记忆维护", "memory hygiene", "auto maintenance", "proactively maintain memory"],
+      ["上下文压缩", "压缩续接", "compression continuation", "post-compact-visible-context-first", "visible context"],
+      ["逆向", "逆向工程", "reverse engineering", "ReverseLab", "open-reverselab"],
+      ["提交格式", "git提交", "怎么提交", "git-ui-commit-response", "Summary", "Description", "Commit button text"],
+      ["方案批准", "批准方案", "任务状态", "approved plan", "task checkpoint", "automatic task card"],
+      ["occupation", "job", "profession", "career", "role", "work"],
+      ["doctor", "doctors", "dr", "physician", "specialist", "dermatologist", "dentist"],
+      ["visit", "visited", "see", "saw", "appointment", "consultation"],
+      ["appliance", "device", "machine", "equipment", "smoker", "oven", "refrigerator", "fridge"],
+      ["buy", "bought", "purchase", "purchased", "got", "get"],
+      ["hobby", "hobbies", "interest", "interests", "pastime"],
+      ["community", "communities", "group", "groups", "online"],
+      ["furniture", "dresser", "bedroom", "decor", "decoration"],
+      ["theme park", "disneyland", "knott's", "six flags", "universal studios", "thrill rides"],
+      ["garden", "gardening", "plant", "plants", "tomato", "sapling", "seedling"],
+      ["gym", "exercise", "workout", "training", "fitness"],
+      ["album", "song", "music", "band", "artist", "track"]
+    ],
     "confidence": {
       "inject": 0.6,
       "summaryOnly": 0.2
@@ -227,6 +303,7 @@
         "sandglass": 0.55,
         "graph": 0.7,
         "state": 0.75,
+        "task": 0.82,
         "sessionBinding": 0.78,
         "recent": 0.35,
         "persona": 0.62
@@ -243,7 +320,11 @@
         "session": 0.06,
         "task": 0.05,
         "experience": 0.07,
-        "persona": 0.09
+        "persona": 0.09,
+        "temporalMatch": 0.34,
+        "personalClaim": 0.12,
+        "historicalClaim": 0.16,
+        "historicalSpecific": 0.35
       },
       "penalties": {
         "negativeFeedback": 0.22,
@@ -348,7 +429,11 @@
         ],
         "query": "git\u600e\u4e48\u5199",
         "decisionKey": "git-ui-commit-response",
-        "scope": "Atoapi/ccsapi"
+        "scope": "Atoapi/ccsapi",
+        "matchMode": "exact_normalized",
+        "resolution": "current_verified_unique_decides",
+        "responseContract": ["Summary", "Description", "Commit button text"],
+        "forbiddenFallbacks": ["generic_git_commands", "apology_text", "unverified_staging_claim"]
       }
     ],
     "continuationPriority": [
@@ -488,6 +573,157 @@
     "temporaryChatPenalty": -3,
     "privateNeedsConfirmation": 0,
     "tooLongPenalty": -2
+  },
+  "selfModel": {
+    "enabled": true,
+    "maxAgeHours": 24,
+    "maxEvidenceItems": 6,
+    "maxPreferenceItems": 4,
+    "alwaysOnInjection": false,
+    "refreshSources": [
+      "last-verify-package.json",
+      "last-task-verification.json",
+      "current-task-context.json",
+      "user-adaptation/profile.json",
+      "last-reflection-promotion.json"
+    ]
+  },
+  "userAdaptation": {
+    "enabled": true,
+    "authority": "Current explicit user instruction always wins; adaptation may shape collaboration defaults but never facts, safety, permissions, or authorization.",
+    "storage": {
+      "directory": "user-adaptation",
+      "maxObservations": 200,
+      "maxCandidates": 64,
+      "maxStablePreferences": 32,
+      "maxProfileChars": 6000,
+      "maxTombstones": 64,
+      "observationRetentionDays": 90,
+      "rawPromptAllowed": false
+    },
+    "promotion": {
+      "explicitUserConfidence": 0.99,
+      "inferredBaseConfidence": 0.30,
+      "distinctTaskIncrement": 0.12,
+      "distinctContextIncrement": 0.08,
+      "contradictionPenalty": 0.22,
+      "minimumDistinctTasks": 3,
+      "minimumDistinctContexts": 2,
+      "minimumSupport": 3,
+      "maximumContradictions": 0,
+      "minimumConfidence": 0.78,
+      "inferredReplacementMargin": 0.10
+    },
+    "packet": {
+      "maxDirectives": 3,
+      "maxTokens": 120,
+      "minimumConfidence": 0.78,
+      "loadMode": "relevant_preflight_only",
+      "alwaysOnInjection": false
+    },
+    "verifiedOutcomeObservation": {
+      "enabled": true,
+      "defaultMode": "Preview",
+      "defaultScope": "project",
+      "maxSignalsPerTask": 3,
+      "allowedSources": ["accepted_outcome", "user_correction"],
+      "requiresTaskId": true,
+      "requiresVerifiedArtifact": true,
+      "requiresWorkspaceMatch": true,
+      "workflowRequiresWorkspaceMatch": true,
+      "correctionRequiresClosedCandidate": true,
+      "inferFromSummary": false,
+      "inferFromTranscript": false,
+      "reinforceAppliedPacket": false
+    },
+    "scopePrecedence": ["workflow", "project", "global"],
+    "contexts": ["general", "coding", "debugging", "planning", "review", "design", "release"],
+    "sources": ["explicit_user", "repeated_behavior", "accepted_outcome", "user_correction"],
+    "habits": {
+      "response_detail": {
+        "values": {
+          "concise": "Keep the response compact; include only decision-relevant evidence and next action.",
+          "balanced": "Use a compact conclusion with enough evidence to make the decision auditable.",
+          "detailed": "Explain the reasoning chain and tradeoffs before the final recommendation."
+        }
+      },
+      "reasoning_style": {
+        "values": {
+          "evidence_first": "Separate facts, inferences, and unknowns; ground recommendations in current evidence.",
+          "solution_first": "Lead with the recommended action, then give the minimum supporting rationale.",
+          "exploratory": "Explore materially different interpretations before committing to one route."
+        }
+      },
+      "proactivity": {
+        "values": {
+          "material_only": "Intervene proactively only for material expected benefit or material risk.",
+          "ask_first": "Ask before taking optional proactive action beyond the explicit request.",
+          "proactive": "Propose and execute small reversible improvements when evidence clearly supports them."
+        }
+      },
+      "small_change_autonomy": {
+        "values": {
+          "auto": "Handle small reversible changes directly with proportionate verification.",
+          "ask": "Confirm before making even small optional changes."
+        }
+      },
+      "structural_change_autonomy": {
+        "values": {
+          "discuss": "Discuss structural or high-blast-radius changes before mutation.",
+          "align": "State the structural impact and align briefly before mutation."
+        }
+      },
+      "verification_depth": {
+        "values": {
+          "risk_based": "Scale verification to blast radius; avoid redundant tests that do not change confidence.",
+          "thorough": "Run broad regression and integration verification before completion.",
+          "problem_complete": {
+            "directive": "When a project or subsystem has a reported problem, verify the affected behavior and material integration paths before claiming it is fine; otherwise state that it is not yet confirmed.",
+            "contexts": ["debugging", "review"]
+          },
+          "minimal": "Run only the smallest targeted check needed for this low-risk change."
+        }
+      },
+      "feature_thinking": {
+        "values": {
+          "integrated": "Treat features as product capabilities: verify role, flow integration, state, and follow-up effects.",
+          "local": "Keep the change local when the requested behavior is intentionally isolated."
+        }
+      },
+      "clarification_style": {
+        "values": {
+          "infer_then_confirm": "Inspect local evidence, infer the likely outcome, then confirm only decision-changing ambiguity.",
+          "ask_first": "Ask a concise clarification before choosing among materially different outcomes."
+        }
+      }
+    }
+  },
+  "collaboration": {
+    "enabled": true,
+    "featureGate": "references/collaborative-intent.md",
+    "projectModel": {
+      "scope": "project",
+      "maxFacts": 24,
+      "maxChars": 6000,
+      "writeWhen": "explicitly accepted stable facts or repeated verified use",
+      "content": ["product goal", "user/job", "module roles", "key flows", "constraints", "accepted decisions"],
+      "neverStore": ["raw transcript", "full prompt", "private payload", "temporary implementation detail"]
+    },
+    "sharedExperience": {
+      "scope": "shared method only",
+      "promoteAfterVerifiedUses": 2,
+      "maxEntries": 80,
+      "maxChars": 50000,
+      "retrievalCards": 2,
+      "retentionDays": 730,
+      "dedupeBy": ["id", "title", "trigger", "fingerprint"],
+      "neverShare": ["project names", "private paths", "raw evidence", "secrets", "payloads", "transcripts"]
+    },
+    "verificationBudget": {
+      "direct": "targeted_check",
+      "align": "core_path_and_targeted_regression",
+      "discuss": "integration_and_rollback"
+    }
   },
   "maintenance": {
     "policy": "maintenance-policy.json",

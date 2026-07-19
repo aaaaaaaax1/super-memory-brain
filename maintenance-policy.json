@@ -1,0 +1,87 @@
+{
+  "schema": "super-brain.maintenance-policy.v1",
+  "version": "0.5.73",
+  "updatedAt": "2026-06-30",
+  "mode": "bounded_auto",
+  "principle": "Automatically handle low-risk local hygiene with archive/evidence and verification; ask before destructive, private, external, broad, or ambiguous actions.",
+  "automaticActions": {
+    "expiredSessionBinding": {
+      "enabled": true,
+      "action": "remove_or_archive_metadata",
+      "archiveWhenNoRawRisk": true,
+      "deleteRawRiskBody": true,
+      "statusFile": "memory/workspace/last-workspace-lifecycle.json"
+    },
+    "expiredAgentBridgeChannel": {
+      "enabled": true,
+      "action": "archive_channel_file",
+      "archiveRoot": "memory/workspace/agent-bridge/archive",
+      "clearExpiredActivePointer": true
+    },
+    "staleLock": {
+      "enabled": true,
+      "staleAfterSeconds": 120,
+      "action": "remove_stale_lock_file"
+    },
+    "longMemory": {
+      "enabled": true,
+      "maxChars": 800,
+      "action": "compress_with_original_archive",
+      "archiveRoot": "memory/workspace/compressed-memory-evidence",
+      "preserveTags": true,
+      "preserveTimestampAndSender": true
+    },
+    "privatePatternFalsePositive": {
+      "enabled": true,
+      "action": "rewrite_non_secret_wording",
+      "actualSecretAction": "report_requires_confirmation"
+    },
+    "exactDuplicateMemory": {
+      "enabled": true,
+      "action": "remove_duplicate_with_archive",
+      "archiveRoot": "memory/workspace/compressed-memory-evidence"
+    },
+    "postTaskMaintenance": {
+      "enabled": true,
+      "runLifecycle": true,
+      "runHygiene": true,
+      "updateState": true,
+      "writeStatusSnapshot": true,
+      "writeSelfImprovementCandidates": true
+    }
+  },
+  "requiresConfirmation": [
+    "external_publish_or_share",
+    "private_memory_export",
+    "raw_secret_or_private_pattern_body",
+    "delete_project_files",
+    "broad_overwrite",
+    "hook_or_global_startup_rewrite",
+    "install_or_hot_refresh",
+    "memory_mode_switch",
+    "unclear_risk_or_conflict"
+  ],
+  "neverAutomatic": [
+    "hidden_captcha_solving",
+    "credential_submission_without_user_context",
+    "unbounded_deep_recall",
+    "raw_chat_long_memory_injection",
+    "shared_memory_write_from_subagent_without_commander_admission"
+  ],
+  "evidence": {
+    "writeStatusFiles": true,
+    "archiveOriginals": true,
+    "verifyAfterMutation": true,
+    "compactReportShape": true
+  },
+  "continuationPriority": [
+    "visible_context",
+    "compression_summary_or_record",
+    "active_checkpoint",
+    "status-card.json",
+    "last-status-snapshot.json",
+    "step-ledger.json",
+    "recent_tool_results",
+    "long_term_memory_as_supplement_only"
+  ]
+}

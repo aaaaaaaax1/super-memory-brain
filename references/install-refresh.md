@@ -13,8 +13,12 @@ Safe default:
 
 Do not treat ordinary task status as install/refresh.
 
-Known Phase 0b gap:
-- `maintenance-hot-refresh`
+Lifecycle ownership:
+- `install.bat`, the UI global-install button, and the console global-install action delegate to `bootstrap.ps1`; this is the only complete one-click install orchestrator.
+- `install.ps1` is an internal installation stage and an advanced test/custom-target entry, not the user-facing complete install path.
+- `first-load-bootstrap.ps1` verifies or repairs the narrow runtime/MCP binding on an explicit Super Brain load.
+- `hot-refresh-skills.ps1` synchronizes already installed package-owned skill copies; it does not replace installation.
+- `doctor.ps1` and `verify-package.ps1` diagnose and verify; they do not install or refresh.
 
 Second-hop only: for package layout, install markers, or hot-refresh copy scope, read
 `references/package-shape.md`; do not load it from the index directly.

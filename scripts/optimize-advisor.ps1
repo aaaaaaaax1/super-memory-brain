@@ -38,7 +38,7 @@ function Invoke-TextTool([string]$ScriptName, [string[]]$ToolArgs = @()) {
   $path = Join-Path $PSScriptRoot $ScriptName
   if (-not (Test-Path $path)) { return [pscustomobject]@{ ok=$false; script=$ScriptName; exitCode=1; output=@(); error='missing script' } }
   try {
-    $output = @(& $path @ToolArgs)
+    $output = @(& $path @ToolArgs 6>$null)
     $exitCode = $LASTEXITCODE
     return [pscustomobject]@{ ok=($exitCode -eq 0); script=$ScriptName; exitCode=$exitCode; output=@($output); error=$null }
   } catch {

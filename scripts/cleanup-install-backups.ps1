@@ -7,9 +7,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
+$installBackupRoot = Get-SuperBrainInstallBackupRoot $Root
 if ($Keep -lt 0) { throw 'Keep must be zero or greater.' }
 
-$backups = @(Get-ChildItem -LiteralPath $Root -Directory -Filter 'install-backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+$backups = if (Test-Path -LiteralPath $installBackupRoot) { @(Get-ChildItem -LiteralPath $installBackupRoot -Directory -Filter 'install-backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending) } else { @() }
 $delete = @($backups | Select-Object -Skip $Keep)
 
 Write-Host "INSTALL_BACKUP_CLEANUP total=$($backups.Count) keep=$Keep delete=$($delete.Count) apply=$Apply"
@@ -27,9 +28,9 @@ if (-not $Apply) {
 
 foreach ($dir in $delete) {
   $full = Get-NormalizedSuperBrainRoot $dir.FullName
-  $parent = Get-NormalizedSuperBrainRoot $Root
+  $parent = Get-NormalizedSuperBrainRoot $installBackupRoot
   $name = Split-Path -Leaf $full
-  if (-not $full.StartsWith($parent + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Refusing outside package root: $full" }
+  if (-not $full.StartsWith($parent + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Refusing outside install backup root: $full" }
   if ($name -notlike 'install-backup-*') { throw "Refusing non install backup: $full" }
   Remove-Item -LiteralPath $dir.FullName -Recurse -Force
   Write-Host "INSTALL_BACKUP_DELETED $($dir.FullName)"

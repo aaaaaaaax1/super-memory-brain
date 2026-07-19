@@ -2,6 +2,8 @@ param(
   [string]$Goal = '',
   [string]$TaskName = '',
   [string]$SessionTitle = '',
+  [string[]]$PlanSteps = @(),
+  [switch]$ApprovedPlan,
   [switch]$Json,
   [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Text
@@ -17,6 +19,7 @@ $outPath = Join-Path $workspace 'last-autonomous-executor.json'
 if (-not (Test-Path -LiteralPath $workspace)) { New-Item -ItemType Directory -Force -Path $workspace | Out-Null }
 
 function Limit-Text([string]$Value,[int]$Max=500){ if([string]::IsNullOrWhiteSpace($Value)){return ''}; $v=$Value.Trim() -replace '\s+',' '; if($v.Length -gt $Max){return $v.Substring(0,$Max)+'...'}; return $v }
+function Get-SafeTaskId([string]$Value){ if([string]::IsNullOrWhiteSpace($Value)){return ''}; $safe=(($Value -replace '[^A-Za-z0-9._-]+','-').Trim('-')).ToLowerInvariant(); if($safe.Length -gt 120){return $safe.Substring(0,120)}; return $safe }
 function Quote-PowerShellArg([string]$Value){ return "'" + (([string]$Value) -replace "'", "''") + "'" }
 function Invoke-JsonScript([string]$ScriptName,[string[]]$ScriptArgs){
   $scriptPath = Join-Path $PSScriptRoot $ScriptName
@@ -31,39 +34,88 @@ function Invoke-JsonScript([string]$ScriptName,[string[]]$ScriptArgs){
 }
 
 $inputText = (($Text -join ' ').Trim())
+$workspaceKey = Get-SuperBrainWorkspaceKey
 if([string]::IsNullOrWhiteSpace($Goal)){ $Goal = $inputText }
 if([string]::IsNullOrWhiteSpace($TaskName)){ $TaskName = if($Goal.Length -gt 80){$Goal.Substring(0,80)}else{$Goal} }
 if([string]::IsNullOrWhiteSpace($SessionTitle)){ $SessionTitle = $TaskName }
 
 $gate = Invoke-JsonScript -ScriptName 'intent-gate.ps1' -ScriptArgs @($Goal)
-$router = Invoke-JsonScript -ScriptName 'intent-router.ps1' -ScriptArgs @($Goal)
+$router = Invoke-JsonScript -ScriptName 'intent-router.ps1' -ScriptArgs @('-Text',$Goal)
 $scout = Invoke-JsonScript -ScriptName 'memory-scout.ps1' -ScriptArgs @('-Goal',$Goal,'-TopK','4')
 $why = Invoke-JsonScript -ScriptName 'why-plan.ps1' -ScriptArgs @('-Goal',$Goal,'-Intent',[string]$gate.intent,'-Evidence','memory-scout.ps1')
 
-$shouldCreateTask = ($gate.intent -eq 'execute' -or $gate.shouldExecute -eq $true)
+$policy = Get-Content -LiteralPath (Join-Path $Root 'memory-policy.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$minimumSteps = [int]$policy.checkpointLifecycle.minimumAutoCheckpointSteps
+if($minimumSteps -lt 1){ $minimumSteps = 3 }
+$normalizedSteps = @($PlanSteps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+$approvedExecution = ($ApprovedPlan -and $normalizedSteps.Count -ge $minimumSteps)
+$shouldCreateTask = ($approvedExecution -or $gate.intent -eq 'execute' -or $gate.shouldExecute -eq $true)
 $task = $null
 $context = $null
 $routeLock = $null
 $acceptedConstraints = $null
 $cognitivePreflight = $null
 $runtimeDrift = $null
+$checkpoint = $null
+$checkpointReason = 'not an approved plan with enough steps'
 if($shouldCreateTask){
-  $task = Invoke-JsonScript -ScriptName 'task-register.ps1' -ScriptArgs @('-Auto','-Agent','zcode','-TaskName',$TaskName,'-Status','active','-Goal',$Goal,'-CurrentStep','Autonomous executor initialized: intent/memory/why-plan collected.','-NextAction','Execute the smallest verified route from why-plan.','-SessionTitle',$SessionTitle,'-Reason','automatic cognitive executor authorized by natural goal/execute intent','-Evidence','last-memory-scout.json;last-why-plan.json')
+  $task = Invoke-JsonScript -ScriptName 'task-register.ps1' -ScriptArgs @('-Auto','-Agent','zcode','-WorkspaceKey',$workspaceKey,'-TaskName',$TaskName,'-Status','active','-Goal',$Goal,'-CurrentStep','Autonomous executor initialized: intent/memory/why-plan collected.','-NextAction','Execute the smallest verified route from why-plan.','-SessionTitle',$SessionTitle,'-Reason','automatic cognitive executor authorized by natural goal/execute intent','-Evidence','last-memory-scout.json;last-why-plan.json')
   $taskId = [string]$task.taskId
-  $context = Invoke-JsonScript -ScriptName 'current-task-context.ps1' -ScriptArgs @('-Action','Create','-TaskId',$taskId,'-AcceptedGoal',$Goal,'-AcceptedRoute','intent gate -> memory scout -> why-plan -> task card -> route lock -> preflight -> drift checkpoint -> execute -> verify','-NonGoals','do not mutate for plan/status-only requests','-MustPreserve','automatic task card, route lock, preflight, drift checkpoint, and context updates','-MustNotDriftTo','manual reminder driven workflow','-Evidence','last-autonomous-executor.json')
+  $context = Invoke-JsonScript -ScriptName 'current-task-context.ps1' -ScriptArgs @('-Action','Create','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-AcceptedGoal',$Goal,'-AcceptedRoute','intent gate -> memory scout -> why-plan -> task card -> route lock -> preflight -> drift checkpoint -> execute -> verify','-NonGoals','do not mutate for plan/status-only requests','-MustPreserve','automatic task card, route lock, preflight, drift checkpoint, and context updates','-MustNotDriftTo','manual reminder driven workflow','-Evidence','last-autonomous-executor.json')
   $routeLock = Invoke-JsonScript -ScriptName 'goal-route-lock.ps1' -ScriptArgs @('-Action','Create','-TaskId',$taskId,'-AcceptedGoal',$Goal,'-AcceptedRoute','intent gate -> memory scout -> why-plan -> task card -> route lock -> preflight -> drift checkpoint -> execute -> verify','-NonGoals','do not mutate for plan/status-only requests','-MustPreserve','automatic task card, route lock, preflight, drift checkpoint, and context updates','-MustNotDriftTo','manual reminder driven workflow','-ApprovalEvidence','autonomous-executor execute intent')
   $acceptedConstraints = Invoke-JsonScript -ScriptName 'accepted-constraints-preflight.ps1' -ScriptArgs @('-Query',$Goal,'-Scope','autonomous-executor')
   $cognitivePreflight = Invoke-JsonScript -ScriptName 'cognitive-preflight.ps1' -ScriptArgs @('-Query',$Goal,'-Scope','autonomous-executor')
   $runtimeDrift = Invoke-JsonScript -ScriptName 'runtime-drift-checkpoint.ps1' -ScriptArgs @('-Phase','BeforeAct','-ObservedAction','autonomous executor initialized task card, route lock, accepted constraints preflight, cognitive preflight, and runtime drift checkpoint before execution','-Query',$Goal)
+  if($ApprovedPlan -and $normalizedSteps.Count -ge $minimumSteps -and $runtimeDrift.ok -eq $true -and $runtimeDrift.unresolvedDrift -ne $true){
+    $checkpointRaw = & (Join-Path $PSScriptRoot 'checkpoint-writer.ps1') -Action Start -TaskId $taskId -TaskName $TaskName -SessionName $SessionTitle -WorkspaceKey $workspaceKey -Platform zcode -Agent super-memory-brain -Goal $Goal -CurrentPhase approved_plan -CurrentStep ([string]$normalizedSteps[0]) -NextAction ([string]$normalizedSteps[0]) -PendingSteps $normalizedSteps -Evidence @('approved plan; autonomous-executor.ps1') -Source autonomous-executor.ps1 -Json
+    $checkpoint = $checkpointRaw | ConvertFrom-Json
+    $checkpointReason = "approved plan has $($normalizedSteps.Count) steps; threshold=$minimumSteps"
+  } elseif($ApprovedPlan -and ($runtimeDrift.ok -ne $true -or $runtimeDrift.unresolvedDrift -eq $true)) {
+    $checkpointReason = 'approved plan was not checkpointed because the execution hard gate failed'
+  } elseif($ApprovedPlan) {
+    $checkpointReason = "approved plan has $($normalizedSteps.Count) steps; threshold=$minimumSteps"
+  }
 }
 
+$executionGateOk = (-not $shouldCreateTask) -or ($null -ne $task -and -not [string]::IsNullOrWhiteSpace([string]$task.taskId) -and $null -ne $context -and [string]$context.taskId -eq [string]$task.taskId -and $routeLock.ok -eq $true -and $routeLock.active -eq $true -and $acceptedConstraints.ok -eq $true -and $cognitivePreflight.ok -eq $true -and $runtimeDrift.ok -eq $true -and $runtimeDrift.unresolvedDrift -ne $true)
+$autonomyAuthorization = $null
+if($executionGateOk -and $checkpoint -and $approvedExecution -and $task){
+  $safeTaskId = Get-SafeTaskId ([string]$task.taskId)
+  if(-not [string]::IsNullOrWhiteSpace($safeTaskId)){
+    $authorizationRoot = Join-Path $workspace 'runtime-state\autonomy-authorizations'
+    if(-not(Test-Path -LiteralPath $authorizationRoot)){New-Item -ItemType Directory -Force -Path $authorizationRoot|Out-Null}
+    $authorizationPath = Join-Path $authorizationRoot ($safeTaskId + '.json')
+    $authorization = [pscustomobject]@{
+      schema='super-brain.governed-autonomy-authorization.v1'
+      recordId='autonomy-auth-' + $safeTaskId
+      taskId=[string]$task.taskId
+      workspaceKey=$workspaceKey
+      packageVersion=(Get-SuperBrainManifest $Root).version
+      authorizedAt=(Get-Date).ToString('o')
+      source='autonomous-executor.ps1'
+      authorizationMode='approved_plan'
+      autonomyTier=if($why.collaborationGate){[string]$why.collaborationGate.autonomyTier}else{''}
+      executionHardGateOk=$true
+      checkpointCreated=$true
+      checkpointTaskId=[string]$checkpoint.taskId
+      routeHash=if($routeLock){[string]$routeLock.routeHash}else{''}
+      guardHash=if($acceptedConstraints){[string]$acceptedConstraints.guardHash}else{''}
+      rawGoalStored=$false
+      rawPromptStored=$false
+    }
+    Write-JsonUtf8NoBom $authorizationPath $authorization 10
+    $autonomyAuthorization = [pscustomobject]@{ created=$true; recordId=$authorization.recordId; taskId=$authorization.taskId; sha256=(Get-FileHash -LiteralPath $authorizationPath -Algorithm SHA256).Hash.ToLowerInvariant(); path=$authorizationPath; rawGoalStored=$false; rawPromptStored=$false }
+  }
+}
 $result=[pscustomobject]@{
-  ok=$true; checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); schema='super-brain.autonomous-executor.v1'; version=(Get-SuperBrainManifest $Root).version
+  ok=$executionGateOk; checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); schema='super-brain.autonomous-executor.v1'; version=(Get-SuperBrainManifest $Root).version
   input=Limit-Text $inputText 700; goal=Limit-Text $Goal 700; intent=[pscustomobject]@{ gate=$gate.intent; canMutate=$gate.canMutate; shouldExecute=$gate.shouldExecute; router=$router.intent; confidence=$router.confidence }
-  taskCard=[pscustomobject]@{ shouldCreate=$shouldCreateTask; taskId=if($task){$task.taskId}else{''}; status=if($task){$task.status}else{'not_created'}; reason=if($shouldCreateTask){'execute intent or authorization detected'}else{'plan/status/clarify intent'} }
+  taskCard=[pscustomobject]@{ shouldCreate=$shouldCreateTask; taskId=if($task){$task.taskId}else{''}; status=if($task){$task.status}else{'not_created'}; reason=if($approvedExecution){'approved plan meets checkpoint threshold'}elseif($shouldCreateTask){'execute intent or authorization detected'}else{'plan/status/clarify intent'} }
   memoryScout=[pscustomobject]@{ cards=@($scout.cards).Count; path=$scout.path }
   whyPlan=[pscustomobject]@{ why=$why.why; successCriteria=@($why.successCriteria); verificationPlan=@($why.verificationPlan); path=$why.path }
   currentTaskContext=[pscustomobject]@{ created=($null -ne $context); taskId=if($context){$context.taskId}else{''} }
+  checkpoint=[pscustomobject]@{ created=($null -ne $checkpoint); approved=[bool]$ApprovedPlan; stepCount=@($PlanSteps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count; taskId=if($checkpoint){$checkpoint.taskId}else{''}; reason=$checkpointReason }
+  autonomyAuthorization=if($autonomyAuthorization){$autonomyAuthorization}else{[pscustomobject]@{created=$false;recordId='';taskId='';sha256='';path='';rawGoalStored=$false;rawPromptStored=$false}}
   executionHardGate=[pscustomobject]@{
     required=$shouldCreateTask
     taskId=if($task){$task.taskId}else{''}
@@ -93,5 +145,5 @@ $result=[pscustomobject]@{
   path=$outPath
 }
 Write-JsonUtf8NoBom $outPath $result 12
-if($Json){Get-Content -LiteralPath $outPath -Raw -Encoding UTF8}else{Write-Host "AUTONOMOUS_EXECUTOR ok=True intent=$($gate.intent) taskId=$($result.taskCard.taskId) path=$outPath"}
-exit 0
+if($Json){Get-Content -LiteralPath $outPath -Raw -Encoding UTF8}else{Write-Host "AUTONOMOUS_EXECUTOR ok=$executionGateOk intent=$($gate.intent) taskId=$($result.taskCard.taskId) path=$outPath"}
+if(-not $executionGateOk){exit 1}; exit 0

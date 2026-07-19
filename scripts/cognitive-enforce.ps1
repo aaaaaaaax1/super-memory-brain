@@ -4,6 +4,8 @@ param(
   [string]$Query = '',
   [string]$Scope = '',
   [string]$TaskId = '',
+  [string]$SessionKey = '',
+  [string]$ProposedWorkId = '',
   [ValidateSet('BeforeAct','BeforeMutation','BeforeCompletion','AfterUserCorrection','Status')]
   [string]$Phase = 'BeforeAct',
   [int]$MaxAgeMinutes = 60,
@@ -17,6 +19,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $PSScriptRoot
+$hostSessionKey = Get-SuperBrainHostSessionKey $SessionKey
 $workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
 if (-not (Test-Path -LiteralPath $workspace)) { New-Item -ItemType Directory -Force -Path $workspace | Out-Null }
 $outPath = Join-Path $workspace 'last-cognitive-enforce.json'
@@ -58,7 +61,7 @@ function Test-EngineeringJudgmentIntent([string]$IntentName) {
 
 $intent = $null
 try {
-  $intentRaw = @(& (Join-Path $PSScriptRoot 'intent-router.ps1') $inputText -Json 2>$null)
+  $intentRaw = @(& (Join-Path $PSScriptRoot 'intent-router.ps1') -Text $inputText -Json 2>$null)
   if ($intentRaw) { $intent = (($intentRaw -join "`n") | ConvertFrom-Json) }
 } catch {}
 $intentName = if ($intent -and $intent.intent) { [string]$intent.intent } else { 'general_task' }
@@ -112,7 +115,42 @@ $engineeringContractPresent = ($preflightExists -and $preflight.engineeringJudgm
 Add-Check $checks 'engineering-judgment-contract' ($engineeringContractPresent -or -not $engineeringRequired -or $AllowMissingPreflight) "required=$engineeringRequired decisionGate=$($preflight.engineeringJudgment.decisionGate)" $engineeringRequired
 
 $currentTaskContext = Read-WorkspaceJson 'current-task-context.json'
-if ([string]::IsNullOrWhiteSpace($TaskId) -and $currentTaskContext -and [string]$currentTaskContext.status -eq 'active') { $TaskId = [string]$currentTaskContext.taskId }
+$executionContractRequired = $false
+$executionContractGuard = $null
+$executionResolutionFailed = $false
+$executionResolutionFailureCode = ''
+$executionResolutionNoContract = $false
+$resolution = $null
+if ($Phase -in @('BeforeMutation','BeforeCompletion')) {
+  try {
+    $workspaceKey = Get-SuperBrainWorkspaceKey
+    $resolveParameters = @{Action='Resolve';WorkspaceKey=$workspaceKey;SessionKey=$hostSessionKey;NoExit=$true;Json=$true}
+    if (-not [string]::IsNullOrWhiteSpace($TaskId)) { $resolveParameters.TaskId = $TaskId }
+    $resolveRaw = @(& (Join-Path $PSScriptRoot 'execution-contract.ps1') @resolveParameters 2>$null)
+    if (-not $resolveRaw) { throw 'execution contract returned no JSON' }
+    $resolution = (($resolveRaw -join "`n") | ConvertFrom-Json)
+    if (-not $resolution -or $resolution.ok -ne $true) {
+      $executionResolutionFailed = $true
+      $executionResolutionFailureCode = if($resolution){[string]$resolution.code}else{'EXECUTION_CONTRACT_EMPTY_RESULT'}
+      $executionContractRequired = $true
+    } else {
+      $executionResolutionNoContract = ([string]$resolution.resolutionSource -eq 'none' -and [string]$resolution.actionAuthorization -eq 'not_applicable')
+      if (-not $executionResolutionNoContract -and [string]::IsNullOrWhiteSpace($TaskId) -and -not [string]::IsNullOrWhiteSpace([string]$resolution.taskId)) { $TaskId = [string]$resolution.taskId }
+      $executionContractRequired = (-not $executionResolutionNoContract -and (-not [string]::IsNullOrWhiteSpace($TaskId) -or [string]$resolution.resumeFrom -in @('execution_contract','execution_contract_pending_reconciliation','execution_contract_topic_unresolved','execution_contract_foreign_session','execution_contract_session_unbound','parent_return') -or [string]$resolution.actionAuthorization -eq 'withheld'))
+    }
+    if ($executionContractRequired -and -not $executionResolutionFailed) {
+      $guardParameters = @{Action='Guard';WorkspaceKey=$workspaceKey;SessionKey=$hostSessionKey;ProposedWorkId=$ProposedWorkId;NoExit=$true;Json=$true}
+      if (-not [string]::IsNullOrWhiteSpace($TaskId)) { $guardParameters.TaskId = $TaskId }
+      $guardRaw = @(& (Join-Path $PSScriptRoot 'execution-contract.ps1') @guardParameters 2>$null)
+      if ($guardRaw) { $executionContractGuard = (($guardRaw -join "`n") | ConvertFrom-Json) }
+    }
+  } catch {
+    $executionResolutionFailed = $true
+    $executionContractRequired = $true
+    if ([string]::IsNullOrWhiteSpace($executionResolutionFailureCode)) { $executionResolutionFailureCode = 'EXECUTION_CONTRACT_RESOLVE_FAILED' }
+  }
+}
+
 $engineeringGateRequired = ($engineeringRequired -and $Phase -in @('BeforeMutation','BeforeCompletion'))
 $engineeringStatus = $null
 if ($engineeringGateRequired) {
@@ -132,7 +170,11 @@ if ($engineeringGateRequired) {
 }
 Add-Check $checks 'engineering-decision-gate' $engineeringGateOk $engineeringGateEvidence $engineeringGateRequired
 
-if ($isHighRisk -and -not $AllowMissingPreflight) {
+$executionContractOk = (-not $executionContractRequired -or ($executionContractGuard -and $executionContractGuard.ok -eq $true))
+$executionContractEvidence = if($executionResolutionFailed){"code=$executionResolutionFailureCode resolver failed before mutation authorization"}elseif($executionContractRequired){"code=$($executionContractGuard.code) currentFocus=$($executionContractGuard.currentFocusId) proposedWork=$ProposedWorkId"}elseif($executionResolutionNoContract){'no execution contract applies to this root session and workspace'}else{'no current task execution contract requires enforcement'}
+Add-Check $checks 'execution-contract-guard' $executionContractOk $executionContractEvidence $executionContractRequired
+
+if (($isHighRisk -and -not $AllowMissingPreflight) -or $executionContractRequired) {
   foreach ($check in @($checks)) {
     if ($check.required -and $check.ok -ne $true) {
       [void]$violations.Add($check.name)
@@ -158,8 +200,9 @@ $result = [pscustomobject]@{
   mustPreserve = if ($preflightExists) { @($preflight.mustPreserve) } else { @() }
   driftGuards = if ($preflightExists) { @($preflight.driftGuards) } else { @() }
   engineeringJudgment = [pscustomobject]@{ required=$engineeringRequired; gateRequired=$engineeringGateRequired; gateOk=$engineeringGateOk; completionEvidenceOk=$engineeringCompletionEvidenceOk; taskId=$TaskId; decisionId=if($engineeringDecision){$engineeringDecision.decisionId}else{''}; epistemicClasses=@('FACT','INFERENCE','UNKNOWN') }
-  guard = 'High-risk work must pass a fresh query-matched cognitive preflight; engineering mutation/completion must also pass evidence and decision grounding.'
-  nextAction = if (@($violations) -contains 'engineering-decision-gate') { 'Create a valid task-scoped engineering decision with evidence, options, execution contracts, acceptance, and risk, then re-run cognitive-enforce.' } elseif ($violations.Count -gt 0) { 'Run scripts\cognitive-preflight.ps1 for the current command, then re-run cognitive-enforce before action.' } else { 'Proceed while applying mustPreserve and driftGuards; stop on failed engineering acceptance and run runtime-drift-checkpoint before major steps.' }
+  executionContract = [pscustomobject]@{ required=$executionContractRequired; ok=$executionContractOk; status=if($executionResolutionFailed){'resolver_failed'}elseif($executionResolutionNoContract){'no_contract'}elseif($executionContractRequired){'guarded'}else{'not_required'}; proposedWorkId=$ProposedWorkId; code=if($executionResolutionFailed){$executionResolutionFailureCode}elseif($executionContractGuard){[string]$executionContractGuard.code}else{''}; currentFocusId=if($executionContractGuard){[string]$executionContractGuard.currentFocusId}else{''} }
+  guard = 'High-risk work must pass a fresh query-matched cognitive preflight; engineering mutation/completion must also pass evidence and decision grounding; a current execution contract blocks unreconciled or superseded work.'
+  nextAction = if ($executionResolutionFailed) { 'Repair or re-run execution-contract resolution before mutation.' } elseif (@($violations) -contains 'execution-contract-guard') { 'Reconcile the latest user instruction and assistant commitment, then update the execution contract before mutation.' } elseif (@($violations) -contains 'engineering-decision-gate') { 'Create a valid task-scoped engineering decision with evidence, options, execution contracts, acceptance, and risk, then re-run cognitive-enforce.' } elseif ($violations.Count -gt 0) { 'Run scripts\cognitive-preflight.ps1 for the current command, then re-run cognitive-enforce before action.' } else { 'Proceed while applying mustPreserve and driftGuards; stop on failed engineering acceptance and run runtime-drift-checkpoint before major steps.' }
   path = $outPath
 }
 

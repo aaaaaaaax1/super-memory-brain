@@ -1,6 +1,6 @@
-﻿---
+---
 name: reverselab-unified
-description: Unified ReverseLab skill for reverse engineering. Use when the user says 逆向, ReverseLab, open-reverselab, Open-tgtylab, reverse engineering, reversing, sample analysis, PE/APK reverse, CTF reverse, website/API reverse, 接口逆向, 样本分析, APK 逆向, PE 逆向, 一键部署逆向工具, 装齐逆向工具, or asks whether the two ReverseLab repos are installed or shareable through Super Brain. Routes between LING71671/open-reverselab local commands, GeniusHu-tgty/Open-tgtylab reverse_lab_tools MCP, and browser-act-skill-forge for website/API behavior reverse work. Do not use for unrelated debugging or generic security talk.
+description: "Route explicit reverse-engineering work across ReverseLab tools and browser-act-skill-forge. Trigger on 逆向, ReverseLab, PE/APK/CTF reverse, sample analysis, website/API reverse, 接口逆向, or ReverseLab install/share checks; not generic debugging."
 ---
 
 # ReverseLab Unified

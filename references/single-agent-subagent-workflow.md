@@ -116,6 +116,22 @@ Internal subagents must not edit AGENTS.md, install dependencies, deploy, publis
 
 Give subagents compact context only: objective, constraints, relevant files, commands, and evidence requirements. Do not pass raw long transcripts or secrets. Keep findings advisory until the controller admits them.
 
+## Parallel Dispatch And State Ownership
+
+Dispatch independent, non-blocking discovery, test, and review sidecars in
+parallel when they materially shorten the task. Do not delegate the immediate
+critical-path step when the controller needs its result before acting.
+
+- Give each subagent a disjoint file scope or make it read-only.
+- The controller alone owns `execution-contract.ps1`, current-task contexts,
+  checkpoints, durable memory, parent resumption, and task completion.
+- A subagent that needs stateful probes must use an isolated `StateRoot` and a
+  test-only task ID. It must not write shared workspace state.
+- Results are advisory cards. The controller merges evidence, resolves
+  conflicts, runs the acceptance checks, and only then updates task state.
+- Close or reuse subagents promptly; do not leave dormant agents holding a
+  branch or treating a report as task completion.
+
 ## Worktree / Checkpoint / Rollback Recommendation
 
 Prefer small phases. Before writes, record rollback paths or pre-change hashes. For risky edits, use an isolated worktree or backup. Close each phase with changed files, tests, evidence paths, and remaining risk.

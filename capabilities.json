@@ -1,0 +1,223 @@
+{
+    "schemaVersion":  1,
+    "phase":  "phase6-strict-capabilities",
+    "capabilities":  [
+                         {
+                             "id":  "memory_governance",
+                             "owner":  "plusunm-g1",
+                             "hotEntry":  "super-memory-brain/SKILL.md",
+                             "coldReferences":  [
+                                                    "references/memory-governance.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/recall-search.ps1",
+                                             "scripts/memory-health.ps1"
+                                         ],
+                             "defaultPolicy":  "memory:auto; G1 gates recall/write and privacy"
+                         },
+                         {
+                             "id":  "status_recovery",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "super-memory-brain/SKILL.md",
+                             "coldReferences":  [
+                                                    "references/status-recovery.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/auto-continuation.ps1",
+                                             "scripts/super-brain-dashboard.ps1"
+                                         ],
+                             "defaultPolicy":  "visible context and checkpoints before recall",
+                             "secondaryColdReferences":  [
+                                                             "references/task-identity-index.md via references/status-recovery.md only"
+                                                         ]
+                         },
+                         {
+                             "id":  "task_state_consistency",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "none",
+                             "coldReferences":  [
+                                                    "references/task-state-store.md",
+                                                    "references/status-recovery.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/task-state-store.ps1",
+                                             "scripts/current-task-context.ps1",
+                                             "scripts/checkpoint-writer.ps1",
+                                             "scripts/task-register.ps1",
+                                             "scripts/super-brain-dashboard.ps1",
+                                             "scripts/auto-continuation.ps1"
+                                         ],
+                             "defaultPolicy":  "Commit through prepared/committed WAL and atomic materialization; preserve owner/session/workspace metadata; use workspace fingerprints for automatic continuation; keep legacy or foreign checkpoints available for explicit recovery but never let them drive the current workspace; reject stale CAS and never merge different task IDs."
+                         },
+                         {
+                             "id":  "agent_bridge",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "super-memory-brain/SKILL.md",
+                             "coldReferences":  [
+                                                    "references/agent-bridge.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/agent-bridge-channel.ps1"
+                                         ],
+                             "defaultPolicy":  "legacy/manual-only compatibility for explicit channel open/connect/send/read/close; not default subagent execution workflow"
+                         },
+                         {
+                             "id":  "orc_routing",
+                             "owner":  "skill-orchestrator",
+                             "hotEntry":  "modules/skill-orchestrator/SKILL.md",
+                             "coldReferences":  [
+                                                    "references/orc-routing.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/intent-router.ps1"
+                                         ],
+                             "defaultPolicy":  "complexity-triggered routing, not default loading"
+                         },
+                         {
+                             "id":  "engineering_judgment",
+                             "owner":  "skill-orchestrator",
+                             "hotEntry":  "super-memory-brain/SKILL.md compact cross-cutting guard",
+                             "coldReferences":  [
+                                                    "references/engineering-judgment.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/engineering-decision-gate.ps1",
+                                             "scripts/cognitive-preflight.ps1",
+                                             "scripts/cognitive-enforce.ps1",
+                                             "scripts/smart-next.ps1",
+                                             "scripts/completion-guard.ps1"
+                                         ],
+                             "defaultPolicy":  "Cross-cutting ORC capability, not a new top-level route: activate for repair, optimization, architecture, root-cause, performance, migration, or best-option decisions; keep greetings and tiny direct tasks concise. FACT requires evidence, root-cause confidence is explicit, critical unknowns require discriminating tests, and optimality requires objective, constraints, alternatives, tradeoffs, criteria, and resolution evidence."
+                         },
+                         {
+                             "id":  "technology_decision",
+                             "owner":  "skill-orchestrator",
+                             "hotEntry":  "none",
+                             "coldReferences":  [
+                                                    "references/technology-decision.md",
+                                                    "references/technology-catalog.json"
+                                                ],
+                             "scripts":  [
+                                             "scripts/technology-decision.ps1",
+                                             "scripts/engineering-decision-gate.ps1"
+                                         ],
+                             "defaultPolicy":  "For stack, framework, database, AI-native toolchain, edge, deployment, and architecture choices: collect only missing multiple-choice requirements; rank feasible full-stack profiles with auditable baseline and requirement-fit contributions; keep frontend/backend/data/AI/edge/deployment/observability roles explicit; treat catalog scores as priors and verify volatile facts before commitment."
+                         },
+                         {
+                             "id":  "collaborative_intent",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "super-memory-brain/SKILL.md compact product-coherence pointer",
+                             "coldReferences":  [
+                                                    "references/collaborative-intent.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/why-plan.ps1",
+                                             "scripts/intent-router.ps1",
+                                             "scripts/routing-kernel.ps1"
+                                         ],
+                             "defaultPolicy":  "For feature and workflow changes, align the real outcome, product role, integration path, non-goals, autonomy tier, and minimum verification before mutation."
+                         },
+                         {
+                             "id":  "install_refresh",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "super-memory-brain/SKILL.md",
+                             "coldReferences":  [
+                                                    "references/install-refresh.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/hot-refresh-skills.ps1",
+                                             "scripts/install-agent.ps1"
+                                         ],
+                             "defaultPolicy":  "approval-aware writes and rollback evidence",
+                             "secondaryColdReferences":  [
+                                                             "references/package-shape.md via primary install/maintenance reference only"
+                                                         ]
+                         },
+                         {
+                             "id":  "maintenance_release",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "super-memory-brain/SKILL.md",
+                             "coldReferences":  [
+                                                    "references/maintenance-release.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/release-readiness.ps1",
+                                             "scripts/release-share.ps1"
+                                         ],
+                             "defaultPolicy":  "verify package and exclude private memory unless explicitly requested",
+                             "secondaryColdReferences":  [
+                                                             "references/package-shape.md via primary install/maintenance reference only"
+                                                         ]
+                         },
+                         {
+                             "id":  "direct_answer",
+                             "owner":  "host",
+                             "hotEntry":  "none",
+                             "coldReferences":  [
+
+                                                ],
+                             "scripts":  [
+
+                                         ],
+                             "defaultPolicy":  "answer without Super Brain, ORC, or recall when visible context is sufficient"
+                         },
+                         {
+                             "id":  "extension_integration_invariant",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "none",
+                             "coldReferences":  [
+                                                    "references/extension-integration-invariant.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/extension-capability-map.ps1",
+                                             "scripts/skill-capability-map.ps1",
+                                             "scripts/skill-sync-check.ps1",
+                                             "scripts/route-regression.ps1"
+                                         ],
+                             "defaultPolicy":  "Every new or updated skill, extension, plugin, MCP, route, or script capability must close source, trigger, ability-map/route visibility, cold-start boundary, installed-state, regression, sync, safety/privacy, rollback, and evidence checks unless explicitly scoped out by the user."
+                         },
+                         {
+                             "id":  "single_agent_subagent_workflow",
+                             "owner":  "skill-orchestrator",
+                             "hotEntry":  "super-memory-brain/SKILL.md short route only",
+                             "coldReferences":  [
+                                                    "references/single-agent-subagent-workflow.md",
+                                                    "references/orc-routing.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/intent-router.ps1",
+                                             "scripts/route-regression.ps1"
+                                         ],
+                             "defaultPolicy":  "Default collaboration model for complex single-agent work: controller task card, executor result card, reviewer/verifier audit card, evidence closeout; no channel/inbox/wait/ack unless explicitly requested."
+                         },
+                         {
+                             "id":  "automatic_evolution_policy",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "super-memory-brain/SKILL.md one-line pointer only",
+                             "coldReferences":  [
+                                                    "references/automatic-evolution-policy.md",
+                                                    "references/single-agent-subagent-workflow.md",
+                                                    "references/orc-routing.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/cognitive-preflight.ps1",
+                                             "scripts/reflection-promotion.ps1",
+                                             "scripts/runtime-drift-checkpoint.ps1"
+                                         ],
+                             "defaultPolicy":  "Automatic evolution is enabled by default after task closeout, bounded by Ponytail gate; L0-L3 may auto-promote evidence-backed package-local/cold-reference/test improvements, while L4 global/hot/install/deploy/publish/secret/destructive actions hard-stop and are not auto-applied."
+                         },
+                         {
+                             "id":  "anti_degradation_guard",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "super-memory-brain/SKILL.md compact guard only",
+                             "coldReferences":  [
+                                                    "references/base-instructions/gpt-5.5-base-instructions.md"
+                                                ],
+                             "scripts":  [
+                                             "scripts/cognitive-preflight.ps1",
+                                             "scripts/completion-guard.ps1"
+                                         ],
+                             "defaultPolicy":  "Keep GPT-5 execution quality from drifting: code/context first, smallest reversible change, preserve user edits, verify before closeout, compact evidence-based output. Full base instructions stay cold and load only for drift/instruction recovery or quality-critical work."
+                         }
+                     ]
+}

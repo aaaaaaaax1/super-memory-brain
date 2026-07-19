@@ -23,14 +23,37 @@ function Limit-Text([string]$Value,[int]$Max=360){ if([string]::IsNullOrWhiteSpa
 function Safe-TaskId([string]$Value) { if ([string]::IsNullOrWhiteSpace($Value)) { return '' }; $safe=(($Value -replace '[^A-Za-z0-9._-]+','-').Trim('-')).ToLowerInvariant(); if ([string]::IsNullOrWhiteSpace($safe)) { return '' }; if ($safe.Length -gt 120) { return $safe.Substring(0,120) }; return $safe }
 function Get-ScopedPath([string]$Value) { $safe=Safe-TaskId $Value; if ([string]::IsNullOrWhiteSpace($safe)) { return '' }; return (Join-Path $routeScopeRoot ($safe + '.json')) }
 function Read-WorkspaceJson([string]$Name){ $p=Join-Path $workspace $Name; if(Test-Path -LiteralPath $p){ try{ Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json }catch{$null} } else {$null} }
-function Read-ScopedOrWorkspaceJson([string]$Name,[string]$ScopedPath){ if(-not [string]::IsNullOrWhiteSpace($ScopedPath) -and (Test-Path -LiteralPath $ScopedPath)){ try{ return Get-Content -LiteralPath $ScopedPath -Raw -Encoding UTF8 | ConvertFrom-Json }catch{} }; return (Read-WorkspaceJson $Name) }
+function Get-ActiveScopedRoutes([string]$ExcludeTaskId='') {
+  $items=@()
+  foreach($file in @(Get-ChildItem -LiteralPath $routeScopeRoot -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+    try { $item=Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json; if($item -and [string]$item.status -eq 'clean' -and [string]$item.taskId -ne $ExcludeTaskId){$items+=$item} } catch {}
+  }
+  return @($items)
+}
+function Update-CompatibilityRoute([object]$ChangedRoute,[switch]$RemoveChanged) {
+  $pointer=$null
+  if(Test-Path -LiteralPath $statePath){try{$pointer=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8|ConvertFrom-Json}catch{}}
+  $changedTaskId=[string]$ChangedRoute.taskId
+  $pointerMatches=($pointer -and [string]$pointer.taskId -eq $changedTaskId)
+  if($RemoveChanged){
+    if(-not $pointerMatches){return $false}
+    $replacement=@(Get-ActiveScopedRoutes $changedTaskId)|Select-Object -First 1
+    if($replacement){Write-JsonUtf8NoBom $statePath $replacement 12}elseif(Test-Path -LiteralPath $statePath){Remove-Item -LiteralPath $statePath -Force}
+    return $true
+  }
+  if(-not $pointer -or $pointerMatches -or [string]$pointer.status -notin @('clean','route_drift_detected','resolved')){Write-JsonUtf8NoBom $statePath $ChangedRoute 12;return $true}
+  return $false
+}
+function Read-ScopedOrWorkspaceJson([string]$Name,[string]$ScopedPath){ if(-not [string]::IsNullOrWhiteSpace($ScopedPath) -and (Test-Path -LiteralPath $ScopedPath)){ try{ return Get-Content -LiteralPath $ScopedPath -Raw -Encoding UTF8 | ConvertFrom-Json }catch{} }; if([string]::IsNullOrWhiteSpace($TaskId)){return (Read-WorkspaceJson $Name)}; return $null }
 function Add-Violation($List,[string]$Code,[string]$Evidence,[string]$Severity='high'){ [void]$List.Add([pscustomobject]@{ code=$Code; severity=$Severity; evidence=Limit-Text $Evidence 420 }) }
 
 if($Phase -eq 'Clear'){
   $targetStatePath = Get-ScopedPath $TaskId
   if ([string]::IsNullOrWhiteSpace($targetStatePath)) { $targetStatePath = $statePath }
   $result=[pscustomobject]@{ ok=$true; checkedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); schema='super-brain.route-checkpoint.v1'; version=(Get-SuperBrainManifest $Root).version; phase=$Phase; status='resolved'; unresolvedRouteDrift=$false; taskId=Limit-Text $TaskId 120; violations=@(); blockers=@(); guard='ROUTE_DRIFT_DETECTED issues were cleared after returning to accepted goal route.'; nextAction='Continue with a route checkpoint before the next major action.'; path=$targetStatePath }
-  Write-JsonUtf8NoBom $targetStatePath $result 10; Write-JsonUtf8NoBom $statePath $result 10; Write-JsonUtf8NoBom $outPath $result 10
+  Write-JsonUtf8NoBom $targetStatePath $result 10
+  if([string]::IsNullOrWhiteSpace($TaskId)){Write-JsonUtf8NoBom $statePath $result 10}else{Update-CompatibilityRoute $result -RemoveChanged|Out-Null}
+  Write-JsonUtf8NoBom $outPath $result 10
   if($Json){Get-Content -LiteralPath $outPath -Raw -Encoding UTF8}else{Write-Host "ROUTE_CHECKPOINT ok=True status=resolved path=$statePath"}; exit 0
 }
 
@@ -60,6 +83,8 @@ $result=[pscustomobject]@{
   guard='ROUTE_DRIFT_DETECTED means stop, return to the accepted user goal/route, and do not expand scope or change direction without approval.'; nextAction=if($unresolved){'Report ROUTE_DRIFT_DETECTED and realign the action with goal-route-lock before continuing.'}else{'Route remains aligned; re-check before mutation/completion.'}; path=if([string]::IsNullOrWhiteSpace($scopedRoutePath)){$statePath}else{$scopedRoutePath}
 }
 $targetStatePath = if([string]::IsNullOrWhiteSpace($scopedRoutePath)){$statePath}else{$scopedRoutePath}
-Write-JsonUtf8NoBom $targetStatePath $result 12; Write-JsonUtf8NoBom $statePath $result 12; Write-JsonUtf8NoBom $outPath $result 12
+Write-JsonUtf8NoBom $targetStatePath $result 12
+if([string]::IsNullOrWhiteSpace($TaskId)){Write-JsonUtf8NoBom $statePath $result 12}else{Update-CompatibilityRoute $result|Out-Null}
+Write-JsonUtf8NoBom $outPath $result 12
 if($Json){Get-Content -LiteralPath $outPath -Raw -Encoding UTF8}else{Write-Host "ROUTE_CHECKPOINT ok=$($result.ok) phase=$Phase status=$status violations=$(@($violations).Count) path=$statePath"}
 if(-not $result.ok){exit 1}; exit 0

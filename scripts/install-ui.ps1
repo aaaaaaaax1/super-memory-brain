@@ -16,6 +16,7 @@ $script:UiEventLogPath = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot)
 $script:LastScriptOutput = ''
 
 $RequiredUiScripts = @(
+  'bootstrap.ps1',
   'install.ps1',
   'install-agent.ps1',
   'health-check.ps1',
@@ -424,7 +425,7 @@ $injectTab.Controls.Add((New-Label '1. 全局注入 ZCode + Codex' 18 18 300))
 $globalHelp = New-Label '默认把超级大脑四个技能注入到 ZCode 和 Codex，并指向同一个全局共享记忆。' 18 44 760 36
 $injectTab.Controls.Add($globalHelp)
 $globalInstallButton = New-Button '一键全局注入/刷新' 18 84 220 36
-$globalInstallButton.Add_Click({ Invoke-SuperBrainScript 'install.ps1' @('-MemoryMode','Shared') | Out-Null })
+$globalInstallButton.Add_Click({ Invoke-SuperBrainScript 'bootstrap.ps1' @('-MemoryMode','Shared') | Out-Null })
 $injectTab.Controls.Add($globalInstallButton)
 $openBackupTabButton = New-Button '打开清理备份页' 260 84 180 36
 $openBackupTabButton.Add_Click({ $tabs.SelectedTab = $backupTab })
@@ -747,7 +748,8 @@ $keepBackups.Value = 1
 $backupTab.Controls.Add($keepBackups)
 function Get-InstallBackupCleanupPlan([int]$Keep) {
   if ($Keep -lt 0) { throw '保留数量不能小于 0。' }
-  $backups = @(Get-ChildItem -LiteralPath $Root -Directory -Filter 'install-backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+  $installBackupRoot = Get-SuperBrainInstallBackupRoot $Root
+  $backups = if (Test-Path -LiteralPath $installBackupRoot) { @(Get-ChildItem -LiteralPath $installBackupRoot -Directory -Filter 'install-backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending) } else { @() }
   $delete = @($backups | Select-Object -Skip $Keep)
   return [pscustomobject]@{ backups = $backups; keep = @($backups | Select-Object -First $Keep); delete = $delete }
 }
@@ -765,9 +767,9 @@ function Remove-InstallBackupCandidates([int]$Keep) {
   $plan = Write-InstallBackupPreview $Keep
   foreach ($dir in $plan.delete) {
     $full = Get-NormalizedSuperBrainRoot $dir.FullName
-    $parent = Get-NormalizedSuperBrainRoot $Root
+    $parent = Get-NormalizedSuperBrainRoot (Get-SuperBrainInstallBackupRoot $Root)
     $name = Split-Path -Leaf $full
-    if (-not $full.StartsWith($parent + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) { throw "拒绝删除包目录外路径：$full" }
+    if (-not $full.StartsWith($parent + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) { throw "拒绝删除安装备份目录外路径：$full" }
     if ($name -notlike 'install-backup-*') { throw "拒绝删除非安装备份目录：$full" }
     Remove-Item -LiteralPath $dir.FullName -Recurse -Force
     Add-Log "INSTALL_BACKUP_DELETED $($dir.FullName)"

@@ -115,7 +115,7 @@ foreach ($pattern in $privatePathPatterns) {
 }
 
 $textFiles = @($allFiles | Where-Object { $_.Extension -in @('.md','.json','.ps1','.bat','.py','.txt','.toml','.yaml','.yml') })
-$sensitivePattern = '(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|password|cookie|authorization)\s*[=:]\s*[''\"]?[A-Za-z0-9_\-\./+=]{16,}'
+$sensitivePattern = '(?i)((api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|password|cookie)\s*[=:]\s*[''\"]?[A-Za-z0-9_\-\./+=]{16,}|authorization\s*[=:]\s*[''\"]?(Bearer|Basic)\s+[A-Za-z0-9_\-\./+=]{12,})'
 $sensitiveHits = @()
 foreach ($file in $textFiles) {
   try {
@@ -127,17 +127,18 @@ foreach ($file in $textFiles) {
 }
 if ($sensitiveHits.Count -eq 0) { Pass 'sensitive text scan clean' } else { Fail ('sensitive text hit ' + (($sensitiveHits | Select-Object -First 10) -join ',')) }
 
-$localPathPatterns = @(
-  'C:\\Users\\MSJ',
-  'G:\\Ai\\Zcode项目'
-)
+$localPathLiterals = @(
+  $env:USERPROFILE,
+  $Root,
+  (Split-Path -Parent $Root)
+) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique
 $localPathHits = @()
 foreach ($file in $textFiles) {
   try {
     $text = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
-    foreach ($pattern in $localPathPatterns) {
-      if ($text -match $pattern) {
-        $localPathHits += ((Get-RelativePath $Destination $file.FullName) + " => $pattern")
+    foreach ($literal in $localPathLiterals) {
+      if ($text.IndexOf([string]$literal, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        $localPathHits += ((Get-RelativePath $Destination $file.FullName) + ' => local absolute path')
         break
       }
     }
@@ -157,16 +158,18 @@ foreach ($rel in $emptyDirs) {
 }
 
 $required = @(
-  'README.md','QUICK_START.md','COMMANDS.md','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json',
+  'README.md','QUICK_START.md','COMMANDS.md','FRIEND_INSTALL.md','install.bat','manifest.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','maintenance-policy.json','intelligence-policy.json','objective-benchmark-policy.json','route-map.json','capabilities.json','runtime-layout.example.json',
   'tests\memory-recall-tests.json','tests\memory-eval-tests.json',
   'super-memory-brain\SKILL.md',
   'references\index.md',
   'references\single-agent-subagent-workflow.md',
   'references\automatic-evolution-policy.md',
+  'references\four-layer-runtime-layout.md',
   'references\base-instructions\gpt-5.5-base-instructions.md',
   'modules\skill-orchestrator\SKILL.md',
   'modules\plusunm-g1\SKILL.md',
   'modules\nexsandglass-dedicated-memory\SKILL.md',
+  'runtime\brain_core.py','runtime\brain_cli.py','runtime\brain_mcp.py','runtime\brain_eval.py',
   'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_log.py',
   'memory\scripts\sandglass_log.py',
   'memory\scripts\sandglass_vault.py'

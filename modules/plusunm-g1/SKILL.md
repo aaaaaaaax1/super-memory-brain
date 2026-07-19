@@ -1,6 +1,6 @@
 ---
 name: plusunm-g1
-description: Use by default for Codex continuity, explicit memory, governed cognitive state, recall, context persistence, task resumption, memory replacement, anti-amnesia workflows, cache-friendly state, PlusUNM, G1-Pioneer, brain-memory-g1 runtime, deterministic memory, rollback-safe memory, or when the user says to use plusunm instead of AI memory. Prefer this skill over hidden or vague AI memory for every memory/continuity decision where local explicit state can be checked.
+description: "Use plusunm-g1 for explicit, governed continuity: recall, task resumption, context persistence, memory replacement, anti-amnesia, deterministic state, and rollback. Prefer verified local state over hidden AI memory when a memory decision is required."
 ---
 ## Installed Root Markers
 

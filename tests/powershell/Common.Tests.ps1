@@ -19,4 +19,13 @@ Describe 'Super Memory Brain common helpers' {
       Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
     }
   }
+
+  It 'keeps the cold-skill availability guard inside the startup budget' {
+    $block = Get-SuperBrainGlobalStartupBlock
+    $block.Length -le (Get-SuperBrainGlobalStartupMaxChars) | Should Be $true
+    $block.Contains('Skill availability guard') | Should Be $true
+    $block.Contains('skill-pool-router') | Should Be $true
+    $block.Contains('no activation or restart') | Should Be $true
+    $block.Contains('first/final update') | Should Be $true
+  }
 }

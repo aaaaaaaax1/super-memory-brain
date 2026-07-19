@@ -1,6 +1,6 @@
 ---
 name: skill-evolution-loop
-description: Internal Super Brain governance skill for lightweight SkillOpt-inspired evolution: capture failure samples, propose bounded rule/skill edits, validate with small replay gates, stage proposals for user review, and only then allow adoption/hot-refresh. Use when recurring failures, compression drift, hallucinated resume, wrong skill routing, repeated tool/schema mistakes, or user feedback indicates a reusable rule should improve. Do not auto-read full histories or call external APIs.
+description: "Govern bounded Super Brain skill evolution: capture recurring failures, propose small rule changes, validate with replay gates, stage for review, then adopt or refresh. Use for routing drift, hallucinated resumes, repeated tool mistakes, or reusable user feedback."
 ---
 
 # Skill Evolution Loop

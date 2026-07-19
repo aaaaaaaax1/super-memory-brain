@@ -23,6 +23,7 @@ package-root.txt
 memory-root.txt
 .memory-scope.json
 memory-sharing-policy.json
+runtime-layout.json
 
 # Generated caches
 __pycache__/

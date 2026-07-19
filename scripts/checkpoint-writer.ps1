@@ -8,6 +8,7 @@ param(
   [string]$Platform = 'zcode',
   [string]$SessionName = '',
   [string]$TaskName = '',
+  [string]$WorkspaceKey = '',
   [string]$CurrentStep = '',
   [string]$NextAction = '',
   [string[]]$Blockers = @(),
@@ -19,6 +20,8 @@ param(
   [string]$GuardHash = '',
   [string]$Source = '',
   [string]$Status = 'active',
+  [int]$ExpectedRevision = -1,
+  [string]$OwnerWorkspace = '',
   [string]$Goal = '',
   [string]$CurrentPhase = '',
   [string[]]$CompletedSteps = @(),
@@ -31,6 +34,7 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'task-link-store.ps1')
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
@@ -38,12 +42,74 @@ $memoryBase = Get-SuperBrainMemoryBaseRoot $Root
 $workspace = Join-Path $memoryBase 'workspace'
 New-Item -ItemType Directory -Force -Path $workspace | Out-Null
 $path = Join-Path $workspace 'active-checkpoint.json'
+$checkpointRoot = Join-Path $workspace 'runtime-state\checkpoints'
+$activeCheckpointRoot = Join-Path $checkpointRoot 'active'
+$completedCheckpointRoot = Join-Path $checkpointRoot 'completed'
+foreach ($dir in @($checkpointRoot,$activeCheckpointRoot,$completedCheckpointRoot)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
 $sharedRoot = Get-SuperBrainSharedMemoryRoot $Root
 # Shared identity index paths: memory/shared/agents, memory/shared/sessions, memory/shared/tasks, memory/shared/links.
 
-function Read-Checkpoint {
-  if (-not (Test-Path $path)) { return $null }
-  try { return Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+function Get-ScopedCheckpointPath([string]$Id,[string]$Lifecycle='active') {
+  if ([string]::IsNullOrWhiteSpace($Id)) { return '' }
+  $root = if ($Lifecycle -eq 'completed') { $completedCheckpointRoot } else { $activeCheckpointRoot }
+  return Get-SuperBrainCanonicalTaskPath $root $Id '.json'
+}
+
+function Read-JsonFile([string]$JsonPath) {
+  if ([string]::IsNullOrWhiteSpace($JsonPath) -or -not (Test-Path -LiteralPath $JsonPath)) { return $null }
+  try { return Get-Content -LiteralPath $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+}
+
+function Read-Checkpoint([string]$Id='') {
+  if (-not [string]::IsNullOrWhiteSpace($Id)) {
+    $scoped = Read-JsonFile (Get-ScopedCheckpointPath $Id)
+    if ($scoped) { return $scoped }
+    $legacy = Read-JsonFile $path
+    if ($legacy -and [string]$legacy.taskId -eq $Id) { return $legacy }
+    return $null
+  }
+  $current = Read-JsonFile $path
+  if ($current) { return $current }
+  $latest = Get-ChildItem -LiteralPath $activeCheckpointRoot -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($latest) { return Read-JsonFile $latest.FullName }
+  return $null
+}
+
+function Get-ActiveCheckpoints([string]$ExcludeTaskId='') {
+  $items = @()
+  foreach ($file in @(Get-ChildItem -LiteralPath $activeCheckpointRoot -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+    $item = Read-JsonFile $file.FullName
+    if (-not $item -or [string]$item.status -ne 'active') { continue }
+    if (-not [string]::IsNullOrWhiteSpace($ExcludeTaskId) -and [string]$item.taskId -eq $ExcludeTaskId) { continue }
+    $items += $item
+  }
+  return @($items)
+}
+
+function Import-LegacyCheckpoint {
+  $legacy = Read-JsonFile $path
+  if (-not $legacy -or [string]::IsNullOrWhiteSpace([string]$legacy.taskId) -or [string]$legacy.status -ne 'active') { return }
+  $scopedPath = Get-ScopedCheckpointPath ([string]$legacy.taskId)
+  if (-not (Test-Path -LiteralPath $scopedPath)) {
+    Write-JsonUtf8NoBom $scopedPath $legacy 10
+    $null = Sync-SuperBrainTaskState ([string]$legacy.taskId) 'checkpoint' 'upsert' $scopedPath 'checkpoint-writer.ps1:legacy-import'
+  }
+}
+
+function Update-CompatibilityCheckpoint([string]$ChangedTaskId,[object]$ChangedCheckpoint,[switch]$RemoveChanged) {
+  $pointer = Read-JsonFile $path
+  $pointerMatches = ($pointer -and [string]$pointer.taskId -eq $ChangedTaskId)
+  if ($RemoveChanged) {
+    if (-not $pointerMatches) { return $false }
+    $replacement = @(Get-ActiveCheckpoints -ExcludeTaskId $ChangedTaskId) | Select-Object -First 1
+    if ($replacement) { Write-JsonUtf8NoBom $path $replacement 10 } elseif (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    return $true
+  }
+  if (-not $pointer -or $pointerMatches -or [string]$pointer.status -ne 'active') {
+    Write-JsonUtf8NoBom $path $ChangedCheckpoint 10
+    return $true
+  }
+  return $false
 }
 
 function Limit-Text([string]$Text, [int]$Max = 180) {
@@ -69,17 +135,17 @@ function Get-DefaultAgentId([string]$PlatformValue, [string]$AgentValue) {
   return (Get-IdentitySafeName $base 'agent') + 'id-default'
 }
 
+function Get-CheckpointOwner {
+  $ownerAgentId = if (-not [string]::IsNullOrWhiteSpace($AgentId)) { Get-IdentitySafeName $AgentId 'agentid-default' } else { Get-DefaultAgentId $Platform $Agent }
+  return Get-SuperBrainTaskStateOwnerInput $null $ownerAgentId $SessionId $Platform $OwnerWorkspace
+}
+
 function Get-TaskDirectoryForStatus([string]$StatusValue) {
   $normalized = ([string]$StatusValue).ToLowerInvariant()
   if ($normalized -in @('paused','waiting')) { return 'paused' }
   if ($normalized -eq 'blocked') { return 'blocked' }
   if ($normalized -like 'completed*' -or $normalized -eq 'verified') { return 'completed' }
   return 'active'
-}
-
-function Read-JsonFile([string]$JsonPath) {
-  if (-not (Test-Path -LiteralPath $JsonPath)) { return $null }
-  try { return Get-Content -LiteralPath $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
 }
 
 function Write-SharedTaskIdentity([object]$Checkpoint, [string]$Lifecycle) {
@@ -91,6 +157,7 @@ function Write-SharedTaskIdentity([object]$Checkpoint, [string]$Lifecycle) {
   $agentIdValue = if ($Checkpoint.agentId) { Get-IdentitySafeName ([string]$Checkpoint.agentId) 'agentid-default' } else { Get-DefaultAgentId $platformName $agentName }
   $sessionIdValue = if ($Checkpoint.sessionId) { [string]$Checkpoint.sessionId } else { '' }
   $sessionNameValue = if ($Checkpoint.sessionName) { [string]$Checkpoint.sessionName } elseif ($Checkpoint.taskName) { [string]$Checkpoint.taskName } elseif ($Checkpoint.goal) { Limit-Text ([string]$Checkpoint.goal) 60 } else { '' }
+  $workspaceKeyValue = if ($Checkpoint.PSObject.Properties['workspaceKey']) { [string]$Checkpoint.workspaceKey } else { '' }
   $taskNameValue = if ($Checkpoint.taskName) { [string]$Checkpoint.taskName } elseif ($Checkpoint.goal) { Limit-Text ([string]$Checkpoint.goal) 90 } else { $taskIdValue }
   $statusValue = if ($Checkpoint.status) { [string]$Checkpoint.status } else { 'active' }
   $updatedAt = if ($Checkpoint.timestamp) { [string]$Checkpoint.timestamp } elseif ($Checkpoint.updatedAt) { [string]$Checkpoint.updatedAt } else { (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') }
@@ -121,6 +188,7 @@ function Write-SharedTaskIdentity([object]$Checkpoint, [string]$Lifecycle) {
     $taskIds = @()
     if ($existingSession -and $existingSession.currentTaskIds) { $taskIds += @($existingSession.currentTaskIds) }
     if ($statusValue -in @('active','running','in_progress','paused','blocked','waiting')) { $taskIds += $taskIdValue }
+    else { $taskIds = @($taskIds | Where-Object { [string]$_ -ne $taskIdValue }) }
     $taskIds = @($taskIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
     $sessionCard = [pscustomobject]@{
       schema = 'super-brain.session-card.v1'
@@ -129,6 +197,7 @@ function Write-SharedTaskIdentity([object]$Checkpoint, [string]$Lifecycle) {
       agentId = $agentIdValue
       agentName = $agentName
       platform = $platformName
+      workspaceKey = $workspaceKeyValue
       status = if ($statusValue -in @('active','running','in_progress')) { 'active' } elseif ($statusValue -in @('paused','blocked','waiting')) { $statusValue } else { 'completed' }
       currentTaskIds = @($taskIds)
       memoryIds = @($Checkpoint.memoryIds)
@@ -141,7 +210,7 @@ function Write-SharedTaskIdentity([object]$Checkpoint, [string]$Lifecycle) {
   $taskDirName = Get-TaskDirectoryForStatus $statusValue
   $taskDir = Join-Path $tasksRoot $taskDirName
   New-Item -ItemType Directory -Force -Path $taskDir | Out-Null
-  $taskCardPath = Join-Path $taskDir ((Get-IdentitySafeName $taskIdValue 'task') + '.task.json')
+  $taskCardPath = Get-SuperBrainCanonicalTaskPath $taskDir $taskIdValue '.task.json'
   $taskCard = [pscustomobject]@{
     schema = 'super-brain.task-card.v1'
     taskId = $taskIdValue
@@ -149,6 +218,8 @@ function Write-SharedTaskIdentity([object]$Checkpoint, [string]$Lifecycle) {
     agentId = $agentIdValue
     agentName = $agentName
     platform = $platformName
+    workspaceKey = $workspaceKeyValue
+    workspace = if ($Checkpoint.PSObject.Properties['workspace']) { [string]$Checkpoint.workspace } else { '' }
     sessionId = $sessionIdValue
     sessionName = $sessionNameValue
     status = $statusValue
@@ -167,36 +238,33 @@ function Write-SharedTaskIdentity([object]$Checkpoint, [string]$Lifecycle) {
     lifecycle = $Lifecycle
     updatedAt = $updatedAt
   }
-  Write-JsonUtf8NoBom $taskCardPath $taskCard 10
+  $null = Commit-SuperBrainTaskState $taskIdValue 'task_card' $taskCard $taskCardPath 'checkpoint-writer.ps1:task-card'
 
   foreach ($other in @('active','paused','blocked','completed')) {
     if ($other -eq $taskDirName) { continue }
-    $otherPath = Join-Path (Join-Path $tasksRoot $other) ((Get-IdentitySafeName $taskIdValue 'task') + '.task.json')
+    $otherPath = Get-SuperBrainCanonicalTaskPath (Join-Path $tasksRoot $other) $taskIdValue '.task.json'
     if (Test-Path -LiteralPath $otherPath) { Remove-Item -LiteralPath $otherPath -Force -ErrorAction SilentlyContinue }
   }
 
   $sessionTaskPath = Join-Path $linksDir 'session-task-links.json'
   $taskMemoryPath = Join-Path $linksDir 'task-memory-links.json'
-  $sessionTaskLinks = @()
-  $existingLinks = Read-JsonFile $sessionTaskPath
-  if ($existingLinks -and $existingLinks.links) { $sessionTaskLinks += @($existingLinks.links) }
-  $sessionTaskLinks += [pscustomobject]@{ sessionId=$sessionIdValue; sessionName=$sessionNameValue; agentId=$agentIdValue; platform=$platformName; taskId=$taskIdValue; status=$statusValue; updatedAt=$updatedAt; source='checkpoint-writer.ps1' }
-  $sessionTaskLinks = @($sessionTaskLinks | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.taskId) } | Sort-Object sessionId,taskId,updatedAt -Unique)
-  Write-JsonUtf8NoBom $sessionTaskPath ([pscustomobject]@{ schema='super-brain.session-task-links.v1'; updatedAt=$updatedAt; links=@($sessionTaskLinks) }) 10
+  $linkPolicy = Get-SuperBrainTaskLinkPolicy $Root
+  $sessionLink = [pscustomobject]@{ sessionId=$sessionIdValue; sessionName=$sessionNameValue; agentId=$agentIdValue; platform=$platformName; workspaceKey=$workspaceKeyValue; taskId=$taskIdValue; status=$statusValue; updatedAt=$updatedAt; source='checkpoint-writer.ps1' }
+  $null = Update-SuperBrainTaskLinkFile -Path $sessionTaskPath -Schema 'super-brain.session-task-links.v1' -Kind 'session-task' -Incoming @($sessionLink) -MaxItems $linkPolicy.maxSessionTaskLinks -CompletedRetentionDays $linkPolicy.completedRetentionDays -UpdatedAt $updatedAt
 
   $taskMemoryLinks = @()
-  $existingMemoryLinks = Read-JsonFile $taskMemoryPath
-  if ($existingMemoryLinks -and $existingMemoryLinks.links) { $taskMemoryLinks += @($existingMemoryLinks.links) }
   foreach ($memoryId in @($Checkpoint.memoryIds)) {
     if (-not [string]::IsNullOrWhiteSpace([string]$memoryId)) { $taskMemoryLinks += [pscustomobject]@{ taskId=$taskIdValue; memoryId=[string]$memoryId; agentId=$agentIdValue; sessionId=$sessionIdValue; updatedAt=$updatedAt; source='checkpoint-writer.ps1' } }
   }
-  $taskMemoryLinks = @($taskMemoryLinks | Sort-Object taskId,memoryId,updatedAt -Unique)
-  Write-JsonUtf8NoBom $taskMemoryPath ([pscustomobject]@{ schema='super-brain.task-memory-links.v1'; updatedAt=$updatedAt; links=@($taskMemoryLinks) }) 10
+  $null = Update-SuperBrainTaskLinkFile -Path $taskMemoryPath -Schema 'super-brain.task-memory-links.v1' -Kind 'task-memory' -Incoming @($taskMemoryLinks) -MaxItems $linkPolicy.maxTaskMemoryLinks -CompletedRetentionDays $linkPolicy.completedRetentionDays -UpdatedAt $updatedAt
+  return $taskCardPath
 }
+
+Import-LegacyCheckpoint
 
 switch ($Action) {
   'Get' {
-    $current = Read-Checkpoint
+    $current = Read-Checkpoint $TaskId
     if ($Json) {
       if ($null -eq $current) { 'null' } else { $current | ConvertTo-Json -Depth 8 }
     } else {
@@ -205,22 +273,32 @@ switch ($Action) {
     exit 0
   }
   'Clear' {
-    if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
-    if ($Json) { [pscustomobject]@{ ok=$true; action='Clear'; path=$path } | ConvertTo-Json -Depth 6 } else { Write-Host "CHECKPOINT_CLEARED path=$path" }
+    $current = Read-Checkpoint $TaskId
+    $targetTaskId = if (-not [string]::IsNullOrWhiteSpace($TaskId)) { $TaskId } elseif ($current) { [string]$current.taskId } else { '' }
+    $scopedPath = Get-ScopedCheckpointPath $targetTaskId
+    $owner = Get-CheckpointOwner
+    if (-not [string]::IsNullOrWhiteSpace($targetTaskId)) { $null = Clear-SuperBrainTaskState -TaskId $targetTaskId -EntityKind checkpoint -EntityPath $scopedPath -Source 'checkpoint-writer.ps1:clear' -ExpectedRevision $ExpectedRevision -OwnerWorkspace $owner.workspace -OwnerAgentId $owner.agentId -OwnerSessionId $owner.sessionId -OwnerPlatform $owner.platform }
+    $pointerChanged = if ([string]::IsNullOrWhiteSpace($targetTaskId)) { $false } else { Update-CompatibilityCheckpoint -ChangedTaskId $targetTaskId -ChangedCheckpoint $null -RemoveChanged }
+    $result = [pscustomobject]@{ ok=$true; action='Clear'; taskId=$targetTaskId; scopedPath=$scopedPath; compatibilityPath=$path; compatibilityPointerChanged=$pointerChanged }
+    if ($Json) { $result | ConvertTo-Json -Depth 6 } else { Write-Host "CHECKPOINT_CLEARED taskId=$targetTaskId path=$scopedPath" }
     exit 0
   }
   'Start' {
-    if ([string]::IsNullOrWhiteSpace($TaskId)) { $TaskId = 'task-' + (Get-Date -Format 'yyyyMMdd-HHmmss') }
+    if ([string]::IsNullOrWhiteSpace($TaskId)) { $TaskId = 'task-' + (Get-Date -Format 'yyyyMMdd-HHmmssfff') + '-' + ([guid]::NewGuid().ToString('n').Substring(0,6)) }
+    $WorkspaceKey = Get-SuperBrainWorkspaceKey $WorkspaceKey
+    $owner = Get-CheckpointOwner
     $checkpoint = [pscustomobject]@{
       ok = $true
       action = 'Start'
       taskId = $TaskId
       taskName = Limit-Text $TaskName 120
-      sessionId = $SessionId
+      sessionId = $owner.sessionId
       sessionName = Limit-Text $SessionName 120
       agent = $Agent
-      agentId = Get-DefaultAgentId $Platform $Agent
-      platform = $Platform
+      agentId = $owner.agentId
+      platform = $owner.platform
+      workspace = $owner.workspace
+      workspaceKey = $WorkspaceKey
       timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
       status = if ([string]::IsNullOrWhiteSpace($Status)) { 'active' } else { $Status }
       source = Limit-Text $Source 120
@@ -242,30 +320,44 @@ switch ($Action) {
       preflightId = Limit-Text $PreflightId 120
       guardHash = Limit-Text $GuardHash 120
     }
-    Write-JsonUtf8NoBom $path $checkpoint 8
-    Write-SharedTaskIdentity $checkpoint 'Start'
-    if ($Json) { $checkpoint | ConvertTo-Json -Depth 8 } else { Write-Host "CHECKPOINT_STARTED taskId=$TaskId step=$CurrentStep" }
+    $scopedPath = Get-ScopedCheckpointPath $TaskId
+    $null = Commit-SuperBrainTaskState -TaskId $TaskId -EntityKind checkpoint -EntityValue $checkpoint -EntityPath $scopedPath -Source 'checkpoint-writer.ps1:start' -ExpectedRevision $ExpectedRevision -OwnerWorkspace $owner.workspace -OwnerAgentId $owner.agentId -OwnerSessionId $owner.sessionId -OwnerPlatform $owner.platform
+    $pointerChanged = Update-CompatibilityCheckpoint -ChangedTaskId $TaskId -ChangedCheckpoint $checkpoint
+    $taskCardPath = Write-SharedTaskIdentity $checkpoint 'Start'
+    $checkpoint | Add-Member -NotePropertyName scopedPath -NotePropertyValue $scopedPath -Force
+    $checkpoint | Add-Member -NotePropertyName compatibilityPath -NotePropertyValue $path -Force
+    $checkpoint | Add-Member -NotePropertyName compatibilityPointerChanged -NotePropertyValue $pointerChanged -Force
+    if ($Json) { $checkpoint | ConvertTo-Json -Depth 8 } else { Write-Host "CHECKPOINT_STARTED taskId=$TaskId step=$CurrentStep path=$scopedPath" }
     exit 0
   }
   'Complete' {
-    $current = Read-Checkpoint
+    $current = Read-Checkpoint $TaskId
+    if (-not $current) {
+      $requested = if ([string]::IsNullOrWhiteSpace($TaskId)) { '<current>' } else { $TaskId }
+      throw "CHECKPOINT_TASK_NOT_ACTIVE: $requested"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TaskId) -and [string]$current.taskId -ne $TaskId) { throw "CHECKPOINT_TASK_MISMATCH: requested=$TaskId active=$($current.taskId)" }
+    $resolvedTaskId = [string]$current.taskId
+    $owner = Get-CheckpointOwner
     $checkpoint = [pscustomobject]@{
       ok = $true
       action = 'Complete'
-      taskId = if ($TaskId) { $TaskId } elseif ($current) { $current.taskId } else { '' }
+      taskId = $resolvedTaskId
       taskName = if ($TaskName) { Limit-Text $TaskName 120 } elseif ($current) { [string]$current.taskName } else { '' }
-      sessionId = if ($SessionId) { $SessionId } elseif ($current) { $current.sessionId } else { '' }
+      sessionId = $owner.sessionId
       sessionName = if ($SessionName) { Limit-Text $SessionName 120 } elseif ($current) { [string]$current.sessionName } else { '' }
-      agent = if ($Agent) { $Agent } elseif ($current) { $current.agent } else { 'super-memory-brain' }
-      agentId = if ($AgentId) { Get-IdentitySafeName $AgentId 'agentid-default' } elseif ($current -and $current.agentId) { [string]$current.agentId } else { Get-DefaultAgentId $Platform $Agent }
-      platform = if ($Platform) { $Platform } elseif ($current) { $current.platform } else { 'zcode' }
+      agent = if ($PSBoundParameters.ContainsKey('Agent')) { $Agent } elseif ($current) { $current.agent } else { 'super-memory-brain' }
+      agentId = $owner.agentId
+      platform = $owner.platform
+      workspace = $owner.workspace
+      workspaceKey = if ($WorkspaceKey) { Get-SuperBrainWorkspaceKey $WorkspaceKey } elseif ($current -and $current.PSObject.Properties['workspaceKey']) { [string]$current.workspaceKey } else { Get-SuperBrainWorkspaceKey }
       timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
       status = 'completed'
       source = if ($Source) { Limit-Text $Source 120 } elseif ($current) { Limit-Text ([string]$current.source) 120 } else { '' }
       goal = if ($Goal) { Limit-Text $Goal 180 } elseif ($current) { Limit-Text ([string]$current.goal) 180 } else { '' }
       currentPhase = if ($CurrentPhase) { Limit-Text $CurrentPhase 120 } elseif ($current) { Limit-Text ([string]$current.currentPhase) 120 } else { '' }
       completedSteps = if ($CompletedSteps.Count -gt 0) { @(Limit-List $CompletedSteps 12 160) } elseif ($current) { @($current.completedSteps) } else { @() }
-      pendingSteps = if ($PendingSteps.Count -gt 0) { @(Limit-List $PendingSteps 12 160) } elseif ($current) { @($current.pendingSteps) } else { @() }
+      pendingSteps = @()
       currentStep = Limit-Text $CurrentStep 160
       blockers = @(Limit-List $Blockers 8 160)
       nextAction = Limit-Text $NextAction 220
@@ -279,12 +371,19 @@ switch ($Action) {
       constraintSources = if ($ConstraintSources.Count -gt 0) { @(Limit-List $ConstraintSources 8 160) } elseif ($current) { @($current.constraintSources) } else { @() }
       preflightId = if ($PreflightId) { Limit-Text $PreflightId 120 } elseif ($current) { Limit-Text ([string]$current.preflightId) 120 } else { '' }
       guardHash = if ($GuardHash) { Limit-Text $GuardHash 120 } elseif ($current) { Limit-Text ([string]$current.guardHash) 120 } else { '' }
-      supersedes = if ($current) { $current.taskId } else { '' }
+      supersedes = $resolvedTaskId
     }
+    $completedScopedPath = Get-ScopedCheckpointPath $resolvedTaskId 'completed'
+    $null = Commit-SuperBrainTaskState -TaskId $resolvedTaskId -EntityKind checkpoint -EntityValue $checkpoint -EntityPath $completedScopedPath -Source 'checkpoint-writer.ps1:complete' -ExpectedRevision $ExpectedRevision -OwnerWorkspace $owner.workspace -OwnerAgentId $owner.agentId -OwnerSessionId $owner.sessionId -OwnerPlatform $owner.platform
     Write-JsonUtf8NoBom (Join-Path $workspace 'last-completed-checkpoint.json') $checkpoint 8
-    Write-SharedTaskIdentity $checkpoint 'Complete'
-    if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
-    if ($Json) { $checkpoint | ConvertTo-Json -Depth 8 } else { Write-Host "CHECKPOINT_COMPLETED taskId=$($checkpoint.taskId)" }
+    $taskCardPath = Write-SharedTaskIdentity $checkpoint 'Complete'
+    $activeScopedPath = Get-ScopedCheckpointPath $resolvedTaskId
+    if (Test-Path -LiteralPath $activeScopedPath) { Remove-Item -LiteralPath $activeScopedPath -Force }
+    $pointerChanged = Update-CompatibilityCheckpoint -ChangedTaskId $resolvedTaskId -ChangedCheckpoint $null -RemoveChanged
+    $checkpoint | Add-Member -NotePropertyName scopedPath -NotePropertyValue $completedScopedPath -Force
+    $checkpoint | Add-Member -NotePropertyName compatibilityPath -NotePropertyValue $path -Force
+    $checkpoint | Add-Member -NotePropertyName compatibilityPointerChanged -NotePropertyValue $pointerChanged -Force
+    if ($Json) { $checkpoint | ConvertTo-Json -Depth 8 } else { Write-Host "CHECKPOINT_COMPLETED taskId=$($checkpoint.taskId) path=$completedScopedPath" }
     exit 0
   }
 }
