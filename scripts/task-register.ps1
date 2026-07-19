@@ -10,6 +10,7 @@ param(
   [Alias('ConversationTitle')]
   [string]$SessionTitle = '',
   [string]$SessionName = '',
+  [string]$WorkspaceKey = '',
   [string]$Goal = '',
   [string]$CurrentPhase = '',
   [string]$CurrentStep = '',
@@ -27,6 +28,7 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'task-link-store.ps1')
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -67,12 +69,16 @@ function Get-TaskDirectory([string]$StatusValue) {
   return 'active'
 }
 
+function New-TaskId {
+  return 'task-' + (Get-Date -Format 'yyyyMMdd-HHmmssfff') + '-' + ([guid]::NewGuid().ToString('n').Substring(0,6))
+}
+
 function Read-JsonFile([string]$JsonPath) {
   if (-not (Test-Path -LiteralPath $JsonPath)) { return $null }
   try { return Get-Content -LiteralPath $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
 }
 
-function Find-AutoReusableTask([string]$NameValue, [string]$SessionNameValue, [string]$AgentIdValue) {
+function Find-AutoReusableTask([string]$NameValue, [string]$SessionNameValue, [string]$AgentIdValue, [string]$WorkspaceKeyValue) {
   $roots = @('active','paused','blocked') | ForEach-Object { Join-Path (Join-Path $sharedRoot 'tasks') $_ }
   foreach ($rootDir in $roots) {
     if (-not (Test-Path -LiteralPath $rootDir)) { continue }
@@ -83,22 +89,25 @@ function Find-AutoReusableTask([string]$NameValue, [string]$SessionNameValue, [s
       $sameName = (-not [string]::IsNullOrWhiteSpace($NameValue) -and [string]$card.taskName -eq $NameValue)
       $sameSession = (-not [string]::IsNullOrWhiteSpace($SessionNameValue) -and [string]$card.sessionName -eq $SessionNameValue)
       $sameAgent = ([string]::IsNullOrWhiteSpace($AgentIdValue) -or [string]$card.agentId -eq $AgentIdValue)
-      if ($sameAgent -and ($sameName -or ($sameName -and $sameSession))) { return $card }
+      $sameWorkspace = ($card.PSObject.Properties['workspaceKey'] -and (Test-SuperBrainWorkspaceKey ([string]$card.workspaceKey) $WorkspaceKeyValue))
+      $sessionMatches = ([string]::IsNullOrWhiteSpace($SessionNameValue) -or $sameSession)
+      if ($sameAgent -and $sameWorkspace -and $sameName -and $sessionMatches) { return $card }
     }
   }
   return $null
 }
 
 $agentIdValue = Get-AgentId $Platform $Agent
+$workspaceKeyValue = Get-SuperBrainWorkspaceKey $WorkspaceKey
 $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
 $taskNameValue = if ($TaskName) { Limit-Text $TaskName 120 } elseif ($Goal) { Limit-Text $Goal 120 } else { $TaskId }
 $sessionTitleValue = Limit-Text $SessionTitle 120
 $sessionNameValue = if ($SessionName) { Limit-Text $SessionName 120 } elseif ($sessionTitleValue) { $sessionTitleValue } elseif ($taskNameValue) { $taskNameValue } else { 'unnamed session' }
 if ($Auto -and [string]::IsNullOrWhiteSpace($TaskId)) {
-  $reusable = Find-AutoReusableTask $taskNameValue $sessionNameValue $agentIdValue
+  $reusable = Find-AutoReusableTask $taskNameValue $sessionNameValue $agentIdValue $workspaceKeyValue
   if ($reusable -and -not [string]::IsNullOrWhiteSpace([string]$reusable.taskId)) { $TaskId = [string]$reusable.taskId }
 }
-if ([string]::IsNullOrWhiteSpace($TaskId)) { $TaskId = 'task-' + (Get-Date -Format 'yyyyMMdd-HHmmss') }
+if ([string]::IsNullOrWhiteSpace($TaskId)) { $TaskId = New-TaskId }
 if ([string]::IsNullOrWhiteSpace($taskNameValue)) { $taskNameValue = $TaskId }
 $statusDir = Get-TaskDirectory $Status
 
@@ -130,6 +139,7 @@ if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
   $taskIds = @()
   if ($existingSession -and $existingSession.currentTaskIds) { $taskIds += @($existingSession.currentTaskIds) }
   if ($Status -in @('active','running','in_progress','paused','waiting','blocked')) { $taskIds += $TaskId }
+  else { $taskIds = @($taskIds | Where-Object { [string]$_ -ne $TaskId }) }
   $taskIds = @($taskIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
   $sessionCard = [pscustomobject]@{
     schema = 'super-brain.session-card.v1'
@@ -138,6 +148,7 @@ if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
     agentId = $agentIdValue
     agentName = $Agent
     platform = $Platform
+    workspaceKey = $workspaceKeyValue
     status = if ($Status -in @('active','running','in_progress')) { 'active' } elseif ($Status -in @('paused','waiting','blocked')) { $Status } else { 'completed' }
     currentTaskIds = @($taskIds)
     memoryIds = @(Limit-List $MemoryIds 12 160)
@@ -155,6 +166,7 @@ $taskCard = [pscustomobject]@{
   agentId = $agentIdValue
   agentName = $Agent
   platform = $Platform
+  workspaceKey = $workspaceKeyValue
   sessionId = $SessionId
   sessionName = $sessionNameValue
   status = $Status
@@ -175,7 +187,7 @@ $taskCard = [pscustomobject]@{
   reason = Limit-Text $Reason 220
   updatedAt = $timestamp
 }
-Write-JsonUtf8NoBom $taskCardPath $taskCard 10
+$taskState = Commit-SuperBrainTaskState $TaskId 'task_card' $taskCard $taskCardPath 'task-register.ps1'
 
 foreach ($other in @('active','paused','blocked','completed')) {
   if ($other -eq $statusDir) { continue }
@@ -184,22 +196,16 @@ foreach ($other in @('active','paused','blocked','completed')) {
 }
 
 $sessionTaskPath = Join-Path $linksDir 'session-task-links.json'
-$sessionTaskLinks = @()
-$existingSessionLinks = Read-JsonFile $sessionTaskPath
-if ($existingSessionLinks -and $existingSessionLinks.links) { $sessionTaskLinks += @($existingSessionLinks.links) }
-$sessionTaskLinks += [pscustomobject]@{ sessionId=$SessionId; sessionName=$sessionNameValue; agentId=$agentIdValue; platform=$Platform; taskId=$TaskId; status=$Status; updatedAt=$timestamp; source=$Source }
-$sessionTaskLinks = @($sessionTaskLinks | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.taskId) } | Sort-Object sessionId,taskId,updatedAt -Unique)
-Write-JsonUtf8NoBom $sessionTaskPath ([pscustomobject]@{ schema='super-brain.session-task-links.v1'; updatedAt=$timestamp; links=@($sessionTaskLinks) }) 10
+$linkPolicy = Get-SuperBrainTaskLinkPolicy $Root
+$sessionLink = [pscustomobject]@{ sessionId=$SessionId; sessionName=$sessionNameValue; agentId=$agentIdValue; platform=$Platform; workspaceKey=$workspaceKeyValue; taskId=$TaskId; status=$Status; updatedAt=$timestamp; source=$Source }
+$sessionLinkResult = Update-SuperBrainTaskLinkFile -Path $sessionTaskPath -Schema 'super-brain.session-task-links.v1' -Kind 'session-task' -Incoming @($sessionLink) -MaxItems $linkPolicy.maxSessionTaskLinks -CompletedRetentionDays $linkPolicy.completedRetentionDays -UpdatedAt $timestamp
 
 $taskMemoryPath = Join-Path $linksDir 'task-memory-links.json'
 $taskMemoryLinks = @()
-$existingTaskMemoryLinks = Read-JsonFile $taskMemoryPath
-if ($existingTaskMemoryLinks -and $existingTaskMemoryLinks.links) { $taskMemoryLinks += @($existingTaskMemoryLinks.links) }
 foreach ($memoryId in @($MemoryIds)) {
   if (-not [string]::IsNullOrWhiteSpace([string]$memoryId)) { $taskMemoryLinks += [pscustomobject]@{ taskId=$TaskId; memoryId=[string]$memoryId; agentId=$agentIdValue; sessionId=$SessionId; updatedAt=$timestamp; source=$Source } }
 }
-$taskMemoryLinks = @($taskMemoryLinks | Sort-Object taskId,memoryId,updatedAt -Unique)
-Write-JsonUtf8NoBom $taskMemoryPath ([pscustomobject]@{ schema='super-brain.task-memory-links.v1'; updatedAt=$timestamp; links=@($taskMemoryLinks) }) 10
+$taskMemoryLinkResult = Update-SuperBrainTaskLinkFile -Path $taskMemoryPath -Schema 'super-brain.task-memory-links.v1' -Kind 'task-memory' -Incoming @($taskMemoryLinks) -MaxItems $linkPolicy.maxTaskMemoryLinks -CompletedRetentionDays $linkPolicy.completedRetentionDays -UpdatedAt $timestamp
 
 $result = [pscustomobject]@{
   ok = $true
@@ -212,10 +218,13 @@ $result = [pscustomobject]@{
   agentId = $agentIdValue
   agent = $Agent
   platform = $Platform
+  workspaceKey = $workspaceKeyValue
   sessionId = $SessionId
   sessionName = $sessionNameValue
   sessionTitle = $sessionTitleValue
   wrote = [pscustomobject]@{ agent=$agentCardPath; session=$sessionCardPath; task=$taskCardPath; sessionTaskLinks=$sessionTaskPath; taskMemoryLinks=$taskMemoryPath }
+  linkLifecycle = [pscustomobject]@{ sessionTaskBefore=$sessionLinkResult.beforeCount; sessionTaskAfter=$sessionLinkResult.afterCount; sessionTaskPruned=$sessionLinkResult.prunedCount; taskMemoryBefore=$taskMemoryLinkResult.beforeCount; taskMemoryAfter=$taskMemoryLinkResult.afterCount; taskMemoryPruned=$taskMemoryLinkResult.prunedCount }
+  taskStateRevision = [int]$taskState.revision
   note = 'fast task registration only; no active checkpoint, doctor, verify, hot-refresh, CI, dashboard, auto-check, or recall was run'
   auto = [bool]$Auto
   reason = Limit-Text $Reason 220

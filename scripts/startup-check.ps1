@@ -50,6 +50,8 @@ Add-Check 'Codex super-memory-brain skill' (Join-Path $CodexSkills 'super-memory
 Add-Check 'Codex skill-orchestrator skill' (Join-Path $CodexSkills 'skill-orchestrator\SKILL.md')
 Add-Check 'Codex plusunm-g1 skill' (Join-Path $CodexSkills 'plusunm-g1\SKILL.md')
 Add-Check 'Codex nexsandglass skill' (Join-Path $CodexSkills 'nexsandglass-dedicated-memory\SKILL.md')
+Add-Check 'Codex skill-pool-router skill' (Join-Path $CodexSkills 'skill-pool-router\SKILL.md')
+Add-Check 'Codex UserPromptSubmit hooks config' (Join-Path (Split-Path -Parent $CodexSkills) 'hooks.json')
 Add-Check 'Package memory root' $MemoryRoot
 Add-Check 'Session-start hook' $HookPath
 $zcodeGlobalStartup = Test-SuperBrainGlobalStartup $ZCodeSkills
@@ -94,7 +96,7 @@ if (Test-Path $HookPath) {
   Add-HookCheck 'Hook lightweight continuation recall' (($hookText -like '*continue/previous/remember -> light recall if state needed*') -or ($hookText -like '*semantic/keyword recall*'))
   Add-HookCheck 'Hook recall trigger' (($hookText -like '*semantic/keyword recall*') -or ($hookText -like '*state/version/progress/remember/previous-session*') -or ($hookText -like '*Recall previous*') -or ($hookText -like '*Recall trigger:*'))
   Add-HookCheck 'Hook short router' (($hookText -like '*ORC routes*') -and (($hookText -like '*Sandglass only on semantic/keyword recall*') -or ($hookText -like '*Sandglass on semantic/keyword recall*')))
-  Add-HookCheck 'Hook current package path' (($hookText -like "*$Root*") -or ($hookText -like "*$escapedRoot*"))
+  Add-HookCheck 'Hook current package path' (($hookText -like "*$Root*") -or ($hookText -like "*$escapedRoot*") -or ($hookText -like '*Root:installed package-root.txt*'))
 
   $startupRuleMatch = [regex]::Match($hookText, '(?m)^super_brain_content="(?<rule>.*)"$')
   $startupRuleLengthOk = $false

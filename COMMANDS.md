@@ -19,6 +19,11 @@ scripts\script-tiers.ps1
 scripts\compact-report.ps1
 scripts\recall-recent.ps1 -Count 5
 scripts\profile-card.ps1 -Refresh -Json
+scripts\user-adaptation.ps1 -Action Status -Json
+scripts\user-adaptation.ps1 -Action List -Json
+scripts\user-adaptation.ps1 -Action Packet -Context coding -Json
+scripts\user-adaptation.ps1 -Action Forget -PreferenceId <id> -ConfirmForget -Json
+scripts\user-adaptation-observer.ps1 -Mode Preview -TaskId <id> -WorkspaceKey <key> -Signals response_detail=concise -Json
 scripts\session-restore.ps1 -Query "继续上次" -Json
 scripts\session-restore.ps1 -Query "继续上次" -BindSession -SessionId sess-demo -Json
 scripts\session-binding.ps1 -Action Get -Json
@@ -28,6 +33,8 @@ scripts\decision-search.ps1 -Query "super-memory-brain"
 scripts\decision-search.ps1 -AdrOnly -Status accepted
 scripts\decision-audit.ps1
 scripts\memory-eval.ps1 -Json
+scripts\runtime-status.ps1 -Json
+scripts\runtime-eval.ps1 -McpReplay -Json
 scripts\verify-extensions.ps1
 scripts\roadmap-manager.ps1 -Json
 scripts\memory-regression-checker.ps1 -Json
@@ -48,7 +55,9 @@ scripts\memory-quality-fixer.ps1 -Json
 scripts\memory-quality-fixer.ps1 -ShowDetails -Json
 scripts\workspace-lifecycle-manager.ps1 -Json
 scripts\auto-hygiene-runner.ps1 -Json
-scripts\self-improvement-queue.ps1 -Json
+scripts\self-improvement-queue.ps1 -Action Status -Json
+scripts\self-improvement-queue.ps1 -Action Resolve -CandidateId improve-demo -Resolution resolved -ResolutionEvidence "targeted replay passed" -Json
+scripts\self-improvement-queue.ps1 -Action Maintain -Json
 scripts\optimize-advisor.ps1
 scripts\optimize-advisor.ps1 -Json
 scripts\lesson-replay.ps1 -Query "install ui" -Json
@@ -76,6 +85,7 @@ scripts\verify-share.ps1
 scripts\memory-eval-report.ps1
 scripts\maintain.ps1 -ApplySafe
 scripts\release-share.ps1
+scripts\task-verification.ps1 -TaskId <id> -Summary "verified" -Evidence "test evidence" -AdaptationSignals reasoning_style=evidence_first -AdaptationContext coding -Json
 scripts\team-template-list.ps1 -Json
 scripts\team-template-select.ps1 -DispatchLevel review_board -Reason architecture_change,logic_safety_required -Json
 scripts\team-task-new.ps1 -Goal "..." -DispatchLevel single_delegate -Json
@@ -113,8 +123,16 @@ scripts\task-index.ps1 -SessionId sess-demo -Table
 
 ```powershell
 scripts\install.ps1
+scripts\bootstrap.ps1
 scripts\install.ps1 -Extensions karpathy-guidelines,mattpocock-skills
+scripts\install.ps1 -PruneBackups -KeepBackups 5
+scripts\install-runtime.ps1
+scripts\install-runtime.ps1 -Remove
+install.bat
 scripts\install.bat
+scripts\install.bat bootstrap
+scripts\install.bat ui
+scripts\install.bat console
 scripts\install.bat console
 scripts\install-ui.ps1 -SmokeTest
 scripts\install-ui.vbs
@@ -157,7 +175,7 @@ scripts\cleanup-install-backups.ps1 -Apply
 - After context compression, resume from visible context, compressed summaries/records, checkpoint/status/ledger, and recent tool results before using long-term memory as supplemental evidence.
 - Use `scripts\recall-search.ps1 -Query "..." -Json` to get token-budgeted Hybrid Recall results with `evidenceCard` objects for compact prompt injection.
 - Use `scripts\brain.bat` to double-click open the Super Brain 控制台; the first tab aggregates status, natural-language intent, next action, release checks, no-memory share release, Agent scorecards, dispatch learning, full CI, and hot refresh.
-- Use `scripts\install.bat` for the Chinese native Windows skill injector UI; use `scripts\install.bat console` for the console fallback injector.
+- Use root `install.bat` for the one-click unified bootstrap; use `install.bat ui` for the Chinese native Windows skill injector UI and `install.bat console` for the console fallback injector.
 - The UI focuses on global ZCode/Codex injection, hot-refreshing already installed Agent skill copies/root markers/memory runtime after brain changes, custom Agent `skills` directory injection, `memory\merge-overlay` / `memory\merge-overlay\memory` old-memory merge/overwrite import, default no-memory share package generation with optional private memory package checkbox, and preview-first `install-backup-*` cleanup; default injected memory is global shared memory.
 - Default stability check: `scripts\ci.ps1`; it now includes Memory Eval Harness reporting.
 - Prefer T0 scripts for normal checks, especially `scripts\memory-eval.ps1 -Json` for recall/decision quality checks.
@@ -176,6 +194,7 @@ scripts\cleanup-install-backups.ps1 -Apply
 - Agent Team templates live in private `memory\workspace\agent-teams.json`; template scripts select role sets only and do not grant code-write permission.
 - Future code-capable subagents require explicit Commander authorization, file boundaries, verification commands, rollback notes, and drift-guard review.
 - Use `scripts\script-tiers.ps1` for the authoritative script safety view from `manifest.json`.
+- Use `scripts\objective-benchmark.ps1 -Action Plan -Json` to inspect the official paired A/B benchmark protocol. Internal `intelligence-eval.ps1` values are acceptance metrics only; objective claims require official harness artifacts and `objective-benchmark.ps1 -Action Evaluate`.
 
 scripts\goal-route-lock.ps1 -Action Create -AcceptedGoal "accepted goal" -AcceptedRoute "route step" -NonGoals "non-goal" -Json
 scripts\route-checkpoint.ps1 -Phase BeforeAct -ObservedAction "next action" -Json

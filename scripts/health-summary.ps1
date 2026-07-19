@@ -1,5 +1,6 @@
 param(
-  [switch]$Json
+  [switch]$Json,
+  [switch]$AllowActiveCheckpoint
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -15,7 +16,9 @@ function Convert-ToolJson([object[]]$Output, [string]$ScriptName) {
   return ((@($Output[$jsonStart..($Output.Count - 1)]) -join "`n") | ConvertFrom-Json)
 }
 
-$dashboard = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') -Mode Full -Json 6>$null) 'super-brain-dashboard.ps1'
+$dashboardArgs = @{ Mode='Full'; Json=$true }
+if ($AllowActiveCheckpoint) { $dashboardArgs.AllowActiveCheckpoint = $true }
+$dashboard = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') @dashboardArgs 6>$null) 'super-brain-dashboard.ps1'
 $doctor = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'doctor.ps1') -Json 6>$null) 'doctor.ps1'
 $smartNext = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'smart-next.ps1') -Json 6>$null) 'smart-next.ps1'
 $extensions = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'verify-extensions.ps1') -Json 6>$null) 'verify-extensions.ps1'

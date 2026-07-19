@@ -7,6 +7,8 @@ param(
   [string[]]$CounterExamples = @(),
   [string[]]$ValidationConditions = @(),
   [double]$Confidence = 0.0,
+  [string]$WorkspaceRoot = '',
+  [switch]$NoWrite,
   [switch]$Json
 )
 
@@ -15,8 +17,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $PSScriptRoot
-$workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
-if (-not (Test-Path -LiteralPath $workspace)) { New-Item -ItemType Directory -Force -Path $workspace | Out-Null }
+$workspace = if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) { Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace' } else { [IO.Path]::GetFullPath($WorkspaceRoot) }
 $outPath = Join-Path $workspace 'last-lesson-scope-gate.json'
 
 function Limit-Text([string]$Value,[int]$Max=700){ if([string]::IsNullOrWhiteSpace($Value)){return ''}; $v=$Value.Trim() -replace '\s+',' '; if($v.Length -gt $Max){return $v.Substring(0,$Max)+'...'}; return $v }
@@ -50,6 +51,6 @@ $result = [pscustomobject]@{
   nextAction = if($gaps.Count -gt 0){'Keep as reflection candidate only; fill scope/evidence/falsifier fields before promotion.'}else{'Lesson is scoped enough to be considered by reflection-promotion / learn-memory gates.'}
   path = $outPath
 }
-Write-JsonUtf8NoBom $outPath $result 12
-if($Json){Get-Content -LiteralPath $outPath -Raw -Encoding UTF8}else{Write-Host "LESSON_SCOPE_GATE ok=$($result.ok) gaps=$(@($gaps).Count) path=$outPath"}
+if (-not $NoWrite) { Write-JsonUtf8NoBom $outPath $result 12 }
+if($Json){$result|ConvertTo-Json -Depth 12}else{Write-Host "LESSON_SCOPE_GATE ok=$($result.ok) gaps=$(@($gaps).Count) path=$outPath"}
 if(-not $result.ok){exit 1}; exit 0

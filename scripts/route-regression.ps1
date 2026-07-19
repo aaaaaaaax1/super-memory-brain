@@ -54,7 +54,7 @@ function Get-TriggerMap {
 }
 
 if (-not (Test-Path -LiteralPath $casesPath)) { throw "Missing route regression cases: $casesPath" }
-$caseDoc = Get-Content -Raw -LiteralPath $casesPath | ConvertFrom-Json
+$caseDoc = Get-Content -Raw -LiteralPath $casesPath -Encoding UTF8 | ConvertFrom-Json
 $triggerMap = $null
 $results = @()
 

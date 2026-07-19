@@ -2,7 +2,7 @@
   {
     "question": "当前 super-memory-brain 版本是多少？",
     "sources": ["CURRENT_BASELINE.md", "manifest.json"],
-    "mustContain": ["0.5.79", "CURRENT_BASELINE.md"]
+    "mustContain": ["0.5.96", "CURRENT_BASELINE.md"]
   },
   {
     "question": "隐私记忆怎么写？",

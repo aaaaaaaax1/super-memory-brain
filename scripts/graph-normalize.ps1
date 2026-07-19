@@ -42,7 +42,7 @@ foreach ($line in $lines) {
   }
 
   if (([string]$node.subject).StartsWith('decision:') -and ([string]$node.relation) -eq 'decides' -and ([string]$node.tags).Contains('[CURRENT]')) {
-    $decisionEntries += [pscustomobject]@{ line = $lineNumber; node = $node }
+    $decisionEntries += [pscustomobject]@{ line = $lineNumber; outIndex = $out.Count; node = $node }
   }
 
   $out += ($node | ConvertTo-Json -Compress)
@@ -66,7 +66,16 @@ $staleCurrent = @($out | Where-Object { $_ -match '"subject":"v[0-9]' -and $_ -m
 if ($staleCurrent.Count -gt 0) { $changed = $true }
 
 $decisionCurrentConflicts = @($decisionEntries | Group-Object { $_.node.subject } | Where-Object { $_.Count -gt 1 })
-if ($decisionCurrentConflicts.Count -gt 0) { $changed = $true }
+if ($decisionCurrentConflicts.Count -gt 0) {
+  $changed = $true
+  foreach ($conflict in $decisionCurrentConflicts) {
+    $ordered = @($conflict.Group | Sort-Object line)
+    foreach ($entry in @($ordered | Select-Object -First ($ordered.Count - 1))) {
+      $entry.node.tags = ([string]$entry.node.tags) -replace '\[CURRENT\]', '[HISTORY]'
+      $out[[int]$entry.outIndex] = $entry.node | ConvertTo-Json -Compress
+    }
+  }
+}
 
 if ($Fix -and $changed) {
   $backup = "$graphPath.bak-normalize-$(Get-Date -Format 'yyyyMMdd-HHmmss')"

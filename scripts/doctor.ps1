@@ -19,6 +19,7 @@ function Run-JsonScript([string]$Name) {
     'memory-health.ps1' { $output = @(& $path -Json 2>&1) }
     'script-tiers.ps1' { $output = @(& $path -Json 2>&1) }
     'tool-health.ps1' { $output = @(& $path -Json 2>&1) }
+    'task-lifecycle-audit.ps1' { $output = @(& $path -Json 2>&1) }
     default { $output = @(& $path 2>&1) }
   }
   $exitCode = $LASTEXITCODE
@@ -51,8 +52,9 @@ $skillSync = Run-JsonScript 'skill-sync-check.ps1'
 $memoryHealth = Run-JsonScript 'memory-health.ps1'
 $scriptTiers = Run-JsonScript 'script-tiers.ps1'
 $toolHealth = Run-JsonScript 'tool-health.ps1'
+$taskLifecycle = Run-JsonScript 'task-lifecycle-audit.ps1'
 
-foreach ($item in @($summary,$startup,$skillSync,$memoryHealth,$scriptTiers,$toolHealth)) {
+foreach ($item in @($summary,$startup,$skillSync,$memoryHealth,$scriptTiers,$toolHealth,$taskLifecycle)) {
   if (-not $item.ok) { $ok = $false }
 }
 if ($summary.data -and -not $summary.data.ok) { $ok = $false }
@@ -78,7 +80,7 @@ function Add-DoctorRisk([string]$Severity, [string]$Code, [string]$Message, [str
   }
 }
 
-foreach ($item in @($summary,$startup,$skillSync,$memoryHealth,$scriptTiers,$toolHealth)) {
+foreach ($item in @($summary,$startup,$skillSync,$memoryHealth,$scriptTiers,$toolHealth,$taskLifecycle)) {
   if (-not $item.ok) { Add-DoctorRisk 'high' 'check_failed' "$($item.name) exited with $($item.exitCode)." $item.name }
   if (([string]$item.error -match 'MEMORY_LOCK_TIMEOUT') -or ([string]$item.rawPreview -match 'MEMORY_LOCK_TIMEOUT')) {
     Add-DoctorRisk 'high' 'memory_lock_timeout' "Lock timeout while running $($item.name)." $item.name
@@ -101,6 +103,15 @@ foreach ($lock in $staleLocks) {
 
 if ($toolHealth.data -and $toolHealth.data.warningFresh -eq $true) {
   Add-DoctorRisk 'low' 'optional_tool_schema_warning' 'Recent optional tool schema warning exists; checkpoint/status fallback should be used if it recurs.' 'tool-health.ps1'
+}
+if ($taskLifecycle.data) {
+  if ([int]$taskLifecycle.data.counts.diagnosticCards -gt 0) { Add-DoctorRisk 'medium' 'diagnostic_task_state_present' "Task state contains $($taskLifecycle.data.counts.diagnosticCards) known diagnostic cards outside a test sandbox." 'task-lifecycle-audit.ps1' }
+  if ([int]$taskLifecycle.data.counts.zeroPendingActiveCards -gt 0) { Add-DoctorRisk 'low' 'zero_pending_active_tasks' "Task state contains $($taskLifecycle.data.counts.zeroPendingActiveCards) active cards with no pending steps." 'task-lifecycle-audit.ps1' }
+  if ([int]$taskLifecycle.data.counts.staleUnboundActiveCards -gt 0) { Add-DoctorRisk 'medium' 'stale_unbound_active_tasks' "Task state contains $($taskLifecycle.data.counts.staleUnboundActiveCards) stale active cards without checkpoint, context, or execution contract bindings." 'task-lifecycle-audit.ps1' }
+  if ($taskLifecycle.data.pointerState -and $taskLifecycle.data.pointerState.mismatch -eq $true) {
+    $severity = if ($taskLifecycle.data.pointerState.automaticContinuationSafe -eq $true) { 'low' } else { 'high' }
+    Add-DoctorRisk $severity 'task_pointer_divergence' 'Compatibility task pointers refer to different task IDs; scoped selection remains authoritative.' 'task-lifecycle-audit.ps1'
+  }
 }
 
 $sessionBinding = Read-WorkspaceJson 'session-binding.json'
@@ -200,6 +211,7 @@ $result = [pscustomobject]@{
   memoryHealth = $memoryHealth.data
   lockHealth = [pscustomobject]@{ staleAfterSeconds=120; lockCount=@($lockStatuses).Count; staleCount=@($staleLocks).Count; locks=@($lockStatuses) }
   toolHealth = $toolHealth.data
+  taskLifecycle = $taskLifecycle.data
   riskSummary = $riskSummary
   risks = @($risks)
   scriptTierCount = if ($scriptTiers.data) { @($scriptTiers.data.scripts).Count } else { 0 }
@@ -224,7 +236,7 @@ $result = [pscustomobject]@{
   codeCapableAudit = if ($teamTaskAudit) { [pscustomobject]@{ ok=$teamTaskAudit.ok; codeCapableDelegationCount=$teamTaskAudit.codeCapableDelegationCount; unreviewedCodeChangeCount=$teamTaskAudit.unreviewedCodeChangeCount; driftRiskCount=$teamTaskAudit.driftRiskCount; blockedScopeExpansionCount=$teamTaskAudit.blockedScopeExpansionCount; authorizationMissingCount=$teamTaskAudit.authorizationMissingCount } } else { $null }
   experienceIndex = [pscustomobject]@{ exists=(Test-Path $experienceIndexPath); count=$experienceCount; path=$experienceIndexPath }
   sessionBinding = $sessionBindingStatus
-  checks = @(@($summary,$startup,$skillSync,$memoryHealth,$scriptTiers,$toolHealth) | ForEach-Object { [pscustomobject]@{ name=$_.name; ok=$_.ok; exitCode=$_.exitCode } })
+  checks = @(@($summary,$startup,$skillSync,$memoryHealth,$scriptTiers,$toolHealth,$taskLifecycle) | ForEach-Object { [pscustomobject]@{ name=$_.name; ok=$_.ok; exitCode=$_.exitCode } })
 }
 
 if ($Json) {

@@ -70,8 +70,8 @@ if ($triggerSimulation.parsed) {
 }
 $cases += New-CaseResult 'trigger_negative_wake_words' ($zhBigBrain + '/' + $zhBrain + '/G1 incidental cases') 'trigger-simulation' ($triggerSimulation.parsed -and @($negativeFailures).Count -eq 0) 'negative wake-word scenarios must not trigger Super Brain/G1' ([pscustomobject]@{ failedNegativeCount=@($negativeFailures).Count; failedNegativeCases=@($negativeFailures) })
 
-$intentCasual = Invoke-JsonTool 'intent-router.ps1' { & (Join-Path $PSScriptRoot 'intent-router.ps1') $incidentalG1Prompt -Json }
-$cases += New-CaseResult 'intent_incidental_g1_not_team_or_memory' $incidentalG1Prompt 'intent-router' ($intentCasual.parsed -and $intentCasual.value.intent -notin @('team_or_review','memory_recall')) 'incidental G1 product mention must not route to team or memory recall' $intentCasual.value
+$intentCasual = Invoke-JsonTool 'intent-router.ps1' { & (Join-Path $PSScriptRoot 'intent-router.ps1') -Text $incidentalG1Prompt -Json }
+$cases += New-CaseResult 'intent_incidental_g1_is_general_task' $incidentalG1Prompt 'intent-router' ($intentCasual.parsed -and $intentCasual.value.intent -eq 'general_task') 'incidental G1 product mention must stay on the general task route' $intentCasual.value
 
 $failed = @($cases | Where-Object { $_.ok -ne $true })
 $result = [pscustomobject]@{

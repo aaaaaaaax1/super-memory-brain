@@ -1,0 +1,68 @@
+{
+  "schema": "super-brain.intelligence-policy.v1",
+  "claimScope": "internal_acceptance_only",
+  "objectiveClaimRequires": "paired official external benchmark results",
+  "targets": {
+    "personalControlPlane": 9.0,
+    "autonomousBrain": 8.5
+  },
+  "weights": {
+    "personalControlPlane": {
+      "reliability": 0.18,
+      "memoryGovernance": 0.16,
+      "generalization": 0.20,
+      "continuity": 0.15,
+      "toolRouting": 0.08,
+      "correctionLearning": 0.08,
+      "maintainability": 0.08,
+      "efficiency": 0.07
+    },
+    "autonomousBrain": {
+      "reliability": 0.11,
+      "memoryGovernance": 0.07,
+      "generalization": 0.17,
+      "continuity": 0.13,
+      "toolRouting": 0.07,
+      "correctionLearning": 0.11,
+      "autonomyEvidence": 0.22,
+      "maintainability": 0.06,
+      "efficiency": 0.06
+    }
+  },
+  "antiOverfitting": {
+    "personalMinimumHoldoutCases": 30,
+    "autonomousMinimumHoldoutCases": 50,
+    "personalMaximumGap": 0.08,
+    "autonomousMaximumGap": 0.10,
+    "personalMinimumHoldoutPassRate": 0.90,
+    "autonomousMinimumHoldoutPassRate": 0.90,
+    "gapPenaltyScale": 10.0,
+    "noHoldoutPersonalCeiling": 8.0,
+    "noHoldoutAutonomousCeiling": 6.5
+  },
+  "dimensionEvidence": {
+    "minimumSampleCount": 1,
+    "requireEvidenceReferences": true,
+    "scoreRange": [0.0, 1.0]
+  },
+  "evidenceFreshness": {
+    "maxAgeHours": 72,
+    "maxFutureSkewMinutes": 5
+  },
+  "autonomyEvidence": {
+    "minimumVerifiedRealWorldTasks": 20,
+    "minimumVerifiedAutonomyScenarios": 30,
+    "minimumClosedCorrectionLoops": 5,
+    "insufficientEvidenceCeiling": 7.5
+  },
+  "rules": [
+    "Known or calibration cases cannot substitute for a sealed holdout set.",
+    "A holdout set becomes consumed evidence after evaluation and must not be used for later tuning.",
+    "Any tuning against a consumed holdout requires a new sealed holdout set.",
+    "Raw holdout prompts are not copied into evaluation reports.",
+    "Caller-supplied autonomy counts are ignored; the evaluator derives them from the strict local autonomy evidence ledger.",
+    "Completed checkpoints, task cards, and unlinked closed corrections are not autonomy evidence.",
+    "Target scores require both the numeric score and every evidence gate.",
+    "Internal acceptance scores must not be presented as objective intelligence scores or compared with external systems."
+  ]
+}

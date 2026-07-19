@@ -20,6 +20,13 @@ Apply Ponytail before every automatic evolution action:
 6. Use the smallest safe package-local diff.
 7. Never cut validation, privacy, rollback, or explicit user constraints.
 
+Candidate lifecycle is bounded. Read-only status and reflection preview must not
+create candidates or last-result files. Collection updates a stable problem
+family instead of creating one item per task. Maintenance keeps at most 32
+active families by default and archives merged source instances, closed items,
+stale singletons, and overflow with restore metadata; it never silently deletes
+the only evidence copy.
+
 Ponytail source markers live in `extensions/ponytail/` and cognitive preflight references. This policy uses Ponytail as a gate, not as a new hot-path dependency.
 
 ## Automatic Evolution Levels

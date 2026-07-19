@@ -87,7 +87,7 @@ function Show-AgentCandidates {
 
 function Install-ZCodeCodex {
   Write-Host 'Injecting Super Brain skills into ZCode + Codex with global shared memory.'
-  Invoke-SuperBrainScript 'install.ps1' @('-MemoryMode','Shared') | Out-Null
+  Invoke-SuperBrainScript 'bootstrap.ps1' @('-MemoryMode','Shared') | Out-Null
 }
 
 function Install-SelectedAgents {
@@ -130,7 +130,7 @@ function Run-CleanupMenu {
 function Show-Menu {
   Write-Host ''
   Write-Host '=== Super Memory Brain Skill Injector ==='
-  Write-Host '1. Global inject / refresh ZCode + Codex (shared memory)'
+  Write-Host '1. Global inject / refresh ZCode + Codex + local runtime/MCP (shared memory)'
   Write-Host '2. List auto-detected agent skill directories'
   Write-Host '3. Inject into selected auto-detected agent directories'
   Write-Host '4. Manual inject: AgentName + SkillRoot'

@@ -1,3 +1,8 @@
+---
+name: agent-bridge
+description: "Use only for explicit legacy cross-agent channel open/connect/send/read/close workflows under Super Brain; normal subagent execution, review, testing, and verification use the single-agent workflow instead."
+---
+
 # Agent Bridge
 
 Legacy/manual-only Agent Bridge compatibility: not the default workflow for subagent execution, review, verification, testing, or evidence.

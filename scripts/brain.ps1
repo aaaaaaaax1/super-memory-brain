@@ -1,8 +1,9 @@
 param(
-  [ValidateSet('status','next','intent','release','scorecard','dispatch','optimize','ci','skills','capability','extensions','help')]
+  [ValidateSet('status','next','intent','release','scorecard','dispatch','optimize','technology','ci','skills','capability','extensions','help')]
   [string]$Command = 'status',
   [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Text,
+  [switch]$AllowActiveCheckpoint,
   [switch]$Json
 )
 
@@ -22,14 +23,19 @@ function Convert-BrainJson([object[]]$Output, [string]$ScriptName) {
 $inputText = (($Text -join ' ').Trim())
 $result = $null
 switch ($Command) {
-  'status' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'health-summary.ps1') -Json 6>$null) 'health-summary.ps1' }
+  'status' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'health-summary.ps1') -Json -AllowActiveCheckpoint:$AllowActiveCheckpoint 6>$null) 'health-summary.ps1' }
   'next' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'smart-next.ps1') $inputText -Json 6>$null) 'smart-next.ps1' }
-  'intent' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'intent-router.ps1') $inputText -Json 6>$null) 'intent-router.ps1' }
+  'intent' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'intent-router.ps1') -Text $inputText -Json 6>$null) 'intent-router.ps1' }
   'release' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'release-readiness.ps1') -Json 6>$null) 'release-readiness.ps1' }
   'scorecard' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'agent-scorecard.ps1') -Json 6>$null) 'agent-scorecard.ps1' }
   'dispatch' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'dispatch-learning.ps1') -Json 6>$null) 'dispatch-learning.ps1' }
   'optimize' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'optimize-advisor.ps1') -Json 6>$null) 'optimize-advisor.ps1' }
-  'ci' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'health-summary.ps1') -Json 6>$null) 'health-summary.ps1'; $result | Add-Member -NotePropertyName commandHint -NotePropertyValue 'Run scripts\ci.ps1 for full CI.' -Force }
+  'technology' {
+    if ([string]::IsNullOrWhiteSpace($inputText)) { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'technology-decision.ps1') -Action Questionnaire -Json 6>$null) 'technology-decision.ps1' }
+    elseif ($inputText -eq 'validate') { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'technology-decision.ps1') -Action Validate -Json 6>$null) 'technology-decision.ps1' }
+    else { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'technology-decision.ps1') -Action Catalog -Query $inputText -Json 6>$null) 'technology-decision.ps1' }
+  }
+  'ci' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'health-summary.ps1') -Json -AllowActiveCheckpoint:$AllowActiveCheckpoint 6>$null) 'health-summary.ps1'; $result | Add-Member -NotePropertyName commandHint -NotePropertyValue 'Run scripts\ci.ps1 for full CI.' -Force }
   'skills' {
     if([string]::IsNullOrWhiteSpace($inputText)){ $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'skill-capability-map.ps1') -List -TopK 200 -Json 6>$null) 'skill-capability-map.ps1' }
     else { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'skill-capability-map.ps1') -Query $inputText -TopK 24 -Json 6>$null) 'skill-capability-map.ps1' }
@@ -43,8 +49,8 @@ switch ($Command) {
   'help' {
     $result = [pscustomobject]@{
       ok = $true
-      commands = @('status','next','intent','release','scorecard','dispatch','optimize','ci','skills','capability','extensions','help')
-      examples = @('scripts\brain.ps1 status','scripts\brain.ps1 next continue','scripts\brain.ps1 intent release','scripts\brain.ps1 release','scripts\brain.ps1 optimize','scripts\brain.ps1 skills','scripts\brain.ps1 skills browser','scripts\brain.ps1 capability browser-act','scripts\brain.ps1 extensions')
+      commands = @('status','next','intent','release','scorecard','dispatch','optimize','technology','ci','skills','capability','extensions','help')
+      examples = @('scripts\brain.ps1 status','scripts\brain.ps1 next continue','scripts\brain.ps1 intent release','scripts\brain.ps1 release','scripts\brain.ps1 optimize','scripts\brain.ps1 technology','scripts\brain.ps1 technology database','scripts\brain.ps1 skills','scripts\brain.ps1 skills browser','scripts\brain.ps1 capability browser-act','scripts\brain.ps1 extensions')
       guard = 'Skills are visible for inspection but ORC still routes by intent/capability; do not force manual skill menu usage.'
     }
   }
@@ -69,6 +75,8 @@ if ($Json) {
   } elseif ($Command -eq 'optimize') {
     Write-Host "BRAIN optimize priority=$($result.priority) advice=$($result.adviceCount) ok=$($result.ok)"
     foreach ($item in @($result.topAdvice)) { Write-Host "BRAIN optimize $($item.priority) $($item.code) $($item.title)" }
+  } elseif ($Command -eq 'technology') {
+    Write-Host "BRAIN technology action=$($result.action) ok=$($result.ok)"
   } elseif ($Command -eq 'skills') {
     Write-Host "BRAIN skills count=$($result.count) total=$($result.totalKnown) view=$($result.view)"
     foreach($cap in @($result.capabilities | Select-Object -First 30)){ Write-Host "BRAIN skill name=$($cap.name) role=$($cap.role) category=$($cap.category)" }

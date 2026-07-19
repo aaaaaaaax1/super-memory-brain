@@ -12,12 +12,31 @@ $Workspace = Join-Path $MemoryBase 'workspace'
 function Get-InstallUiRegressionInputHashes {
   $relativeFiles = @(
     'manifest.json',
+    'install.bat',
+    'FRIEND_INSTALL.md',
     'super-memory-brain\SKILL.md',
     'modules\skill-orchestrator\SKILL.md',
+    'modules\skill-pool-router\SKILL.md',
+    'modules\skill-pool-router\scripts\manage-skill-pool.ps1',
+    'modules\skill-pool-router\scripts\skill-catalog.ps1',
     'scripts\install.bat',
     'scripts\install-ui.ps1',
     'scripts\install-menu.ps1',
+    'scripts\bootstrap.ps1',
     'scripts\install.ps1',
+    'scripts\install-codex-user-prompt-hook.ps1',
+    'scripts\codex-user-prompt-hook.ps1',
+    'scripts\routing-kernel.ps1',
+    'scripts\task-link-store.ps1',
+    'scripts\task-state-store.ps1',
+    'scripts\script-call-contract.ps1',
+    'scripts\completion-guard.ps1',
+    'scripts\status-snapshot-writer.ps1',
+    'scripts\health-summary.ps1',
+    'scripts\brain.ps1',
+    'scripts\smoke-test.ps1',
+    'scripts\verify-package.ps1',
+    'scripts\ci.ps1',
     'scripts\install-agent.ps1',
     'scripts\hot-refresh-skills.ps1',
     'scripts\migrate-memory-layout.ps1',
@@ -57,6 +76,7 @@ function Invoke-RegressionScript([string]$ScriptName, [hashtable]$ScriptParams =
     return [pscustomobject]@{ name = $ScriptName; ok = $false; exitCode = -1; parsed = $null; raw = 'script_missing' }
   }
 
+  $global:LASTEXITCODE = 0
   $output = @(& $scriptPath @ScriptParams 2>&1 6>&1)
   $exitCode = $LASTEXITCODE
   $text = ($output | Out-String).Trim()
@@ -98,6 +118,7 @@ function New-Check([string]$Name, [bool]$Ok, [object]$Detail) {
 $uiScripts = @(
   'install-ui.ps1',
   'install-menu.ps1',
+  'bootstrap.ps1',
   'install.ps1',
   'install-agent.ps1',
   'health-check.ps1',

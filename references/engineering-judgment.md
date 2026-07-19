@@ -12,6 +12,22 @@ claims that one option is best or optimal.
 Do not activate it for greetings, acknowledgements, simple factual answers, or
 tiny fully specified low-risk actions. Concision is part of the contract.
 
+## Proactive Intervention Threshold
+
+Intervene without being asked only when at least one condition is met:
+
+- the expected benefit is material under the current objective and constraints;
+- the risk is material or high enough that silence could cause meaningful loss.
+
+Stay silent for marginal improvements, stylistic preferences, and speculative
+micro-optimizations. Material benefit or risk needs at least an explicit
+inference grounded in current evidence. A high but unverified risk may trigger a
+compact verify-or-contain warning, but it must remain `UNKNOWN`, not `FACT`.
+
+Keep an intervention compact: evidence, expected delta, risk, recommendation.
+Use `engineering-decision-gate.ps1 -Action AssessIntervention` when a runtime
+decision is needed.
+
 ## Required Reasoning Chain
 
 ```text
@@ -65,6 +81,16 @@ Without those conditions, label the result `recommended under current evidence`,
 not `optimal`. Optimal means best under the stated objective and constraints,
 not universally best.
 
+For full-stack, framework, database, AI-native toolchain, edge, deployment, or
+architecture selection, use the cold structured workflow in
+`references/technology-decision.md` and `scripts/technology-decision.ps1`.
+Collect missing requirements as multiple-choice questions, keep frontend,
+backend, data, AI, edge, deployment, and observability roles separate, and
+compare feasible profiles across maturity, performance, learning ease,
+ecosystem, operability, security, cost efficiency, AI fit, edge fit, and
+maintainability. Catalog scores are priors; live volatile facts still require
+verification before a decision is committed.
+
 ## Execution Contract
 
 Each execution step records:
@@ -77,6 +103,11 @@ Each execution step records:
 Order steps by dependency. Verify each step before consuming its output in the
 next step. On failed acceptance or a stop condition, halt, update the model, and
 recompute the next action instead of continuing the old plan.
+
+An approved plan with three or more concrete steps starts a lightweight active
+checkpoint automatically. One- and two-step work does not. Automatic completion
+is allowed only after successful task verification and only for the matching
+task; failed or absent verification leaves the checkpoint active.
 
 A hypothesis or unknown root cause may pass the pre-mutation gate when it has a
 discriminating test plan. It may not pass completion until that test has result

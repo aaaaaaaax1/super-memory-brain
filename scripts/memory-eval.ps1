@@ -11,6 +11,7 @@ $manifest = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw -Enc
 if ([string]::IsNullOrWhiteSpace($TestsPath)) {
   $TestsPath = Join-Path $Root 'tests\memory-eval-tests.json'
 }
+$TestsPath = [System.IO.Path]::GetFullPath($TestsPath)
 $tests = Get-Content -LiteralPath $TestsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
 function Get-ArrayProperty($Object, [string]$Name) {
@@ -69,8 +70,13 @@ function Compare-Needles([string]$Haystack, [object[]]$MustContain, [object[]]$M
 function Invoke-StaticCase($Case) {
   $haystack = ''
   $missingSources = @()
+  $invalidSources = @()
   foreach ($source in Get-ArrayProperty $Case 'sources') {
-    $path = Join-Path $Root ([string]$source)
+    $path = [System.IO.Path]::GetFullPath((Join-Path $Root ([string]$source)))
+    if ($path.Equals($TestsPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $invalidSources += [string]$source
+      continue
+    }
     if (Test-Path $path) {
       $haystack += "`n" + (Get-Content -LiteralPath $path -Raw -Encoding UTF8)
     } else {
@@ -79,13 +85,14 @@ function Invoke-StaticCase($Case) {
   }
   $needleResult = Compare-Needles $haystack (Get-ArrayProperty $Case 'mustContain') (Get-ArrayProperty $Case 'mustNotContain')
   return [pscustomobject]@{
-    ok = ($needleResult.ok -and $missingSources.Count -eq 0)
+    ok = ($needleResult.ok -and $missingSources.Count -eq 0 -and $invalidSources.Count -eq 0)
     resultCount = 1
     maxConfidence = 1.0
     matched = @($needleResult.matched)
     missing = @($needleResult.missing)
     forbidden = @($needleResult.forbidden)
     missingSources = @($missingSources)
+    invalidSources = @($invalidSources)
     exitCode = 0
   }
 }
@@ -104,7 +111,10 @@ function Invoke-RecallCase($Case) {
   $items = @(Convert-JsonArray $output)
   $jsonText = if ($items.Count -gt 0) { ($items | ConvertTo-Json -Depth 8 -Compress) } else { $output }
   $needleResult = Compare-Needles $jsonText (Get-ArrayProperty $Case 'mustContain') (Get-ArrayProperty $Case 'mustNotContain')
+  $firstText = if ($items.Count -gt 0) { ($items[0] | ConvertTo-Json -Depth 8 -Compress) } else { '' }
+  $firstNeedleResult = Compare-Needles $firstText (Get-ArrayProperty $Case 'firstMustContain') (Get-ArrayProperty $Case 'firstMustNotContain')
   $minResults = Get-IntProperty $Case 'minResults' 0
+  $maxResults = Get-IntProperty $Case 'maxResults' -1
   $minConfidence = Get-DoubleProperty $Case 'minConfidence' 0
   $maxConfidence = 0.0
   foreach ($item in $items) {
@@ -113,13 +123,17 @@ function Invoke-RecallCase($Case) {
     }
   }
   return [pscustomobject]@{
-    ok = ($exitCode -eq 0 -and $needleResult.ok -and $items.Count -ge $minResults -and $maxConfidence -ge $minConfidence)
+    ok = ($exitCode -eq 0 -and $needleResult.ok -and $firstNeedleResult.ok -and $items.Count -ge $minResults -and ($maxResults -lt 0 -or $items.Count -le $maxResults) -and $maxConfidence -ge $minConfidence)
     resultCount = $items.Count
     maxConfidence = [Math]::Round($maxConfidence, 4)
     matched = @($needleResult.matched)
     missing = @($needleResult.missing)
     forbidden = @($needleResult.forbidden)
+    firstMatched = @($firstNeedleResult.matched)
+    firstMissing = @($firstNeedleResult.missing)
+    firstForbidden = @($firstNeedleResult.forbidden)
     missingSources = @()
+    invalidSources = @()
     exitCode = $exitCode
   }
 }
@@ -153,6 +167,7 @@ function Invoke-DecisionCase($Case) {
     missing = @($needleResult.missing)
     forbidden = @($needleResult.forbidden)
     missingSources = @()
+    invalidSources = @()
     exitCode = $exitCode
   }
 }
@@ -181,7 +196,11 @@ foreach ($case in $tests) {
     matched = @($result.matched)
     missing = @($result.missing)
     forbidden = @($result.forbidden)
+    firstMatched = @($result.firstMatched)
+    firstMissing = @($result.firstMissing)
+    firstForbidden = @($result.firstForbidden)
     missingSources = @($result.missingSources)
+    invalidSources = @($result.invalidSources)
     exitCode = $result.exitCode
     tags = @(Get-ArrayProperty $case 'tags')
   }

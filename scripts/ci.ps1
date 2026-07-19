@@ -35,34 +35,27 @@ function Run-Step([string]$Name, [string]$ScriptPath, [string[]]$ArgumentList = 
 
 Run-Step 'lint' (Join-Path $PSScriptRoot 'lint.ps1')
 Run-Step 'pester' (Join-Path $PSScriptRoot 'test-pester.ps1')
+Run-Step 'runtime-eval-mcp' (Join-Path $PSScriptRoot 'runtime-eval.ps1') @('-McpReplay')
 Run-Step 'concurrency-smoke-test' (Join-Path $PSScriptRoot 'concurrency-smoke-test.ps1')
 Run-Step 'verify-package' (Join-Path $PSScriptRoot 'verify-package.ps1')
 Run-Step 'codegraph-index' (Join-Path $PSScriptRoot 'codegraph-index.ps1') @('-Json')
 Run-Step 'impact-advisor' (Join-Path $PSScriptRoot 'impact-advisor.ps1') @('-ChangedFiles','scripts/codegraph-index.ps1','-Json')
-Run-Step 'super-brain-dashboard' (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') @('-Json')
+Run-Step 'super-brain-dashboard' (Join-Path $PSScriptRoot 'super-brain-dashboard.ps1') @('-Json','-AllowActiveCheckpoint')
 Run-Step 'auto-continuation' (Join-Path $PSScriptRoot 'auto-continuation.ps1') @('-Json')
-Run-Step 'status-snapshot-writer' (Join-Path $PSScriptRoot 'status-snapshot-writer.ps1') @('-Summary','CI status-card refresh','-NextAction','Continue from verified CI status card.','-Json')
-$completionGuardArgs = @('-Json','-AllowPrivacyRisk')
-try {
-  $lastTaskPath = Join-Path $workspace 'last-task-verification.json'
-  if (Test-Path -LiteralPath $lastTaskPath) {
-    $lastTask = Get-Content -LiteralPath $lastTaskPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($lastTask -and -not [string]::IsNullOrWhiteSpace([string]$lastTask.taskId)) { $completionGuardArgs += @('-TaskId',[string]$lastTask.taskId) }
-  }
-} catch {
-  Write-Host "CI_INFO completion_guard_task_lookup_failed message=$($_.Exception.Message)"
-}
+Run-Step 'status-snapshot-writer' (Join-Path $PSScriptRoot 'status-snapshot-writer.ps1') @('-Summary','CI status-card refresh','-NextAction','Continue from verified CI status card.','-AllowActiveCheckpoint','-Json')
+$completionGuardArgs = @('-Json','-AllowPrivacyRisk','-AllowActiveCheckpoint','-ContractOnly','-PackageVerificationInProgress')
 Run-Step 'completion-guard' (Join-Path $PSScriptRoot 'completion-guard.ps1') $completionGuardArgs
 Run-Step 'memory-quality-fixer' (Join-Path $PSScriptRoot 'memory-quality-fixer.ps1') @('-Json')
 Run-Step 'lesson-replay' (Join-Path $PSScriptRoot 'lesson-replay.ps1') @('-Query','install ui','-Json')
 Run-Step 'dispatch-learning' (Join-Path $PSScriptRoot 'dispatch-learning.ps1') @('-Json')
 Run-Step 'trigger-simulation' (Join-Path $PSScriptRoot 'trigger-simulation.ps1') @('-Json')
 Run-Step 'cold-start-audit' (Join-Path $PSScriptRoot 'cold-start-audit.ps1') @('-Json')
-Run-Step 'intent-router' (Join-Path $PSScriptRoot 'intent-router.ps1') @('继续','-Json')
+Run-Step 'intent-router' (Join-Path $PSScriptRoot 'intent-router.ps1') @('-Text','继续','-Json')
+Run-Step 'script-call-contract' (Join-Path $PSScriptRoot 'script-call-contract.ps1') @('-Json')
 Run-Step 'smart-next' (Join-Path $PSScriptRoot 'smart-next.ps1') @('继续','-Json')
-Run-Step 'health-summary' (Join-Path $PSScriptRoot 'health-summary.ps1') @('-Json')
+Run-Step 'health-summary' (Join-Path $PSScriptRoot 'health-summary.ps1') @('-Json','-AllowActiveCheckpoint')
 Run-Step 'agent-scorecard' (Join-Path $PSScriptRoot 'agent-scorecard.ps1') @('-Json')
-Run-Step 'brain-status' (Join-Path $PSScriptRoot 'brain.ps1') @('status','-Json')
+Run-Step 'brain-status' (Join-Path $PSScriptRoot 'brain.ps1') @('status','-Json','-AllowActiveCheckpoint')
 Run-Step 'version-bump-preview' (Join-Path $PSScriptRoot 'version-bump.ps1') @('-Version','0.0.0','-Summary','preview only','-Json')
 Run-Step 'memory-eval' (Join-Path $PSScriptRoot 'memory-eval-report.ps1')
 Run-Step 'maintain' (Join-Path $PSScriptRoot 'maintain.ps1')

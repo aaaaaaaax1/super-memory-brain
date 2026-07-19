@@ -124,10 +124,7 @@ $decisionCurrentConflictCount = @($decisionGraph |
   Group-Object subject |
   Where-Object { $_.Count -gt 1 }).Count
 
-$adrSubjects = @($adrGraph | ForEach-Object { [string]$_.subject } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
-$adrStatusRows = @($adrGraph | Where-Object { ([string]$_.relation) -eq 'has_status' })
-$adrCurrentCount = @($adrStatusRows | Where-Object { @($policy.adr.currentStatuses) -contains ([string]$_.object) }).Count
-$adrSupersededCount = @($adrGraph | Where-Object { ([string]$_.relation) -eq 'superseded_by' -or ([string]$_.object) -eq 'superseded' }).Count
+$adrState = Get-SuperBrainAdrState -DecisionNodes $decisionGraph -Policy $policy
 
 $decisionParticles = @()
 if (Test-Path $decisionPath) {
@@ -139,7 +136,7 @@ foreach ($line in $decisionParticles) {
 }
 
 $result = [pscustomobject]@{
-  ok = ((Test-Path $memoryPath) -and (-not $memoryBudget.enabled -or $memoryBudget.status -ne 'blocked'))
+  ok = ((Test-Path $memoryPath) -and (-not $memoryBudget.enabled -or $memoryBudget.status -ne 'blocked') -and $graphParseErrorCount -eq 0 -and $decisionCurrentConflictCount -eq 0 -and $adrState.ok)
   memory = $memoryPath
   totalLines = $lines.Count
   nonEmptyLines = $nonEmpty.Count
@@ -152,10 +149,12 @@ $result = [pscustomobject]@{
   decisionMemoryCount = $decisionMemoryCount
   adrMemoryCount = $adrMemoryCount
   decisionGraphCount = $decisionGraph.Count
-  adrGraphCount = $adrGraph.Count
-  adrSubjectCount = $adrSubjects.Count
-  adrCurrentCount = $adrCurrentCount
-  adrSupersededCount = $adrSupersededCount
+  adrGraphCount = $adrState.subjectCount
+  adrSubjectCount = $adrState.subjectCount
+  adrCurrentCount = $adrState.currentCount
+  adrSupersededCount = $adrState.supersededCount
+  adrSchemaIssueCount = $adrState.schemaIssueCount
+  adrCurrentConflictCount = $adrState.currentConflictCount
   decisionParticleCount = $decisionParticles.Count
   malformedDecisionParticleCount = $malformedDecisionParticleCount
   graphParseErrorCount = $graphParseErrorCount

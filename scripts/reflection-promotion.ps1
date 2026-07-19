@@ -6,6 +6,7 @@ param(
   [string]$Summary = '',
   [string]$Evidence = '',
   [string]$Scope = 'super-memory-brain',
+  [string]$WorkspaceRoot = '',
   [double]$MinConfidence = 0.7,
   [switch]$ConfirmPrivate,
   [switch]$AllowDuplicate,
@@ -18,10 +19,13 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $PSScriptRoot
-$workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
+$workspace = if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) { Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace' } else { [IO.Path]::GetFullPath($WorkspaceRoot) }
 $reflectionRoot = Join-Path $workspace 'reflection'
 $candidateRoot = Join-Path $reflectionRoot 'candidates'
-foreach ($dir in @($workspace,$reflectionRoot,$candidateRoot)) { if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null } }
+$correctionCandidateRoot = Join-Path $reflectionRoot 'correction-candidates'
+if ($Mode -in @('Analyze','Apply')) {
+  foreach ($dir in @($workspace,$reflectionRoot,$candidateRoot,$correctionCandidateRoot)) { if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null } }
+}
 $outPath = Join-Path $workspace 'last-reflection-promotion.json'
 
 function Limit-Text([string]$Value, [int]$Max = 420) {
@@ -42,13 +46,78 @@ function Test-PrivateText([string]$Value) {
   return ($Value -match '(?i)(api[_-]?key|password|passwd|token|cookie|secret|private[_-]?key|authorization:)')
 }
 
+function Get-CompactHash([string]$Value) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { return -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value))[0..11] | ForEach-Object { $_.ToString('x2') }) }
+  finally { $sha.Dispose() }
+}
+
+function Get-FileSha256([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+  try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+  catch { return '' }
+}
+
+function Get-VerifiedOutcomeForCorrection($Correction) {
+  $outcomeRoot = Join-Path $workspace 'runtime-state\verified-task-outcomes'
+  $candidateId = [string]$Correction.candidateId
+  $workspaceKey = [string]$Correction.workspaceKey
+  $matches = @()
+  foreach ($path in @(Get-ChildItem -LiteralPath $outcomeRoot -File -Filter '*.json' -ErrorAction SilentlyContinue)) {
+    try {
+      $outcome = Get-Content -LiteralPath $path.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      $privacyOk = ($outcome.privacy -and $outcome.privacy.rawPromptStored -eq $false -and $outcome.privacy.rawSummaryStored -eq $false)
+      $verificationOk = ($outcome.verification -and $outcome.verification.ok -eq $true -and $outcome.verification.taskScopedGuardOk -eq $true -and $outcome.verification.realUserPathVerified -eq $true -and $outcome.verification.completedCheckpointVerified -eq $true)
+      $realWorldOk = ($outcome.classification -and $outcome.classification.verifiedRealWorldTask -eq $true)
+      if ([string]$outcome.schema -eq 'super-brain.verified-task-outcome.v1' -and [string]$outcome.correctionCandidateId -eq $candidateId -and (Test-SuperBrainWorkspaceKey ([string]$outcome.workspaceKey) $workspaceKey) -and $privacyOk -and $verificationOk -and $realWorldOk) {
+        $matches += [pscustomobject]@{ record=$outcome; path=$path.FullName; sha256=(Get-FileSha256 $path.FullName) }
+      }
+    } catch {}
+  }
+  if ($matches.Count -ne 1) { return [pscustomobject]@{ valid=$false; reason=if($matches.Count -eq 0){'matching_verified_outcome_missing'}else{'matching_verified_outcome_ambiguous'}; match=$null } }
+  return [pscustomobject]@{ valid=$true; reason='matched'; match=$matches[0] }
+}
+
+function Get-CorrectionLifecycleSummary {
+  $counts = [ordered]@{ pending=0; analyzed=0; closed=0; invalid=0; total=0 }
+  foreach ($path in @(Get-ChildItem -LiteralPath $correctionCandidateRoot -File -Filter '*.json' -ErrorAction SilentlyContinue)) {
+    try {
+      $item = Get-Content -LiteralPath $path.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      $counts.total++
+      switch ([string]$item.status) {
+        'pending_verification' { $counts.pending++ }
+        'analyzed' { $counts.analyzed++ }
+        'closed' { $counts.closed++ }
+        default { $counts.invalid++ }
+      }
+    } catch { $counts.invalid++; $counts.total++ }
+  }
+  return [pscustomobject]$counts
+}
+
+if ($Mode -eq 'List') {
+  $listResult = [pscustomobject]@{
+    ok = $true
+    checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    schema = 'super-brain.reflection-promotion.v2'
+    mode = 'List'
+    correctionLifecycle = Get-CorrectionLifecycleSummary
+    learningCandidateCount = @(Get-ChildItem -LiteralPath $candidateRoot -File -Filter '*.json' -ErrorAction SilentlyContinue).Count
+    rawPromptStored = $false
+  }
+  if ($Json) { $listResult | ConvertTo-Json -Depth 8 } else { Write-Host "REFLECTION_PROMOTION mode=List pending=$($listResult.correctionLifecycle.pending) analyzed=$($listResult.correctionLifecycle.analyzed) closed=$($listResult.correctionLifecycle.closed)" }
+  exit 0
+}
+
 function New-Candidate([string]$Target, [string]$Title, [string]$Text, [double]$Confidence, [string[]]$EvidenceItems, [string]$Reason) {
-  $idSeed = "$TriggerType|$Target|$Title|$Text"
-  $sha = [System.Security.Cryptography.SHA256]::Create()
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($idSeed)
-  $hash = -join ($sha.ComputeHash($bytes)[0..5] | ForEach-Object { $_.ToString('x2') })
+  $familySeed = "$TriggerType|$Target|$Title|$Scope"
+  $sampleSeed = "$familySeed|$Text"
+  $familyHash = Get-CompactHash $familySeed
+  $sampleHash = Get-CompactHash $sampleSeed
   return [pscustomobject]@{
-    id = "learn-$hash"
+    id = 'learn-' + $familyHash.Substring(0,12)
+    familyKey = 'learning-' + $familyHash
+    sampleId = 'sample-' + $sampleHash
     target = $Target
     title = Limit-Text $Title 120
     summary = Limit-Text $Text 700
@@ -62,6 +131,52 @@ function New-Candidate([string]$Target, [string]$Title, [string]$Text, [double]$
     duplicateCheck = [pscustomobject]@{ checked=$false; possibleDuplicate=$false; source='' }
     qualityCheck = [pscustomobject]@{ hasEvidence=(@($EvidenceItems).Count -gt 0); aboveThreshold=($Confidence -ge $MinConfidence); notNoise=($Text.Length -ge 20) }
     promotion = [pscustomobject]@{ wouldWrite=($Mode -eq 'Apply'); requiresApproval=($Target -in @('skill_evolution','procedural_rule') -or (Test-PrivateText "$Title $Text $Evidence")); applied=$false; command='' }
+    lifecycle = [pscustomobject]@{ status='candidate'; reason='pending_governed_promotion'; firstSeenAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); lastSeenAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); seenCount=1 }
+  }
+}
+
+function Write-CandidateSnapshot($Candidate) {
+  $candidatePath = Join-Path $candidateRoot ($Candidate.id + '.json')
+  if (Test-Path -LiteralPath $candidatePath) {
+    try {
+      $existing = Get-Content -LiteralPath $candidatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+      $firstSeenAt = if ($existing.lifecycle -and $existing.lifecycle.firstSeenAt) { [string]$existing.lifecycle.firstSeenAt } else { (Get-Item -LiteralPath $candidatePath).CreationTime.ToString('yyyy-MM-dd HH:mm:ss') }
+      $seenCount = if ($existing.lifecycle -and $existing.lifecycle.seenCount) { [int]$existing.lifecycle.seenCount + 1 } else { 2 }
+      $sampleIds = @(@($existing.sampleIds) + @($existing.sampleId) + @($Candidate.sampleId) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique | Select-Object -Last 12)
+      $Candidate.lifecycle.firstSeenAt = $firstSeenAt
+      $Candidate.lifecycle.seenCount = $seenCount
+      $Candidate | Add-Member -NotePropertyName sampleIds -NotePropertyValue $sampleIds -Force
+    } catch {}
+  }
+  Write-JsonUtf8NoBom $candidatePath $Candidate 12
+  return $candidatePath
+}
+
+$summaryWasExplicit = -not [string]::IsNullOrWhiteSpace($Summary)
+$linkedCorrection = $null
+$linkedCorrectionPath = ''
+$linkedCorrectionId = ''
+if ($Evidence -match '(?i)(?:^|[\s;,])correctionCandidate=(correction-[a-z0-9_-]+)') { $linkedCorrectionId = $Matches[1].ToLowerInvariant() }
+if ($TriggerType -eq 'user_correction') {
+  if ([string]::IsNullOrWhiteSpace($linkedCorrectionId)) { throw 'CORRECTION_CANDIDATE_REQUIRED: use Evidence correctionCandidate=<id>.' }
+  if (-not $summaryWasExplicit -or $Summary.Trim().Length -lt 20 -or $Summary.Trim().Length -gt 700) { throw 'CORRECTION_SUMMARY_INVALID: provide an explicit verified summary between 20 and 700 characters.' }
+  if (Test-PrivateText "$Summary $Evidence") { throw 'CORRECTION_PRIVACY_GATE: summary or evidence contains secret-like material.' }
+  $linkedCorrectionPath = Join-Path $correctionCandidateRoot ($linkedCorrectionId + '.json')
+  if (-not (Test-Path -LiteralPath $linkedCorrectionPath)) { throw 'CORRECTION_CANDIDATE_NOT_FOUND: the linked candidate does not exist in this workspace.' }
+  $linkedCorrection = Get-Content -LiteralPath $linkedCorrectionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ([string]$linkedCorrection.schema -ne 'super-brain.correction-candidate.v1' -or [string]$linkedCorrection.candidateId -ne $linkedCorrectionId -or $linkedCorrection.rawPromptStored -eq $true) { throw 'CORRECTION_CANDIDATE_INVALID: schema, identity, or privacy invariant failed.' }
+  if ($Mode -eq 'Apply' -and [string]$linkedCorrection.status -ne 'analyzed') { throw 'CORRECTION_NOT_ANALYZED: Analyze must succeed before durable promotion.' }
+  if ($Mode -eq 'Analyze' -and [string]$linkedCorrection.status -in @('pending_verification','analyzed')) {
+    $linkedCorrection.status = 'analyzed'
+    $linkedCorrection | Add-Member -NotePropertyName analyzedAt -NotePropertyValue (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') -Force
+    $linkedCorrection | Add-Member -NotePropertyName analysisSummary -NotePropertyValue (Limit-Text $Summary 700) -Force
+    $linkedCorrection | Add-Member -NotePropertyName analysisSummaryHash -NotePropertyValue (Get-CompactHash (Limit-Text $Summary 700)) -Force
+    $linkedCorrection | Add-Member -NotePropertyName analysisScope -NotePropertyValue $Scope -Force
+    $linkedCorrection | Add-Member -NotePropertyName rawPromptStored -NotePropertyValue $false -Force
+    $linkedCorrection | Add-Member -NotePropertyName durablePromotionAllowed -NotePropertyValue $false -Force
+    Write-JsonUtf8NoBom $linkedCorrectionPath $linkedCorrection 10
+  } elseif ($Mode -eq 'Analyze' -and [string]$linkedCorrection.status -ne 'closed') {
+    throw 'CORRECTION_STATUS_INVALID: only pending or analyzed candidates can be analyzed.'
   }
 }
 
@@ -194,7 +309,9 @@ foreach ($candidate in @($candidates)) {
   if ($candidate.duplicateCheck.possibleDuplicate -and -not $AllowDuplicate) { $candidate.promotion.wouldWrite = $false }
   if (-not $candidate.qualityCheck.hasEvidence -or -not $candidate.qualityCheck.aboveThreshold -or -not $candidate.qualityCheck.notNoise) { $candidate.promotion.wouldWrite = $false }
   try {
-    $scopeRaw = @(& (Join-Path $PSScriptRoot 'lesson-scope-gate.ps1') -Lesson $candidate.summary -Scope $Scope -Evidence @($candidate.evidence) -AppliesWhen $candidate.reason -DoesNotApplyWhen 'Outside the stated scope or without matching evidence.' -CounterExamples 'Future verification may falsify this candidate.' -ValidationConditions 'Before reuse, verify matching scope, evidence freshness, and expected outcome in the target task.' -Confidence $candidate.confidence -Json 2>$null)
+    $scopeArguments = @{ Lesson=$candidate.summary; Scope=$Scope; Evidence=@($candidate.evidence); AppliesWhen=$candidate.reason; DoesNotApplyWhen='Outside the stated scope or without matching evidence.'; CounterExamples='Future verification may falsify this candidate.'; ValidationConditions='Before reuse, verify matching scope, evidence freshness, and expected outcome in the target task.'; Confidence=$candidate.confidence; WorkspaceRoot=$workspace; Json=$true }
+    if ($Mode -in @('Preview','List')) { $scopeArguments.NoWrite = $true }
+    $scopeRaw = @(& (Join-Path $PSScriptRoot 'lesson-scope-gate.ps1') @scopeArguments 2>$null)
     if ($scopeRaw) {
       $scopeGate = (($scopeRaw -join "`n") | ConvertFrom-Json)
       $candidate | Add-Member -NotePropertyName scopeGate -NotePropertyValue ([pscustomobject]@{ checked=$true; ok=$scopeGate.ok; gaps=@($scopeGate.gaps).Count; source='lesson-scope-gate.ps1' }) -Force
@@ -208,13 +325,27 @@ foreach ($candidate in @($candidates)) {
     'memory' { 'learn-memory.ps1 -Layer project' }
     default { 'no durable promotion' }
   }
+  if ($candidate.target -eq 'none') {
+    $candidate.lifecycle.status = 'rejected'
+    $candidate.lifecycle.reason = 'no_durable_reuse'
+  } elseif ($candidate.privacyHit -and -not $ConfirmPrivate) {
+    $candidate.lifecycle.status = 'blocked'
+    $candidate.lifecycle.reason = 'privacy_confirmation_required'
+  } elseif ($candidate.duplicateCheck.possibleDuplicate -and -not $AllowDuplicate) {
+    $candidate.lifecycle.status = 'duplicate'
+    $candidate.lifecycle.reason = 'covered_by_existing_lesson'
+  } elseif (-not $candidate.qualityCheck.hasEvidence -or -not $candidate.qualityCheck.aboveThreshold -or -not $candidate.qualityCheck.notNoise -or ($candidate.scopeGate -and $candidate.scopeGate.ok -ne $true)) {
+    $candidate.lifecycle.status = 'rejected'
+    $candidate.lifecycle.reason = 'quality_or_scope_gate_failed'
+  }
 }
 
 $applied = New-Object System.Collections.ArrayList
 if ($Mode -eq 'Apply') {
   foreach ($candidate in @($candidates | Where-Object { $_.promotion.wouldWrite -eq $true -and $_.target -ne 'none' })) {
-    $candidatePath = Join-Path $candidateRoot ($candidate.id + '.json')
-    Write-JsonUtf8NoBom $candidatePath $candidate 10
+    $candidate.lifecycle.status = 'adopted'
+    $candidate.lifecycle.reason = 'governed_promotion_applied'
+    $candidatePath = Write-CandidateSnapshot $candidate
     if ($candidate.target -eq 'skill_evolution') {
       $null = & (Join-Path $PSScriptRoot 'skill-evolution.ps1') -Mode Capture -Text $candidate.summary -Source 'reflection-promotion' -Json 2>$null
       $candidate.promotion.applied = $true
@@ -229,17 +360,34 @@ if ($Mode -eq 'Apply') {
       [void]$applied.Add($candidate.id)
     }
   }
-} else {
-  foreach ($candidate in @($candidates)) {
-    $candidatePath = Join-Path $candidateRoot ($candidate.id + '.json')
-    Write-JsonUtf8NoBom $candidatePath $candidate 10
-  }
+} elseif ($Mode -eq 'Analyze') {
+  foreach ($candidate in @($candidates | Where-Object { $_.target -ne 'none' })) { $null = Write-CandidateSnapshot $candidate }
+}
+
+if ($Mode -eq 'Apply' -and $linkedCorrection -and @($applied).Count -gt 0) {
+  $outcomeLink = Get-VerifiedOutcomeForCorrection $linkedCorrection
+  $linkedCorrection.status = 'closed'
+  $linkedCorrection | Add-Member -NotePropertyName closedAt -NotePropertyValue (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') -Force
+  $linkedCorrection | Add-Member -NotePropertyName durablePromotionAllowed -NotePropertyValue $true -Force
+  $linkedCorrection | Add-Member -NotePropertyName promotionCandidateIds -NotePropertyValue @($applied) -Force
+  $linkedCorrection | Add-Member -NotePropertyName autonomyEvidenceLink -NotePropertyValue (if($outcomeLink.valid){[pscustomobject]@{eligible=$true;taskId=[string]$outcomeLink.match.record.taskId;verifiedOutcomeRecordId=[string]$outcomeLink.match.record.recordId;verifiedOutcomeSha256=[string]$outcomeLink.match.sha256;linkedAt=(Get-Date).ToString('o');rawPromptStored=$false}}else{[pscustomobject]@{eligible=$false;reason=$outcomeLink.reason;rawPromptStored=$false}}) -Force
+  Write-JsonUtf8NoBom $linkedCorrectionPath $linkedCorrection 10
+}
+
+$linkedCorrectionStatus = ''
+$linkedCorrectionAutonomyEligible = $false
+if ($linkedCorrection -and (Test-Path -LiteralPath $linkedCorrectionPath)) {
+  try {
+    $storedCorrection = Get-Content -LiteralPath $linkedCorrectionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $linkedCorrectionStatus = [string]$storedCorrection.status
+    if ($storedCorrection.autonomyEvidenceLink) { $linkedCorrectionAutonomyEligible = ($storedCorrection.autonomyEvidenceLink.eligible -eq $true) }
+  } catch {}
 }
 
 $result = [pscustomobject]@{
   ok = $true
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-  schema = 'super-brain.reflection-promotion.v1'
+  schema = 'super-brain.reflection-promotion.v2'
   version = (Get-SuperBrainManifest $Root).version
   mode = $Mode
   triggerType = $TriggerType
@@ -254,10 +402,31 @@ $result = [pscustomobject]@{
   }
   candidates = @($candidates)
   applied = @($applied)
-  nextAction = if ($Mode -eq 'Apply') { 'Review applied learning outputs and run verification.' } else { 'Review candidates; use -Mode Apply only for scoped, evidenced, non-private or confirmed learning.' }
+  linkedCorrectionCandidate = if ($linkedCorrection) { [pscustomobject]@{ candidateId=$linkedCorrectionId; status=$linkedCorrectionStatus; autonomyEvidenceEligible=[bool]$linkedCorrectionAutonomyEligible; rawPromptStored=$false } } else { $null }
+  correctionLifecycle = Get-CorrectionLifecycleSummary
+    nextAction = if ($Mode -eq 'Apply') { 'Review applied learning outputs and run verification.' } elseif ($Mode -eq 'Preview') { 'Preview is read-only; analyze or apply only scoped, evidenced, non-private learning.' } else { 'Review candidates; use -Mode Apply only for scoped, evidenced, non-private or confirmed learning.' }
   path = $outPath
 }
 
-Write-JsonUtf8NoBom $outPath $result 12
-if ($Json) { Get-Content -LiteralPath $outPath -Raw -Encoding UTF8 } else { Write-Host "REFLECTION_PROMOTION mode=$Mode candidates=$(@($candidates).Count) applied=$(@($applied).Count) path=$outPath" }
+if ($Mode -in @('Analyze','Apply')) {
+  Write-JsonUtf8NoBom $outPath $result 12
+  try {
+    $selfModelRaw = @(& (Join-Path $PSScriptRoot 'self-model.ps1') -Action Refresh -Json 2>$null)
+    $selfModel = (($selfModelRaw -join [Environment]::NewLine) | ConvertFrom-Json)
+    $result | Add-Member -NotePropertyName selfModelRefresh -NotePropertyValue ([pscustomobject]@{
+      requested=$true; ok=($selfModel.ok -eq $true)
+      evidenceStatus=[string]$selfModel.evidenceStatus; rawPromptStored=$false
+    }) -Force
+  } catch {
+    $result | Add-Member -NotePropertyName selfModelRefresh -NotePropertyValue ([pscustomobject]@{
+      requested=$true; ok=$false; errorCode='SELF_MODEL_REFRESH_FAILED'; rawPromptStored=$false
+    }) -Force
+  }
+  Write-JsonUtf8NoBom $outPath $result 12
+} else {
+  $result | Add-Member -NotePropertyName selfModelRefresh -NotePropertyValue ([pscustomobject]@{
+    requested=$false; ok=$null; rawPromptStored=$false
+  }) -Force
+}
+if ($Json) { $result | ConvertTo-Json -Depth 12 } else { Write-Host "REFLECTION_PROMOTION mode=$Mode candidates=$(@($candidates).Count) applied=$(@($applied).Count) path=$outPath" }
 exit 0

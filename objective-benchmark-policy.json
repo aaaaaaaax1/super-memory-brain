@@ -1,0 +1,66 @@
+{
+  "schema": "super-brain.objective-benchmark-policy.v1",
+  "claimPolicy": {
+    "internalEvaluationScope": "internal_acceptance_only",
+    "beforeOfficialRun": "not_scored",
+    "forbidCrossBenchmarkAggregate": true,
+    "requiredDesign": "paired_ab_same_host_model",
+    "singleChangedVariable": "super_memory_brain_enabled",
+    "reportRawMetricsOnly": true
+  },
+  "protocolRequirements": [
+    "sameModel",
+    "sameModelVersion",
+    "sameTools",
+    "sameBudget",
+    "sameEnvironment",
+    "randomizedOrder",
+    "blindedJudging",
+    "noTrainingOnEvaluationCases",
+    "officialHarness"
+  ],
+  "benchmarks": [
+    {
+      "id": "swebench_verified",
+      "name": "SWE-bench Verified",
+      "officialRepo": "https://github.com/SWE-bench/SWE-bench",
+      "pinnedCommit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+      "officialMetric": "resolved_rate",
+      "scope": "host_agent_plus_super_brain",
+      "minimumPublishableCases": 50,
+      "fullOfficialSplitRequired": true
+    },
+    {
+      "id": "bfcl",
+      "name": "Berkeley Function Calling Leaderboard",
+      "officialRepo": "https://github.com/ShishirPatil/gorilla",
+      "pinnedCommit": "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8",
+      "officialMetric": "category_accuracy",
+      "scope": "host_model_tool_calling_plus_super_brain",
+      "minimumPublishableCases": 100,
+      "fullOfficialSplitRequired": true
+    },
+    {
+      "id": "longmemeval",
+      "name": "LongMemEval",
+      "officialRepo": "https://github.com/xiaowu0162/LongMemEval",
+      "pinnedCommit": "9e0b455f4ef0e2ab8f2e582289761153549043fc",
+      "officialMetric": "question_accuracy",
+      "scope": "host_model_plus_memory_system",
+      "minimumPublishableCases": 100,
+      "fullOfficialSplitRequired": true
+    },
+    {
+      "id": "tau3_bench",
+      "name": "tau3-bench",
+      "officialRepo": "https://github.com/sierra-research/tau2-bench",
+      "pinnedCommit": "07d5b3340b2d016df8c36c9c1a6376ef9f29155d",
+      "officialMetric": "task_success_rate",
+      "scope": "host_agent_plus_super_brain",
+      "minimumPublishableCases": 50,
+      "fullOfficialSplitRequired": true
+    }
+  ],
+  "pinnedAt": "2026-07-17",
+  "guard": "A benchmark result belongs to the complete host-model/tool/environment system. Attribute only the paired delta to Super Brain, and only when Super Brain enablement is the sole changed variable."
+}

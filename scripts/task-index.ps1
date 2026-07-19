@@ -3,7 +3,8 @@
   [switch]$Table,
   [string]$Agent = '',
   [string]$SessionId = '',
-  [switch]$IncludeCompleted
+  [switch]$IncludeCompleted,
+  [switch]$IncludeDiagnostic
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -51,6 +52,10 @@ function Get-SafeId([string]$Value, [string]$Fallback) {
 function Get-DefaultAgentId([string]$Platform, [string]$AgentName) {
   $base = if (-not [string]::IsNullOrWhiteSpace($Platform)) { $Platform } elseif (-not [string]::IsNullOrWhiteSpace($AgentName)) { $AgentName } else { 'agent' }
   return (Get-SafeId $base 'agent') + 'id-default'
+}
+
+function Test-DiagnosticTaskId([string]$TaskId) {
+  return $TaskId -match '^task-(alpha|beta|card-writer|checkpoint-writer|context-writer)$'
 }
 
 function Short-Id([string]$Value) {
@@ -153,6 +158,7 @@ function Add-SharedTaskCards([System.Collections.Hashtable]$SessionCards) {
     foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter '*.task.json' -File -ErrorAction SilentlyContinue)) {
       $task = Read-JsonFile $file.FullName
       if (-not $task) { continue }
+      if (-not $IncludeDiagnostic -and (Test-DiagnosticTaskId ([string]$task.taskId))) { continue }
       $sessionCard = $null
       if ($task.sessionId -and $SessionCards.ContainsKey([string]$task.sessionId)) { $sessionCard = $SessionCards[[string]$task.sessionId] }
       $sessionName = if ($task.sessionName) { [string]$task.sessionName } elseif ($sessionCard -and $sessionCard.sessionName) { [string]$sessionCard.sessionName } else { '' }

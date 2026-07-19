@@ -1,7 +1,8 @@
 param(
   [string]$ZCodeSkills = "$env:USERPROFILE\.zcode\skills",
   [string]$MemoryRoot = "",
-  [string]$CodexSkills = "$env:USERPROFILE\.codex\skills"
+  [string]$CodexSkills = "$env:USERPROFILE\.codex\skills",
+  [switch]$SkipRuntime
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -51,6 +52,11 @@ try {
 } catch {
   Write-Host "MISSING NexSandglass python runtime: $($_.Exception.Message)"
   $ok = $false
+}
+
+if (-not $SkipRuntime) {
+  & (Join-Path $PSScriptRoot 'runtime-status.ps1') -MemoryRoot $MemoryRoot
+  if ($LASTEXITCODE -ne 0) { Write-Host 'MISSING local runtime/MCP registration'; $ok = $false }
 }
 
 if ($ok) { Write-Host 'HEALTH_CHECK_OK' } else { Write-Host 'HEALTH_CHECK_FAILED'; exit 1 }

@@ -1,8 +1,8 @@
 # CURRENT_BASELINE
 
-Last Updated: 2026-06-30
+Last Updated: 2026-07-18
 Status: [CURRENT][VERIFIED]
-Package Version: 0.5.79
+Package Version: 0.5.96
 
 ## Current State
 
@@ -33,6 +33,11 @@ super-memory-brain
 - skill-orchestrator                 # ORC / Super Brain / routing
 - plusunm-g1                         # G1 / memory governance
 - nexsandglass-dedicated-memory      # NexSandglass / local deep memory
+- runtime/brain_core.py              # bounded native recall/status core
+- runtime/brain_mcp.py               # narrow read-only stdio MCP
+- runtime/brain_cli.py               # local CLI bridge
+- runtime/brain_eval.py              # recall and MCP contract replay
+- scripts/objective-benchmark.ps1    # official paired A/B result validator
 ``
 
 ## Active Memory Policy
@@ -43,6 +48,49 @@ G1 governs memory; ORC routes only when needed; Sandglass stores stable state on
 
 ## Verified Capabilities
 
+- [VERIFIED] Native runtime recall is bounded and read-only by default; `runtime/brain_core.py` keeps evidence cards, layer filters, confidence gates, abstention for unknown preferences, and compact status/recent responses outside startup context.
+- [VERIFIED] Narrow MCP registration exposes only `brain_recall`, `brain_status`, and `brain_recent`; `runtime/brain_eval.py --mcp-replay` validates initialize, tool listing, outer JSON-RPC, and nested tool payload JSON.
+- [VERIFIED] Fresh empty memory roots use contract-only runtime bootstrap verification, while populated roots run the twelve-case recall regression; both paths require runtime health before MCP registration.
+- [VERIFIED] Full CI passes after runtime integration: PowerShell lint, Pester 230/230, runtime/MCP replay, package verification, share verification, temporary install smoke, and integration package verification.
+- [VERIFIED] Successful task verification can optionally emit at most three enumerated user-adaptation signals through `user-adaptation-observer.ps1`; apply requires matching task/workspace evidence, correction learning requires a closed correction candidate, and no summary, transcript, freeform prose, or applied packet is used as inference.
+- [VERIFIED] Verified-outcome observations default to project scope, workflow observations bind project plus workflow, duplicates do not add support, and normal three-task/two-context promotion still applies; this adds no always-on context.
+- [VERIFIED] Adaptation values may be context-scoped: the explicit problem-verification rule applies only to debugging/review, requiring affected behavior and material integration checks before a healthy claim while preserving risk-based normal coding and the three-directive packet budget.
+- [VERIFIED] Governed user adaptation learns only enumerated collaboration defaults from strong explicit wording or repeated evidence across at least three tasks and two contexts; contradictions block inferred promotion, and current user instructions always win.
+- [VERIFIED] Adaptation is bounded to 200 observations, 64 candidates, 32 stable preferences, 6000 profile characters, and relevant preflight packets of at most three directives / 120 tokens; no always-on profile injection or raw prompt storage is allowed.
+- [VERIFIED][0.5.95] Strict autonomy evidence is a cold ledger: `intelligence-eval.ps1` derives counts only from current-version, task-scoped verified outcomes; autonomy additionally requires a hash-matched governed authorization, and correction loops require a hash-matched closed link. Generic completed cards/checkpoints and caller-supplied counts are always non-qualifying. Pester 242/242 and package verification passed after this change.
+- [VERIFIED][0.5.96] Native recall now uses FTS5 first, IDX only when the fast candidate pool is insufficient, and the legacy four-lane router only as a final miss fallback; graph/state/evidence ranking and unknown-fact abstention remain in `BrainCore`. On the recorded local warm path, browser-rule recall p95 fell from about 885 ms to 25 ms, memory recall evaluation stayed 12/12, mixed index concurrency passed 736 operations with zero failures/errors/temp files, Pester passed 242/242, and package verification returned `VERIFY_PACKAGE_OK`. These are local acceptance measurements, not an objective intelligence score.
+- [VERIFIED][0.5.96][RECALL-QUALITY] Evidence admission now uses token boundaries, identity/alias coverage, temporal-window precedence, current-snapshot conflict suppression, generic verified profile-field matching, and package-state intent gating. SQLite connections close on every FTS path; complete IDX hits retain their mtime cache; IDX fallback no longer imports the full thinking stack. The isolated non-publishable diagnostic covers 46 base cases plus 70 deterministic variants (116 total) and passed 100% Recall@1/3, 100% precision@3, and 100% unknown-fact abstention with 24.48 ms warm p95. A real active-memory MCP replay remained 12/12; the final replay reported 16.88 ms cold-start, 72.72 ms all-sample p95, and 72.72 ms warm p95. These are local acceptance measurements only; no objective intelligence score is claimed.
+- [HISTORICAL][INTERNAL_ACCEPTANCE][0.5.95] `not_scored`: a fresh independent v13 60-case holdout was sealed for 0.5.95, but no model-output or independent-judge evidence was generated. It does not score 0.5.96 and remains unconsumed.
+- [CURRENT][INTERNAL_ACCEPTANCE][0.5.96] `not_scored`: no independent holdout model-output and judge result is bound to this runtime revision. Local recall and regression evidence is acceptance evidence only.
+- [VERIFIED] Workflow preferences override matching project preferences, project preferences override global defaults, foreign projects do not inherit project-scoped habits, and disable/enable plus confirmed forget/tombstone behavior is covered by regression.
+- [INTERNAL_ACCEPTANCE] All v2-v9 weighted values are package-local regression metrics. They are not objective intelligence scores and must not be used for cross-system comparison.
+- [HISTORICAL][VERIFIED][0.5.87] Internal v2 evaluation used a consumed 52-case sealed personalization holdout: 50 passed, holdout rate 96.15%, calibration gap 3.85%, personal control plane 9.47/10, autonomous brain 9.49/10. Those values do not transfer across later routing/runtime changes.
+- [HISTORICAL][VERIFIED][0.5.88] Formal v3 intelligence evaluation used a consumed 52-case sealed behavior holdout: 47 passed, holdout rate 90.38%, calibration gap 9.62%, personal control plane 8.78/10, autonomous brain 8.82/10. The scores remain historical evidence and do not transfer to 0.5.89.
+- [HISTORICAL][VERIFIED][0.5.89] Formal v4 intelligence evaluation used a consumed 52-case sealed holdout: 44 passed, holdout rate 84.62%, calibration gap 15.38%, personal control plane 8.08/10, and autonomous brain 8.14/10. Those scores do not transfer to 0.5.90.
+- [HISTORICAL][VERIFIED][0.5.90] Formal v5 evaluation used a consumed 52-case holdout bound through evidence schema v2: 47 passed, holdout rate 90.38%, calibration gap 9.62%, personal control plane 8.78/10, and autonomous brain 8.82/10. Those scores do not transfer to 0.5.91.
+- [HISTORICAL][VERIFIED][0.5.91] Formal v6 evaluation used a new consumed 52-case holdout bound through evidence schema v2: 48 passed, holdout rate 92.31%, calibration gap 7.69%, personal control plane 9.01/10, and autonomous brain 9.04/10. Those scores do not transfer to later behavior sources.
+- [HISTORICAL][VERIFIED][0.5.92] Formal v7 evaluation consumed 56 independent cases: 50 passed, holdout rate 89.29%, calibration gap 10.71%, personal control plane 8.64/10, and autonomous brain 8.69/10; formal gates failed.
+- [HISTORICAL][VERIFIED][0.5.92] Formal v8 evaluation consumed 60 new cases: 50 passed, holdout rate 83.33%, calibration gap 16.67%, personal control plane 7.93/10, and autonomous brain 7.99/10. It exposed semantic and evaluation-design gaps and is not reused for scoring.
+- [HISTORICAL][INTERNAL_ACCEPTANCE][0.5.93] v9 used a zero-case-hash-overlap consumed 60-case package-local behavior holdout: 57 passed with a 5% calibration gap. Its 9.33/9.36 weighted values are internal acceptance results only, not objective scores, and do not transfer to 0.5.94.
+- [CURRENT][OBJECTIVE_STATUS][0.5.96] `not_scored`: no official paired A/B benchmark run has been completed. Objective publication requires the same host model/version/tools/budget/environment with only `super_memory_brain_enabled` changed, randomized order, blinded judging, official harness artifacts, and raw per-benchmark metrics.
+- [VERIFIED] Objective benchmark adapters are pinned for SWE-bench Verified, BFCL, LongMemEval, and tau3-bench. `objective-benchmark.ps1` reports baseline/treatment rates, paired percentage-point delta, Wilson intervals, wins/losses, and paired significance; cross-benchmark aggregate intelligence scores are prohibited.
+- [VERIFIED] The historical v3 holdout set hash is `6f7df1eaa3df3d11268193a1a1170557840f60e143e7222cb0f4ed34fdd17efe`; it remains consumed and is not reused for 0.5.89 tuning or scoring.
+- [VERIFIED] Compaction and disconnect recovery now prefer the visible conversation tail, then a task/workspace/version-bound execution contract; stale checkpoints carry phase only, and missing, conflicting, foreign, expired, or unreconciled evidence returns `unknown` or blocks mutation instead of authorizing an old action.
+- [VERIFIED] Engineering behavior regression passes 11/11: bounded product-flow semantics, structural discussion, read-only negative routing, unknown-personal-fact abstention, and Playwright-first browser routing are covered.
+- [VERIFIED] v9 set hash is `620848f3f0cd4f02a1a3acdaa03782e6a1992bba4b3e4ac30423ce1978236e87`; its 60 case hashes overlap v3-v8 by zero, its evidence binds manifest `82ca4970daf5feeb73db714797c8e0ec2e2971cd5d935c4374cf30bd11c22850` and behavior source `21be8345a5bf6ef10d913adceb2b31f29e6ad090f86bb5e7c9007c0ecdd5e2f7`, and its report is consumed exactly once.
+- [HISTORICAL][MEASURED_GAP] v9 retained three product/structural-language misses. They were repaired in 0.5.94 with bounded negative regressions, but v9 remains consumed and is not rerun.
+- [VERIFIED] One-click installation has one complete orchestrator: `install.bat`, the UI global-install button, and the console global-install action all delegate to `bootstrap.ps1`; `install.ps1` remains an internal/custom-target stage, while hot refresh and diagnostics retain separate lifecycle ownership.
+- [HISTORICAL][VERIFIED] Version 0.5.89 evidence includes Pester 219/219, native runtime regression, package integration, CI 28/28, and a uniquely consumed v4 holdout bound to manifest/runtime evidence.
+- [VERIFIED] v4 independently passed browser routing 10/10, unknown-personal-fact abstention 8/8, execution continuity 10/10, and evaluation integrity 2/2, including final-report hash equality and second-use rejection.
+- [MEASURED_GAP] v4 failed seven product-flow generalization cases because intent routing and collaboration planning used separate incomplete semantic vocabularies; one cold file-marker case also exposed case-sensitive documentation-contract fragility. The consumed v4 set is not reused for tuning or scoring.
+- [VERIFIED] v5 preserves browser routing 10/10, unknown-personal-fact abstention 8/8, execution continuity 10/10, and evaluation integrity 2/2; final report and consumption marker hashes match.
+- [MEASURED_GAP] v5 has four real intent-takeover failures: structural/workflow changes without an explicit feature noun were not routed to the collaboration gate, and incidental failure-state wording could let the bug branch preempt a product-flow request. One additional file-marker failure was caused by an over-escaped JSON text assertion.
+- [VERIFIED] v6 passes browser routing 10/10, unknown-personal-fact abstention 8/8, execution continuity 10/10, structural change routing 6/6, file/evaluation integrity 6/6, and 8/12 new workflow paraphrases. The sealed set hash is `4197225241f5bd77a3019a8baab1c5ee7c4dfd5f27996de1dde17547f7f0f7a4`.
+- [VERIFIED] v6 evidence binds package 0.5.91 through manifest hash `957a47cad72cc4ae0f70c9d511cc4cc959acfbc97a4047e249c2315c968af74d` and behavior-source hash `63a1a7ab9656fdbc30da27dcf8d714e9fa5ece02487fa47f37f1d4df402362de`; final report SHA-256 equals the consumed marker SHA-256.
+- [MEASURED_GAP] Four implicit Chinese workflow phrases still miss the product gate when they omit the currently modeled action/context combination. They remain future-version generalization work; v6 is consumed and is not retuned or rerun.
+- [VERIFIED] Exact user-named skill routing resolves active or indexed-cold names before overlapping defaults, binds `免费生图` without allowing Smag substitution, and keeps cold capability fallback out of the always-on Super Brain bootstrap.
+- [VERIFIED] TaskStateStore uses prepared/committed WAL, atomic compatibility-file materialization, owner/session/workspace/lease metadata, crash reconciliation, no-merge parallel/conflict audit, and archive-only journal compaction behind replayable snapshots on the maintenance cold path.
+- [VERIFIED] `autonomous-executor.ps1 -ApprovedPlan` treats a plan at the configured checkpoint threshold as explicit execution authorization even when status wording is present; its E2E runs in a short isolated state root and cannot clear another task's checkpoint.
 - [VERIFIED] Evidence-bounded engineering judgment is active as a cross-cutting ORC capability: repair, optimization, architecture, performance, migration, root-cause, and best-option work uses `references/engineering-judgment.md` and task-scoped `scripts/engineering-decision-gate.ps1`, while greetings and tiny direct tasks stay concise.
 - [VERIFIED] Engineering claims separate `FACT / INFERENCE / UNKNOWN`; facts require named current evidence, live evidence overrides memory, root cause is `verified / hypothesis / unknown`, critical unknowns require discriminating tests, optimality requires objective/constraints/alternatives/tradeoffs/criteria/resolution evidence, and every execution step requires input/output/acceptance/stop conditions.
 - [VERIFIED] Super Brain extension/skill capability center is active: `scripts\extension-ingest.ps1` lists, inspects, adopts, and rebuilds user-added skills/plugins as opt-in extensions, while `scripts\extension-capability-map.ps1` infers ORC-routable capability metadata from extension manifests, triggers, setup notes, provenance, and verification hints.
@@ -251,6 +299,7 @@ G1 governs memory; ORC routes only when needed; Sandglass stores stable state on
 
 ## Known Limitations
 
+- [OBJECTIVE_STATUS] `not_scored`. Internal acceptance is green, but no objective intelligence claim is allowed before official paired benchmark runs are completed.
 - [KNOWN_LIMITATION] plusunm-g1 currently works primarily as a skill-policy/governance layer; do not assume `python -m brain_memory` exists. Use package root markers and the PowerShell/NexSandglass script entry points under `scripts/` and `<memory-root>\scripts`.
 - [PRIVACY] Do not share memory/ unless intentionally sharing private local memory.
 

@@ -16,18 +16,14 @@
                        "name":  "browser-act",
                        "path":  "skills/browser-act",
                        "triggers":  [
-                                        "browser automation",
-                                        "open website",
-                                        "click",
-                                        "type",
-                                        "form fill",
-                                        "screenshot",
-                                        "rendered content",
-                                        "JavaScript page",
+                                        "browser-act",
+                                        "Playwright cannot complete",
+                                        "Playwright browser limitation",
                                         "checkbox verification",
                                         "captcha assistance",
-                                        "browser profile",
-                                        "browser session"
+                                        "browser-act profile",
+                                        "browser-act session",
+                                        "HAR network capture"
                                     ],
                        "setupRequired":  "Requires local browser-act CLI. Prompt for install if missing."
                    },

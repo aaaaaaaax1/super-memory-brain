@@ -1,6 +1,6 @@
 ---
 name: nexsandglass-dedicated-memory
-description: Use for NexSandglass / 沙漏 / DedicatedMemory local-first agent memory: writing durable local memories, searching local sandglass history, decision particles, drift/persona/soul memory, MCP memory server setup, or coordinating NexSandglass with the Super Brain stack and plusunm-g1. Trigger when the user mentions NexSandglass, Sandglass, 沙漏, DedicatedMemory, local agent memory, memory engine, memory search, sandglass_mcp, sandglass_log, sandglass_vault, or wants a second memory layer beside G1.
+description: "Use NexSandglass/DedicatedMemory for governed local memory writes, history search, decision particles, drift/persona memory, MCP setup, or coordination with Super Brain and plusunm-g1. Trigger on NexSandglass, Sandglass, 沙漏, or local memory engine."
 ---
 ## Installed Root Markers
 

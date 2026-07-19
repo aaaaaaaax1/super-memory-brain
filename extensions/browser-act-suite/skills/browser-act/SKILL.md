@@ -1,6 +1,6 @@
 ---
 name: browser-act
-description: "Default browser automation CLI for this user and Super Memory Brain. Prefer browser-act over Playwright, built-in fetch, or web tools for opening URLs, clicking, typing, form filling, rendered/JavaScript content extraction, login-state workflows, screenshots, verification prompts, checkbox-style verification, browser sessions, network/HAR capture, and configured browser/profile management. Use Playwright only when explicitly requested, when writing/running Playwright tests, or when browser-act is unavailable and the user declines installation. NEVER run browser-act commands directly via Bash — always invoke this skill first."
+description: "Fallback browser automation via browser-act. Use only when explicitly requested or Playwright cannot reliably complete the operation, especially visible verification controls, browser-act session/state, or HAR capture. Load before running browser-act."
 allowed-tools: Bash(browser-act:*)
 metadata:
   author: BrowserAct
@@ -52,7 +52,9 @@ browser-act get-skills core --skill-version 2.0.2
 & "<user-home>\AppData\Roaming\Python\Python312\Scripts\browser-act.exe" get-skills core --skill-version 2.0.2
 ```
 
-For browser tasks, first try the CLI entrypoint above. Treat Playwright as fallback only after checking the CLI path or after the user explicitly asks for Playwright.
+Use Playwright for normal browser automation. Use the CLI entrypoint below only
+after the browser-act fallback route has been selected because the user asked
+for it or Playwright could not reliably complete the operation.
 ## Start here
 
 Before running any `browser-act` command, load the usage guide from the CLI:

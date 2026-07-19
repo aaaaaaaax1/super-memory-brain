@@ -40,6 +40,7 @@ def _get_db():
 
 def sync_all() -> int:
     """全量同步。返回条数，失败返回-1。"""
+    conn = None
     try:
         from sandglass_vault import _SANDGLASS, _parse_line
         with _lock:
@@ -60,11 +61,15 @@ def sync_all() -> int:
             return len(rows)
     except Exception:
         return -1
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def sync_incremental() -> int:
     """增量同步。文件没变则跳过。返回新增条数。"""
     global _last_sync_mtime
+    conn = None
     try:
         from sandglass_vault import _SANDGLASS, _parse_line
         # mtime检查——文件没变就跳过
@@ -94,10 +99,14 @@ def sync_incremental() -> int:
             return added
     except Exception:
         return 0
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def search_in(line_ids: list, query: str, limit: int = 100) -> list:
     """FTS5 在指定行号列表中搜索排序。用于 mmap 初筛后的精排。"""
+    conn = None
     try:
         tokens = _tokenize(query)
         if not tokens.strip() or not line_ids:
@@ -110,10 +119,14 @@ def search_in(line_ids: list, query: str, limit: int = 100) -> list:
             return [(row[0], row[1], row[2]) for row in cur.fetchall()]
     except Exception:
         return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def search_year(query: str, year: str, limit: int = -1) -> list:
     """FTS5 按年份搜索。year='2026' 只搜该年。"""
+    conn = None
     try:
         tokens = _tokenize(query)
         if not tokens.strip():
@@ -127,11 +140,15 @@ def search_year(query: str, year: str, limit: int = -1) -> list:
             return [(row[0], row[1], row[2]) for row in cur.fetchall()]
     except Exception:
         return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def search(query: str, limit: int = 10) -> list:
     """FTS5搜索。limit=-1 全量。返回[(行号,时间,明文),...]。
     中文用AND语义，英文自动切换OR避免n-gram碎片化。"""
+    conn = None
     try:
         tokens = _tokenize(query)
         if not tokens.strip():
@@ -148,11 +165,19 @@ def search(query: str, limit: int = 10) -> list:
             return [(row[0], row[1], row[2]) for row in cur.fetchall()]
     except Exception:
         return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def count() -> int:
+    conn = None
     try:
         with _lock:
-            return _get_db().execute("SELECT COUNT(*) FROM sandglass").fetchone()[0]
+            conn = _get_db()
+            return conn.execute("SELECT COUNT(*) FROM sandglass").fetchone()[0]
     except Exception:
         return 0
+    finally:
+        if conn is not None:
+            conn.close()

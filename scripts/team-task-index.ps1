@@ -1,4 +1,5 @@
 param(
+  [string]$StateRoot = '',
   [switch]$Json
 )
 
@@ -6,7 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
-$workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
+$workspace = if ([string]::IsNullOrWhiteSpace($StateRoot)) { Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace' } else { Join-Path ([IO.Path]::GetFullPath($StateRoot)) 'workspace' }
 $teamRoot = Join-Path $workspace 'team-tasks'
 $indexPath = Join-Path $workspace 'team-task-index.json'
 New-Item -ItemType Directory -Force -Path $teamRoot | Out-Null

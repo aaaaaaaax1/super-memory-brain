@@ -19,6 +19,7 @@ $ManifestPath = Join-Path $Root 'manifest.json'
 $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $PackageVersion = [string]$Manifest.version
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$installBackupRoot = Get-SuperBrainInstallBackupRoot $Root
 $results = @()
 $ok = $true
 $ReportOnlyMode = ($ReportOnly -or $DryRun)
@@ -169,7 +170,7 @@ function Refresh-Skill([string]$SkillRoot, [object]$Item) {
 
   Refresh-MemoryRuntime $memoryRoot 'hot-refresh' @($Item.name)
   if (-not $NoBackup) {
-    $backup = Join-Path $Root ("install-backup-$timestamp\hot-refresh\$($SkillRoot -replace '[:\\/ ]','_')\$($Item.name)")
+    $backup = Join-Path $installBackupRoot ("install-backup-$timestamp\hot-refresh\$($SkillRoot -replace '[:\\/ ]','_')\$($Item.name)")
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backup) | Out-Null
     Copy-Item -LiteralPath $dest -Destination $backup -Recurse -Force
   }

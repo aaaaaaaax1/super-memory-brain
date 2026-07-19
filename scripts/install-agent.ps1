@@ -36,12 +36,13 @@ if ($Mode -eq 'Shared') {
 Initialize-SuperBrainMemoryRoot $memoryRoot $Root $scope $members
 New-Item -ItemType Directory -Force -Path $SkillRoot | Out-Null
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$installBackupRoot = Get-SuperBrainInstallBackupRoot $Root
 
 foreach ($item in Get-SuperBrainSourceItems) {
   $source = Join-Path $Root $item.source
   $dest = Join-Path $SkillRoot $item.name
   if ((Test-Path $dest) -and -not $NoBackup) {
-    $backup = Join-Path $Root ("install-backup-$timestamp\agent-$agent\$($item.name)")
+    $backup = Join-Path $installBackupRoot ("install-backup-$timestamp\agent-$agent\$($item.name)")
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backup) | Out-Null
     Copy-Item -LiteralPath $dest -Destination $backup -Recurse -Force
     Write-Host "Backup skill: $dest -> $backup"

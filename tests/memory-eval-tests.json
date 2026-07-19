@@ -427,20 +427,17 @@
         "sources":  [
                         "super-memory-brain/SKILL.md",
                         "scripts/session-restore.ps1",
-                        "scripts/auto-continuation.ps1",
-                        "tests/memory-eval-tests.json"
+                        "scripts/auto-continuation.ps1"
                     ],
         "mustContain":  [
-                            "Compression recovery rule",
-                            "context is compressed",
+                            "Compaction/resume priority",
                             "status-card.json",
                             "last-task-verification.json",
                             "lastTaskStale",
                             "staleReasons",
                             "last_task_version_mismatch",
                             "last_task_older_than_verify",
-                            "statusCard",
-                            "static-compression-recovery-stale-guard"
+                            "statusCard"
                         ],
         "mustNotContain":  [
 
@@ -459,16 +456,14 @@
         "mode":  "staticSources",
         "sources":  [
                         "scripts/privacy-hit-locator.ps1",
-                        "scripts/memory-health.ps1",
-                        "tests/memory-eval-tests.json"
+                        "scripts/memory-health.ps1"
                     ],
         "mustContain":  [
                             "Test-PrivatePatternHit",
                             "access[_-]?token",
                             "refresh[_-]?token",
                             "bearer\\s+",
-                            "token\\s*[:=]",
-                            "static-privacy-token-false-positive-guard"
+                            "token\\s*[:=]"
                         ],
         "mustNotContain":  [
 
@@ -489,10 +484,11 @@
         "minResults":  1,
         "minConfidence":  0.2,
         "mustContain":  [
-                            "state_recall_priority",
-                            "CURRENT_BASELINE.md",
-                            "Package Version"
+                            "state_recall_priority"
                         ],
+        "firstMustContain":  [
+                                 "status-card.json"
+                             ],
         "mustNotContain":  [
                                "MEMORY_OFF"
                            ],
@@ -601,34 +597,35 @@
     },
     {
         "id":  "static-current-task-status-and-paste-free-resume",
-        "question":  "任务状态/恢复是否优先当前会话任务，免大段粘贴，并在 ZCode 避免 TodoWrite？",
+        "question":  "任务状态/恢复是否优先当前会话证据并避免无依据续接？",
         "mode":  "staticSources",
         "sources":  [
                         "super-memory-brain/SKILL.md",
-                        "tests/memory-eval-tests.json"
+                        "references/status-recovery.md",
+                        "scripts/session-restore.ps1",
+                        "scripts/task-index.ps1"
                     ],
         "mustContain":  [
-                            "Current-task status rule",
-                            "Paste-free resume rule",
-                            "ZCode TodoWrite avoidance rule",
-                            "任务状态",
-                            "current conversation task-status query",
+                            "Current visible context wins.",
+                            "Task status is not system health.",
+                            "Do not run doctor, CI",
                             "active-checkpoint.json",
-                            "step-ledger.json",
                             "status-card.json",
-                            "do not ask the user to paste previous long replies",
-                            "do not call `TodoWrite`",
-                            "do not run doctor/CI/auto-check",
-                            "numbered shortlist"
+                            "currentVisibleContext",
+                            "Historical evidence is missing/unknown; report that explicitly and do not infer prior task details.",
+                            "choiceListPolicy",
+                            "numbered choice list",
+                            "current",
+                            "paused",
+                            "completed"
                         ],
         "mustNotContain":  [
 
                            ],
         "tags":  [
                      "task-status",
-                     "paste-free-resume",
-                     "zcode",
-                     "todo-avoidance"
+                     "evidence-first-resume",
+                     "anti-hallucination"
                  ],
         "weight":  1
     },
@@ -1055,7 +1052,107 @@
                      "memory",
                      "bounded-lifecycle",
                      "anti-hallucination"
-                 ],
+        ],
         "weight":  1
+    },
+    {
+        "id": "recall-natural-browser-rule",
+        "question": "浏览器自动化优先工具",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "minResults": 1,
+        "minConfidence": 0.6,
+        "firstMustContain": ["browser-automation-tool-priority", "Playwright"],
+        "mustNotContain": ["[STALE]"],
+        "tags": ["natural-language", "top1", "browser"]
+    },
+    {
+        "id": "recall-natural-engineering-preference",
+        "question": "工程判断偏好",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "minResults": 1,
+        "minConfidence": 0.6,
+        "firstMustContain": ["Evidence-bounded engineering judgment"],
+        "tags": ["natural-language", "top1", "profile"]
+    },
+    {
+        "id": "recall-natural-proactive-threshold",
+        "question": "主动介入阈值",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "minResults": 1,
+        "firstMustContain": ["proactive-engineering-intervention-threshold", "material"],
+        "tags": ["natural-language", "top1", "decision"]
+    },
+    {
+        "id": "recall-natural-smart-hit-boundary",
+        "question": "smart-hit关闭规则",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "minResults": 1,
+        "firstMustContain": ["atoapi-smart-hit-boundary", "transparent forwarding"],
+        "tags": ["natural-language", "top1", "project"]
+    },
+    {
+        "id": "recall-natural-compression-continuity",
+        "question": "上下文压缩续接规则",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "minResults": 1,
+        "firstMustContain": ["Compression continuation", "visible context"],
+        "tags": ["natural-language", "top1", "continuity"]
+    },
+    {
+        "id": "recall-natural-memory-hygiene",
+        "question": "记忆卫生自动维护",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "minResults": 1,
+        "firstMustContain": ["memory hygiene", "proactively"],
+        "tags": ["natural-language", "top1", "profile"]
+    },
+    {
+        "id": "recall-natural-old-profile-preference",
+        "question": "任务完成沟通偏好",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "minResults": 1,
+        "firstMustContain": ["[PROFILE][SUMMARY]", "完成任务类请求"],
+        "tags": ["natural-language", "top1", "long-term", "profile"]
+    },
+    {
+        "id": "recall-unknown-language-abstains",
+        "question": "我最喜欢的编程语言是什么",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "maxResults": 0,
+        "tags": ["abstention", "anti-hallucination"]
+    },
+    {
+        "id": "recall-unknown-color-abstains",
+        "question": "我最喜欢的配色方案是什么",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "maxResults": 0,
+        "tags": ["abstention", "anti-hallucination"]
+    },
+    {
+        "id": "recall-unknown-memory-cap-abstains",
+        "question": "我是否把长期记忆上限提高到一万行",
+        "mode": "recallSearch",
+        "topK": 3,
+        "maxTokens": 500,
+        "maxResults": 0,
+        "tags": ["abstention", "anti-hallucination"]
     }
 ]

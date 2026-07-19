@@ -33,9 +33,11 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'smoke status failed' }
   $statusJson | ConvertFrom-Json | Out-Null
 
-  foreach ($item in @(Get-SuperBrainExtensionItems $Extensions $Root)) {
-    if (-not (Test-Path (Join-Path $installZ $item.name))) { throw "extension smoke zcode missing $($item.name)" }
-    if (-not (Test-Path (Join-Path $installC $item.name))) { throw "extension smoke codex missing $($item.name)" }
+  if ($Extensions.Count -gt 0) {
+    foreach ($item in @(Get-SuperBrainExtensionItems $Extensions $Root)) {
+      if (-not (Test-Path (Join-Path $installZ $item.name))) { throw "extension smoke zcode missing $($item.name)" }
+      if (-not (Test-Path (Join-Path $installC $item.name))) { throw "extension smoke codex missing $($item.name)" }
+    }
   }
 
   $env:NEXSANDBASE_HOME = $tmpMemory

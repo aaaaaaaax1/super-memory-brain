@@ -111,32 +111,11 @@ foreach ($line in $decisionMemoryLines) {
   if (-not $graphBySubject.ContainsKey($subject)) { $legacyDecisionMemoryCount += 1 }
 }
 
-$adrSubjects = @($adrBySubject.Values | Where-Object { $_.isAdr })
-$missingAdrSchema = @()
-$invalidAdrStatus = @()
-$adrSupersedesMissing = @()
-foreach ($adr in $adrSubjects) {
-  foreach ($relation in $requiredAdrRelations) {
-    if (-not $adr.relations.ContainsKey($relation) -or @($adr.relations[$relation]).Count -eq 0) {
-      $missingAdrSchema += "$($adr.subject):$relation"
-    }
-  }
-  if ([string]::IsNullOrWhiteSpace($adr.status) -or ($validAdrStatuses -notcontains $adr.status)) {
-    $invalidAdrStatus += "$($adr.subject):$($adr.status)"
-  }
-  foreach ($oldSubject in @($adr.supersedes)) {
-    if (-not $adrBySubject.ContainsKey($oldSubject)) { $adrSupersedesMissing += "$($adr.subject)->$oldSubject" }
-  }
-}
-
-$adrCurrentConflictGroups = @($adrSubjects |
-  Where-Object { ($currentAdrStatuses -contains $_.status) -and @($_.supersededBy).Count -eq 0 } |
-  Group-Object subject |
-  Where-Object { $_.Count -gt 1 })
-
-$adrSupersededCount = @($adrSubjects | Where-Object { @($_.supersededBy).Count -gt 0 -or $_.status -eq 'superseded' }).Count
-$adrCurrentCount = @($adrSubjects | Where-Object { ($currentAdrStatuses -contains $_.status) -and @($_.supersededBy).Count -eq 0 }).Count
-$adrSchemaIssueCount = $missingAdrSchema.Count + $invalidAdrStatus.Count + $adrSupersedesMissing.Count + $adrCurrentConflictGroups.Count
+$adrState = Get-SuperBrainAdrState -DecisionNodes @($decisionGraph | ForEach-Object { $_.node }) -Policy $Policy
+$missingAdrSchema = @($adrState.missingSchema)
+$invalidAdrStatus = @($adrState.invalidStatus)
+$adrSupersedesMissing = @($adrState.supersedesMissing)
+$adrSchemaIssueCount = $adrState.schemaIssueCount
 $ok = ($graphParseErrors -eq 0 -and $currentGroups.Count -eq 0 -and $unverifiedDecisionGraphCount -eq 0 -and $adrSchemaIssueCount -eq 0)
 $result = [pscustomobject]@{
   ok = $ok
@@ -150,14 +129,14 @@ $result = [pscustomobject]@{
   malformedDecisionParticleCount = $malformedParticles
   decisionMemoryCount = $decisionMemoryLines.Count
   legacyDecisionMemoryCount = $legacyDecisionMemoryCount
-  adrGraphCount = $adrSubjects.Count
-  adrCurrentCount = $adrCurrentCount
-  adrSupersededCount = $adrSupersededCount
+  adrGraphCount = $adrState.subjectCount
+  adrCurrentCount = $adrState.currentCount
+  adrSupersededCount = $adrState.supersededCount
   adrSchemaIssueCount = $adrSchemaIssueCount
   missingAdrSchema = @($missingAdrSchema)
   invalidAdrStatus = @($invalidAdrStatus)
   adrSupersedesMissing = @($adrSupersedesMissing)
-  adrCurrentConflictCount = $adrCurrentConflictGroups.Count
+  adrCurrentConflictCount = $adrState.currentConflictCount
 }
 
 if ($Json) {

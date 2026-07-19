@@ -53,8 +53,11 @@ function Add-Candidates([string]$Name, [object[]]$Items) {
   }
 }
 
-$packageBackups = @(Get-ChildItem -LiteralPath $Root -Directory -Filter 'backup-*' -ErrorAction SilentlyContinue)
-Add-Candidates 'package-backup-dirs' $packageBackups
+$archiveBackupRoot = Join-Path (Get-SuperBrainArchiveRoot $Root) 'backups'
+$archiveBackups = if (Test-Path -LiteralPath $archiveBackupRoot) { @(Get-ChildItem -LiteralPath $archiveBackupRoot -Directory -Filter 'backup-*' -ErrorAction SilentlyContinue) } else { @() }
+$legacyPackageBackups = @(Get-ChildItem -LiteralPath $Root -Directory -Filter 'backup-*' -ErrorAction SilentlyContinue)
+Add-Candidates 'archive-backup-dirs' $archiveBackups
+Add-Candidates 'legacy-package-backup-dirs' $legacyPackageBackups
 
 $memoryPath = Join-Path (Get-SuperBrainActiveMemoryRoot $Root) 'sandglass.txt'
 $memoryDir = Split-Path -Parent $memoryPath

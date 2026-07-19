@@ -1,0 +1,8 @@
+{
+  "schema": "super-brain.runtime-layout.v1",
+  "sourceRoot": "<workspace-root>\\super-memory-brain",
+  "runtimeRoot": "<workspace-root>\\super-memory-brain-package",
+  "stateRoot": "<workspace-root>\\super-memory-brain-state",
+  "archiveRoot": "<workspace-root>\\super-memory-brain-archives",
+  "compatibilityMemoryJunction": true
+}

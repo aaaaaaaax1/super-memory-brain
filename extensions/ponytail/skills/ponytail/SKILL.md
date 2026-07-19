@@ -1,6 +1,6 @@
 ---
 name: ponytail
-description: Use for anti-overengineering before normal code edits, bug fixes, scripts, UI tweaks, dependency choices, and refactors where the safe minimal solution may be enough. Also use when the user explicitly asks for ponytail, 懒人模式, 最小实现, simplest solution, minimal solution, YAGNI, 少写点, 别过度工程, shortest path, or asks to reduce bloat/boilerplate/dependencies. This is a pre-code constraint, not an always-on chat style.
+description: "Apply an anti-overengineering gate before code edits, bug fixes, scripts, UI tweaks, dependency choices, or refactors. Trigger on ponytail, 懒人模式, 最小实现, simplest solution, YAGNI, 少写点, or requests to reduce bloat."
 argument-hint: "[lite|full|ultra]"
 license: MIT
 source: adapted from https://github.com/DietrichGebert/ponytail

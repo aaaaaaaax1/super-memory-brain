@@ -1,17 +1,20 @@
+[CmdletBinding()]
 param(
-  [Parameter(ValueFromRemainingArguments=$true)]
+  [Parameter(Position=0,ValueFromRemainingArguments=$true)]
   [string[]]$Text,
   [string]$Workspace = '',
   [switch]$Json
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'routing-kernel.ps1')
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $inputText = (($Text -join ' ').Trim())
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = (Get-Location).Path }
-$normalized = $inputText.ToLowerInvariant()
+$routeSignals = Get-SuperBrainRouteSignals $inputText
+$normalized = [string]$routeSignals.text
 $intent = 'general_task'
 $confidence = 0.55
 $recommendedAction = 'Use smart-next.ps1 or ask for the next concrete task.'
@@ -45,6 +48,7 @@ $zhRelease = U @(21457,21253)
 $zhShare = U @(20998,20139)
 $zhMemory = U @(35760,24518)
 $zhRemember = U @(35760,20303)
+$zhStillRemember = U @(36824,35760,24471)
 $zhPreference = U @(20559,22909)
 $zhSearch = U @(25628,32034)
 $zhTeam = U @(22242,38431)
@@ -145,17 +149,10 @@ $isAgentConceptQuestion = (
   $normalized.Contains('agent') -and
   (Test-Any @('design pattern','design patterns','pattern','patterns','architecture','concept','concepts','what is','what are',$zhWhatIs,$zhWhich,$zhDesignPattern))
 )
-$hasAgentBridgeNoun = Test-Any @('agent channel','agent bridge','subagent channel',$zhChannel)
-$hasAgentBridgeVerb = Test-Any @('open','connect','send','read','close',$zhOpen,$zhStart,$zhConnect,$zhConnect2,$zhSendTo,$zhSendMsg,$zhReadChannelReply,$zhCloseChannel)
-$hasAgentBridgeIntent = (
-  (Test-Any @($zhOpenChannel,$zhOpenChannel2,$zhConnectChannel,$zhConnectChannel2,'open subagent channel','connect subagent channel','agent bridge channel')) -or
-  ($normalized.Contains('agent') -and $hasAgentBridgeNoun -and $hasAgentBridgeVerb) -or
-  (($normalized.Contains($zhTo) -or $normalized.Contains($zhGive)) -and (Test-Any @($zhSendTo,$zhSendMsg)) -and (Test-Any @($zhSubAgent,'codex','agent'))) -or
-  (($normalized.Contains($zhReadChannelReply) -or $normalized.Contains($zhCloseChannel)) -and $normalized.Contains($zhChannel))
-)
+$hasAgentBridgeIntent = [bool]$routeSignals.agentBridgeIntent
 $hasHistoricalReference = Test-Any @(
   'previous task','last task','previous session','last session','last time','last-time','another session',
-  'remember last','remember previous','do you remember',
+  'remember last','remember previous',
   $zhLast,$zhBefore,$zhAnotherSession
 )
 $hasHistoricalContinue = (
@@ -166,7 +163,7 @@ $hasCurrentTaskStatus = (
   (Test-Any @('task status','current progress','where are we','where are we at','next step',($zhTask + $zhStatus),$zhNowWhere)) -or
   ($normalized.Contains($zhTask) -and $normalized.Contains($zhStatus))
 )
-$hasSystemStatus = Test-Any @('super brain status','g1 status','system status','health','version','dashboard','overall','ready')
+$hasSystemStatus = [bool]$routeSignals.systemStatusIntent
 $hasSecretMemoryWrite = (
   (Test-Any @('remember',$zhRemember)) -and
   (Test-Any @('api key','apikey','token','password','secret','sk-'))
@@ -188,8 +185,13 @@ $hasSingleAgentWorkflow = (
   (Test-Any @('subagent','sub-agent','executor subagent','reviewer subagent','verifier subagent',$zhProxyAgent,($zhExecute + $zhProxyAgent),($zhAudit + $zhProxyAgent),($zhVerify + $zhProxyAgent))) -and
   (Test-Any @('modify','edit','change','test','run tests','verify','verification','audit','review','inspect','investigate','evidence',$zhModify,$zhAudit,$zhReview2,$zhVerify,$zhTestWord,$zhInvestigate,$zhEvidence))
 )
+$hasExplicitTeamReview = Test-Any @($zhTeam,$zhReview,'team','cluster','review','audit')
+$isGenericAgentRequest = (
+  $routeSignals.genericAgent -and -not $hasAgentBridgeIntent -and -not $hasSingleAgentWorkflow -and -not $hasExplicitTeamReview -and
+  -not $routeSignals.strongAction -and -not $routeSignals.materialRisk -and -not $routeSignals.continuitySignal
+)
 
-if ($isUserAgentQuestion -or $isAgentMeaningQuestion -or ($isAgentConceptQuestion -and -not $hasAgentBridgeIntent)) {
+if ($isUserAgentQuestion -or $isAgentMeaningQuestion -or ($isAgentConceptQuestion -and -not $hasAgentBridgeIntent) -or $isGenericAgentRequest) {
   $intent = 'general_task'
   $confidence = 0.88
   $recommendedAction = 'Answer the agent/user-agent concept question directly; do not route to team or Agent Bridge.'
@@ -233,7 +235,7 @@ if ($isUserAgentQuestion -or $isAgentMeaningQuestion -or ($isAgentConceptQuestio
     matchedPhrase = $workflowPreferenceMatchedPhrase
     normalizedInput = $normalizedWorkflowInput
   }
-  $recommendedAction = "Perform one bounded memory:auto canonical lookup for workflow preference '$preferenceId' before answering. Use only the current verified record for '$decisionKey'; preserve its response format and do not substitute generic Git commands."
+  $recommendedAction = "Perform one bounded memory:auto canonical lookup for workflow preference '$preferenceId' before answering. Use only the current verified record for '$decisionKey'; output Summary, Description, and Commit button text only; do not substitute generic Git commands, apology text, or unverified claims."
   $commands = @(
     'references\memory-governance.md',
     "scripts\decision-search.ps1 -Key `"$decisionKey`" -CurrentOnly -Relation decides -TopK 1 -MaxTokens 400 -Json"
@@ -257,45 +259,58 @@ if ($isUserAgentQuestion -or $isAgentMeaningQuestion -or ($isAgentConceptQuestio
   $recommendedAction = 'Report current task progress from visible context/checkpoints; do not run system health.'
   $commands = @('references\status-recovery.md')
   $dispatchHints = @('current_task_status','no_system_health_dump')
-} elseif ($hasSystemStatus -or (Test-Any @($zhStatus,$zhNormal,'status'))) {
+} elseif ($hasSystemStatus) {
   $intent = 'status'
   $confidence = 0.88
   $recommendedAction = 'Read health-summary for human status, then dashboard for full machine state.'
   $commands = @('scripts\health-summary.ps1 -Json','scripts\super-brain-dashboard.ps1 -Json')
-} elseif ($hasComplexOrc) {
-  $intent = 'orc_complex_routing'
-  $confidence = 0.87
-  $recommendedAction = 'Use ORC complexity routing with the smallest skill/tool set and explicit verification plan.'
-  $commands = @('references\orc-routing.md','capabilities.json')
-  $dispatchHints = @('orc_complex_routing','verification_required')
 } elseif ($hasMaintenanceHotRefresh) {
   $intent = 'maintenance_hot_refresh'
   $confidence = 0.9
   $recommendedAction = 'Use install-refresh maintenance route with approval and rollback requirements.'
   $commands = @('references\install-refresh.md','scripts\hot-refresh-skills.ps1 -ReportOnly -Json')
   $dispatchHints = @('maintenance_hot_refresh','rollback_required')
+} elseif ((Test-Any @($zhFeature,$zhOptimize,'feature','implement','add','optimize')) -or $routeSignals.featureIntentSignal -or $routeSignals.optimizationAction -or ($routeSignals.structuralChangeSignal -and $routeSignals.changeActionSignal)) {
+   $intent = 'add_or_optimize_feature'
+   $confidence = 0.76
+   $recommendedAction = 'Run the collaborative intent gate first: identify the real outcome, product role, existing flow, non-goals, structural impact, autonomy tier, and smallest useful verification before implementation.'
+   $commands = @('references\collaborative-intent.md','scripts\why-plan.ps1 -Goal "..." -Json')
+   $dispatchHints = @('collaborative_intent','product_coherence_gate','bounded_autonomy','risk_based_verification')
+} elseif ($hasComplexOrc) {
+  $intent = 'orc_complex_routing'
+  $confidence = 0.87
+  $recommendedAction = 'Use ORC complexity routing with the smallest skill/tool set and explicit verification plan.'
+  $commands = @('references\orc-routing.md','capabilities.json')
+  $dispatchHints = @('orc_complex_routing','verification_required')
 } elseif (Test-Any @($zhFix,$zhFail,'bug','fix','failed','error')) {
   $intent = 'fix_bug'
   $confidence = 0.78
   $recommendedAction = 'Diagnose, patch root cause, then run targeted verification.'
   $dispatchHints = @('verification_required','logic_safety_required')
-} elseif (Test-Any @($zhFeature,$zhOptimize,'feature','implement','add','optimize')) {
-  $intent = 'add_or_optimize_feature'
-  $confidence = 0.76
-  $recommendedAction = 'Plan scope, implement focused changes, then verify through package checks.'
-  $dispatchHints = @('verification_required')
 } elseif (Test-Any @($zhRelease,$zhShare,'release','share','package')) {
   $intent = 'release'
   $confidence = 0.9
   $recommendedAction = 'Run release readiness, then release-share if safe.'
   $commands = @('scripts\release-readiness.ps1 -Json','scripts\release-share.ps1')
   $dispatchHints = @('release','share','verification_required')
-} elseif (Test-Any @($zhMemory,$zhSearch,'memory','recall','search')) {
+} elseif (Test-Any @($zhMemory,$zhSearch,$zhStillRemember,'memory','recall','search','do you remember','what do you remember')) {
   $intent = 'memory_recall'
   $confidence = 0.82
   $recommendedAction = 'Use recall-search and relevant memory quality checks before changing state.'
   $commands = @('scripts\recall-search.ps1 -Query "..." -Json','scripts\memory-health.ps1 -Json')
-} elseif (Test-Any @($zhTeam,$zhReview,'agent','team','cluster','review')) {
+} elseif ($routeSignals.browserTaskSignal) {
+  $intent = 'browser_automation'
+  $confidence = 0.92
+  if ($routeSignals.browserRoute -eq 'browser-act') {
+    $recommendedAction = "Use browser-act only because routing reason=$($routeSignals.browserRouteReason); keep the browser decision visible in the task state."
+    $commands = @('skills\browser-act\SKILL.md')
+    $dispatchHints = @('browser_automation','browser_act_allowed',$routeSignals.browserRouteReason)
+  } else {
+    $recommendedAction = 'Use Playwright for normal browser automation. Load browser-act only after an explicit request or a verified Playwright reliability failure.'
+    $commands = @('skills\playwright\SKILL.md')
+    $dispatchHints = @('browser_automation','playwright_default')
+  }
+} elseif ($hasExplicitTeamReview) {
   $intent = 'team_or_review'
   $confidence = 0.86
   $recommendedAction = 'Use dispatch learning, trigger simulation, and review gate before accepting team findings.'
@@ -314,6 +329,10 @@ $result = [pscustomobject]@{
   dispatchHints = @($dispatchHints)
   commands = @($commands)
   workflowPreference = $workflowPreference
+  browserTaskSignal = [bool]$routeSignals.browserTaskSignal
+  browserRoute = [string]$routeSignals.browserRoute
+  browserRouteReason = [string]$routeSignals.browserRouteReason
+  browserFallbackAllowed = ([string]$routeSignals.browserRoute -eq 'browser-act')
 }
 
 if ($Json) { $result | ConvertTo-Json -Depth 8 } else { Write-Host "INTENT_ROUTER intent=$intent confidence=$confidence action=$recommendedAction" }

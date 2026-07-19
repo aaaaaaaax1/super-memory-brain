@@ -35,6 +35,12 @@ the cheapest discriminating test for critical unknowns, objective/constraints/
 alternatives/tradeoffs/criteria before optimality, and input/output/acceptance/
 stop conditions for every execution step.
 
+For technology-stack or architecture selection, route through the cold
+`references/technology-decision.md` workflow. Ask only the missing choice
+questions, run `technology-decision.ps1`, inspect ranked profile contributions
+and hard warnings, then verify volatile facts before the engineering decision
+gate. Do not answer with an unstructured catalog of fashionable tools.
+
 ## Single-Agent Subagent Workflow
 
 For complex tasks that need delegated execution, investigation, tests, verification, audit, or evidence, ORC should prefer the single-agent internal workflow:
