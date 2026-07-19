@@ -47,6 +47,8 @@ function Write-PublicGitIgnore([string]$Path) {
 # Keep local memory, machine-specific state, caches, logs, and secrets out of git.
 
 # Local memory and state
+private-state/**
+private-archive/**
 memory/shared/**
 memory/agents/**
 memory/groups/**

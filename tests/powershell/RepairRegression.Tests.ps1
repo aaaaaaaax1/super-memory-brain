@@ -223,11 +223,21 @@ Describe 'Super Brain repair regression guards' {
     foreach ($item in @('maintenance-policy.json','route-map.json','capabilities.json','runtime-layout.example.json')) { $share.Contains("'$item'") | Should Be $true }
     $share.Contains('Generated source/share trees never need local edit backups') | Should Be $true
     $share.Contains('Remove-Item -LiteralPath $generated.FullName -Force') | Should Be $true
+    $share.Contains('private-state/**') | Should Be $true
+    $share.Contains('private-archive/**') | Should Be $true
+    $share.Contains('*.lnk') | Should Be $true
     foreach ($scriptName in @('install.ps1','install-agent.ps1','hot-refresh-skills.ps1','cleanup-install-backups.ps1','install-ui.ps1')) {
       (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root "scripts\$scriptName")).Contains('Get-SuperBrainInstallBackupRoot') | Should Be $true
     }
     (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-package.ps1')).Contains('four-layer runtime layout') | Should Be $true
-    (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-share.ps1')).Contains('runtime-layout.example.json') | Should Be $true
+    $verifyShare = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\verify-share.ps1')
+    $verifyShare.Contains('runtime-layout.example.json') | Should Be $true
+    $verifyShare.Contains('$env:USERPROFILE') | Should Be $true
+    $verifyShare.Contains('C:\Users\MSJ') | Should Be $false
+    $verifyShare.Contains('G:\Ai\Zcode项目') | Should Be $false
+    $layoutExample = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'runtime-layout.example.json') | ConvertFrom-Json
+    ([string]$layoutExample.stateRoot).Contains('super-memory-brain-package\private-state') | Should Be $true
+    ([string]$layoutExample.archiveRoot).Contains('super-memory-brain-package\private-archive') | Should Be $true
   }
 
   It 'surfaces bounded memory pressure through hygiene and optimization advice' {

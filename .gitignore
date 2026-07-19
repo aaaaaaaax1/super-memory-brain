@@ -3,6 +3,8 @@
 # Keep local memory, machine-specific state, caches, logs, and secrets out of git.
 
 # Local memory and state
+private-state/**
+private-archive/**
 memory/shared/**
 memory/agents/**
 memory/groups/**
@@ -28,6 +30,9 @@ runtime-layout.json
 # Generated caches
 __pycache__/
 *.pyc
+
+# Machine-local Windows shortcuts
+*.lnk
 
 # Backups and generated releases
 install-backup-*/

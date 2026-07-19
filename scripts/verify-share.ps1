@@ -78,7 +78,8 @@ $forbiddenPublicDirs = @(
   '^install-backup-[^\\]+$',
   '^.*\\install-backup-[^\\]+$',
   '^super-memory-brain-package-private[^\\]*$',
-  '^.*\\super-memory-brain-package-private[^\\]*$'
+  '^.*\\super-memory-brain-package-private[^\\]*$',
+  '^private-(state|archive)(\\.*)?$'
 )
 foreach ($pattern in $forbiddenPublicDirs) {
   $matches = @($allDirs | Where-Object { (Get-RelativePath $Destination $_.FullName) -match $pattern })
@@ -90,6 +91,8 @@ foreach ($pattern in $forbiddenPublicDirs) {
 }
 
 $privatePathPatterns = @(
+  '^private-state\\.*$',
+  '^private-archive\\.*$',
   '^memory\\workspace\\.*\.json$',
   '^memory\\shared\\.*$',
   '^memory\\agents\\.*$',

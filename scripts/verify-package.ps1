@@ -440,17 +440,22 @@ $runtimeLayoutPath = Join-Path $Root 'runtime-layout.json'
 if (Test-Path -LiteralPath $runtimeLayoutPath) {
   try {
     $runtimeLayout = Get-Content -LiteralPath $runtimeLayoutPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $stateRootOk = (-not [string]::IsNullOrWhiteSpace([string]$runtimeLayout.stateRoot) -and (Test-Path -LiteralPath ([string]$runtimeLayout.stateRoot)))
-    $archiveRootOk = (-not [string]::IsNullOrWhiteSpace([string]$runtimeLayout.archiveRoot) -and (Test-Path -LiteralPath ([string]$runtimeLayout.archiveRoot)))
+    $runtimeRootFull = [IO.Path]::GetFullPath([string]$runtimeLayout.runtimeRoot).TrimEnd('\','/')
+    $stateRootFull = [IO.Path]::GetFullPath([string]$runtimeLayout.stateRoot).TrimEnd('\','/')
+    $archiveRootFull = [IO.Path]::GetFullPath([string]$runtimeLayout.archiveRoot).TrimEnd('\','/')
+    $runtimePrefix = $runtimeRootFull + [IO.Path]::DirectorySeparatorChar
+    $runtimeRootOk = (Test-Path -LiteralPath $runtimeRootFull) -and (Test-SuperBrainSamePath $runtimeRootFull $Root)
+    $stateRootOk = (Test-Path -LiteralPath $stateRootFull) -and $stateRootFull.StartsWith($runtimePrefix,[StringComparison]::OrdinalIgnoreCase)
+    $archiveRootOk = (Test-Path -LiteralPath $archiveRootFull) -and $archiveRootFull.StartsWith($runtimePrefix,[StringComparison]::OrdinalIgnoreCase)
     $memoryLink = Get-Item -LiteralPath (Join-Path $Root 'memory') -Force -ErrorAction Stop
-    $memoryLinkOk = [bool]($memoryLink.Attributes -band [IO.FileAttributes]::ReparsePoint)
-    if ([string]$runtimeLayout.schema -eq 'super-brain.runtime-layout.v1' -and $stateRootOk -and $archiveRootOk -and $memoryLinkOk) { Mark-Ok 'four-layer runtime layout' } else { Mark-Fail 'four-layer runtime layout invalid' }
+    $memoryLinkOk = [bool]($memoryLink.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Test-SuperBrainSamePath ([string]($memoryLink.Target -join ';')) $stateRootFull)
+    if ([string]$runtimeLayout.schema -eq 'super-brain.runtime-layout.v1' -and $runtimeRootOk -and $stateRootOk -and $archiveRootOk -and $memoryLinkOk) { Mark-Ok 'self-contained four-layer runtime layout' } else { Mark-Fail 'self-contained four-layer runtime layout invalid' }
   } catch { Mark-Fail "four-layer runtime layout parse $($_.Exception.Message)" }
 } else { Mark-Ok 'four-layer runtime layout optional for portable source' }
 
 if (Test-Path -LiteralPath $runtimeLayoutPath) {
   $runtimeBackupResidue = @()
-  foreach ($scanRoot in @(Get-ChildItem -LiteralPath $Root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @('memory','.git') })) {
+  foreach ($scanRoot in @(Get-ChildItem -LiteralPath $Root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @('memory','private-state','private-archive','.git') })) {
     $runtimeBackupResidue += @(Get-ChildItem -LiteralPath $scanRoot.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.bak-' })
   }
   if ($runtimeBackupResidue.Count -eq 0) { Mark-Ok 'runtime backup residue absent' } else { Mark-Fail "runtime backup residue count=$($runtimeBackupResidue.Count)" }

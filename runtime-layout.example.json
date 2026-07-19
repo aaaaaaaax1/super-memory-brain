@@ -1,8 +1,8 @@
 {
   "schema": "super-brain.runtime-layout.v1",
-  "sourceRoot": "<workspace-root>\\super-memory-brain",
+  "sourceRoot": "<workspace-root>\\super-memory-brain-git",
   "runtimeRoot": "<workspace-root>\\super-memory-brain-package",
-  "stateRoot": "<workspace-root>\\super-memory-brain-state",
-  "archiveRoot": "<workspace-root>\\super-memory-brain-archives",
+  "stateRoot": "<workspace-root>\\super-memory-brain-package\\private-state",
+  "archiveRoot": "<workspace-root>\\super-memory-brain-package\\private-archive",
   "compatibilityMemoryJunction": true
 }
