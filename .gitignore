@@ -1,42 +1,56 @@
-# Super Memory Brain public release guardrails
-# This share package is intended for GitHub/public distribution.
-# Keep local memory, machine-specific state, caches, logs, and secrets out of git.
+# Super Memory Brain Git safety guardrails
+# This package is the direct Git working tree. Track implementation only;
+# never stage local memory, machine state, or generated output.
 
 # Local memory and state
 private-state/**
 private-archive/**
-memory/shared/**
-memory/agents/**
-memory/groups/**
-memory/workspace/**
-memory/persona/**
-memory/archive/**
-memory/**/*.db
-memory/**/*.idx
-memory/**/*.bak*
-memory/**/sandglass.txt
-memory/**/decision_particles.txt
-memory/**/shadow_sand.db
-memory/**/metrics.jsonl
-memory/**/search_weights.txt
 
-# Local install markers and sharing policy
+# Canonical implementation tree. CORE is public source; only its local
+# runtime-layout file is machine-specific.
+.stage10-public-root/
+
+# memory is a compatibility junction into private-state. Only the vendored
+# runtime scripts remain public; every mutable memory body stays ignored.
+memory/**
+!memory/
+CORE/memory/**
+!CORE/memory/
+
+# Local install markers and machine-local policy
 package-root.txt
 memory-root.txt
 .memory-scope.json
 memory-sharing-policy.json
-runtime-layout.json
+CORE/runtime-layout.json
 
 # Generated caches
 __pycache__/
 *.pyc
+CORE/ui/node_modules/
+CORE/ui/.vite/
+CORE/ui/.playwright-cli/
+CORE/.tmp-smoke-test/
+
+# Local editor and agent state
+.codex/
+.agents/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Local environment overrides.  Keep documented examples publishable.
+.env.*
+!.env.example
+!.env.*.example
+.envrc
 
 # Machine-local Windows shortcuts
 *.lnk
 
 # Backups and generated releases
 install-backup-*/
-super-memory-brain-package-share*/
 super-memory-brain-package-private*/
 super-memory-brain-package-release-v*/
 
@@ -52,3 +66,9 @@ super-memory-brain-package-release-v*/
 *.log
 memory/workspace/last-*.json
 memory/workspace/last-*.log
+
+# Local runtime and generated material
+CORE/runtime/state/workspace/**
+CORE/output/**
+CORE/.playwright-cli/**
+CORE/runtime/*.local-runtime-backup-*

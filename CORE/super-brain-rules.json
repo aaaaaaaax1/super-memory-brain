@@ -1,0 +1,876 @@
+{
+    "schema":  "super-brain.core-rule-registry.v1",
+    "registryVersion":  49,
+    "packageVersion":  "0.6.0",
+    "hashAlgorithm":  "sha256(canonical-json-without-payloadHash)",
+    "payloadHash":  "0b5f9d8f73f5d7d019fb676bf94a6c61593a5c3ddb1ecd0485a6007489d5c66c",
+    "rules":  [
+                  {
+                      "ruleId":  "SB-PROJECT-GROUNDED-DESIGN-001",
+                      "revision":  1,
+                      "priority":  100,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "design",
+                                      "evaluate",
+                                      "architecture",
+                                      "repair",
+                                      "root_cause",
+                                      "optimization",
+                                      "migration",
+                                      "best_option"
+                                  ],
+                      "effect":  "project_root_evidence_gate",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/engineering-decision-gate.ps1",
+                      "acceptanceTests":  [
+                                              "project_root_evidence_gate"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-DEFECT-ROOT-REPAIR-001",
+                      "revision":  5,
+                      "priority":  100,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "super_brain_defect",
+                                      "root_cause",
+                                      "repair"
+                                  ],
+                      "effect":  "on_detected_drift_first_map_the_current_visible_tail_to_latest_scoped_task_state_and_live_project_evidence_prevent_duplicate_or_previously_failed_action_correct_the_current_display_and_scoped_state_then_repair_root_cause_and_require_same_path_regression_before_declaring_the_defect_resolved",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/turn_runtime.py",
+                      "acceptanceTests":  [
+                                              "current_issue_correction_before_root_repair_replay",
+                                              "root_cause_repair_replay",
+                                              "affected_path_regression",
+                                              "no_repeat_failed_route_replay",
+                                              "preopen_visible_reply_correction_replay",
+                                              "latest_task_state_before_drift_repair_replay",
+                                              "drift_duplicate_action_prevention_replay",
+                                              "drift_display_and_scoped_state_correction_replay",
+                                              "drift_same_path_dynamic_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-RULE-MEMORY-SPLIT-001",
+                      "revision":  1,
+                      "priority":  100,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "learning",
+                                      "remember",
+                                      "super_brain_defect",
+                                      "user_correction"
+                                  ],
+                      "effect":  "separate_runtime_rules_from_memory_experience_preferences",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/reflection-promotion.ps1",
+                      "acceptanceTests":  [
+                                              "classification_replay",
+                                              "dedupe_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-UNIFIED-SHARED-MEMORY-001",
+                      "revision":  2,
+                      "priority":  105,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "memory_write",
+                                      "memory_mode",
+                                      "install",
+                                      "agent_install",
+                                      "refresh",
+                                      "startup",
+                                      "recall",
+                                      "continuity",
+                                      "multi_agent",
+                                      "session_binding",
+                                      "legacy_memory_root",
+                                      "host_adapter"
+                                  ],
+                      "effect":  "enforce_one_canonical_shared_memory_root_with_workspace_task_session_provenance_reject_noncanonical_active_roots_retire_unscoped_session_binding_and_treat_legacy_agent_group_and_host_roots_as_read_only_migration_evidence",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "scripts/common.ps1",
+                      "acceptanceTests":  [
+                                              "shared_root_only_replay",
+                                              "concurrent_scope_provenance_replay",
+                                              "legacy_root_read_only_replay",
+                                              "canonical_memory_root_entrypoints_replay",
+                                              "legacy_marker_reactivation_denial_replay",
+                                              "unscoped_session_binding_retirement_replay",
+                                              "multi_agent_scope_isolation_replay",
+                                              "private_memory_root_pointer_absence_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-ABILITY-ABSORPTION-001",
+                      "revision":  5,
+                      "priority":  105,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "skill_adoption",
+                                      "capability_ingest",
+                                      "install",
+                                      "skill_evolution",
+                                      "capability_route",
+                                      "governed_turn",
+                                      "product_design",
+                                      "proposal_only",
+                                      "upstream_provenance",
+                                      "native_capability",
+                                      "capability_parity",
+                                      "independent_skill_install",
+                                      "direct_upstream_route"
+                                  ],
+                      "effect":  "absorb_verified_upstream_provenance_only_as_super_brain_native_capability_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_without_independent_install_or_direct_upstream_route",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/absorbed-capability-route.ps1",
+                      "acceptanceTests":  [
+                                              "capability_source_provenance_replay",
+                                              "standalone_install_absence_replay",
+                                              "capability_route_replay",
+                                              "automatic_semantic_capability_route_replay",
+                                              "capability_low_confidence_skip_replay",
+                                              "capability_upstream_invocation_adapter_replay",
+                                              "external_action_policy_replay",
+                                              "absorbed_product_capability_proposal_gate_replay",
+                                              "upstream_provenance_only_replay",
+                                              "native_capability_parity_or_enhancement_replay",
+                                              "capability_h7_core_rule_project_evidence_authorization_boundary_replay",
+                                              "independent_install_and_direct_upstream_route_denial_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-LATEST-STATE-001",
+                      "revision":  30,
+                      "priority":  118,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "resume",
+                                      "continue",
+                                      "compaction",
+                                      "status",
+                                      "recovery",
+                                      "user_correction",
+                                      "checkpoint",
+                                      "pause_resume",
+                                      "parent_return"
+                                  ],
+                      "effect":  "require_every_normal_same_workline_continuation_compaction_pause_resume_restart_and_model_switch_to_first_observe_the_time_latest_real_assistant_reply_currently_visible_in_the_current_thread_through_one_bounded_host_derived_observation_use_it_only_as_the_resume_locator_then_map_that_candidate_to_one_same_scope_task_workline_and_actual_project_phase_step_from_current_runtime_state_and_live_project_evidence_without_backscanning_old_summaries_contracts_or_anchors_for_a_replacement_never_allow_process_cache_lease_caller_capsule_or_prior_receipt_to_bypass_the_current_visible_locator_allow_ordinary_no_task_h7_continuity_without_creating_or_requiring_task_or_state_card_allow_state_card_selection_only_after_current_context_is_proven_unavailable_or_verified_parent_return_treat_timeout_slow_read_stale_index_or_missing_runtime_as_not_proven_unavailable_run_h7_and_proof_validation_silently_in_background_for_ordinary_continuation_and_block_only_formal_stage_or_high_impact_action_on_missing_validation_reject_user_message_memory_and_old_receipts_as_anchor_replacements_and_require_drift_repair_without_auto_contract_mutation",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/turn_runtime.py",
+                      "acceptanceTests":  [
+                                              "latest_state_conflict_replay",
+                                              "compression_recovery_replay",
+                                              "resume_ack_event_replay",
+                                              "continuous_turn_ack_suppression_replay",
+                                              "h7_exact_recovery_presentation_replay",
+                                              "h7_cli_process_restart_presentation_replay",
+                                              "h7_parent_return_exact_open_replay",
+                                              "nonstate_h7_turn_isolation_replay",
+                                              "assistant_progress_checkpoint_recovery_replay",
+                                              "latest_visible_progress_supersedes_stale_summary_replay",
+                                              "handoff_summary_never_selects_recovery_anchor_replay",
+                                              "exact_visible_recovery_receipt_replay",
+                                              "visible_progress_receipt_required_replay",
+                                              "latest_visible_progress_exact_anchor_replay",
+                                              "visible_tail_assertion_required_replay",
+                                              "visible_tail_assertion_mismatch_withheld_replay",
+                                              "visible_tail_assertion_host_scope_replay",
+                                              "automatic_host_tail_selection_replay",
+                                              "legacy_tail_state_injection_denial_replay",
+                                              "post_publication_checkpoint_observation_replay",
+                                              "durable_visible_tail_auto_finalization_replay",
+                                              "unclassified_visible_tail_auto_finalization_withheld_replay",
+                                              "user_attested_visible_progress_reconcile_replay",
+                                              "user_attested_anchor_requires_assistant_publication_replay",
+                                              "close_user_attested_guard_replay",
+                                              "checkpoint_scope_change_without_proof_atomic_withheld_replay",
+                                              "preopen_assistant_progress_anchor_block_replay",
+                                              "newer_preopen_assistant_message_blocks_walkback_replay",
+                                              "auto_finalize_fallback_only_on_mismatch_replay",
+                                              "terminal_summary_cannot_replace_durable_anchor_replay",
+                                              "newer_assistant_message_blocks_old_durable_anchor_replay",
+                                              "same_workline_visible_context_required_replay",
+                                              "pause_resume_visible_context_replay",
+                                              "parent_return_state_card_selection_replay",
+                                              "visible_readback_cas_replay",
+                                              "v4_durable_envelope_normal_anchor_replay",
+                                              "v4_prefix_with_display_prose_replay",
+                                              "v4_receipt_hash_exact_binding_replay",
+                                              "bounded_current_thread_tail_read_replay",
+                                              "no_history_scan_anchor_replay",
+                                              "auto_alignment_detected_drift_only_replay",
+                                              "drift_fallback_explicit_reconciliation_no_write_replay",
+                                              "fresh_v4_publication_after_explicit_checkpoint_replay",
+                                              "same_workline_current_thread_tail_required_replay",
+                                              "current_visible_assistant_only_same_workline_replay",
+                                              "plain_current_assistant_display_only_nonblocking_replay",
+                                              "latest_durable_current_candidate_validation_replay",
+                                              "drift_diagnosis_selector_isolation_replay",
+                                              "boundary_plain_current_tail_exact_acknowledgement_replay",
+                                              "strict_v4_durable_progress_and_stage_only_replay",
+                                              "visible_tail_then_task_project_step_mapping_replay",
+                                              "ordinary_no_task_no_card_replay",
+                                              "state_card_context_unavailable_or_parent_return_only_replay",
+                                              "background_h7_proof_nonblocking_ordinary_continuation_replay",
+                                              "stage_or_high_impact_validation_gate_replay",
+                                              "time_latest_visible_assistant_resume_locator_replay",
+                                              "same_scope_task_workline_project_step_mapping_replay",
+                                              "no_old_anchor_backscan_replay",
+                                              "ordinary_no_task_h7_continuity_without_cards_replay",
+                                              "state_card_proven_context_unavailable_replay",
+                                              "silent_background_validation_replay",
+                                              "drift_display_state_root_repair_same_path_replay",
+                                              "normal_same_workline_transient_binding_no_persistent_card_replay",
+                                              "compaction_pause_resume_restart_no_persistent_card_replay",
+                                              "host_timeout_no_state_card_fallback_replay",
+                                              "strict_current_v4_stale_project_proof_withheld_replay",
+                                              "caller_supplied_capsule_forbidden_replay",
+                                              "untrusted_visible_assertion_forbidden_replay",
+                                              "no_internal_lease_visible_tail_bypass_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-VISIBLE-PROGRESS-ANCHOR-001",
+                      "revision":  27,
+                      "priority":  120,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "resume",
+                                      "continue",
+                                      "compaction",
+                                      "recovery",
+                                      "status",
+                                      "checkpoint",
+                                      "phase_transition",
+                                      "user_correction",
+                                      "super_brain_defect",
+                                      "hot_update",
+                                      "runtime_identity",
+                                      "pause_resume",
+                                      "parent_return"
+                                  ],
+                      "effect":  "require_current_visible_context_time_latest_real_assistant_reply_as_resume_start_locator_before_one_same_scope_task_workline_and_live_project_phase_step_mapping_accept_only_one_bounded_host_derived_current_tail_observation_use_latest_durable_assistant_only_to_validate_that_same_candidate_is_h7_v4_for_durable_progress_or_formal_stage_transition_without_backward_selection_or_old_anchor_backscan_treat_plain_current_prose_as_non_authorizing_display_only_continuity_use_transient_h7_receipt_binding_without_persistent_visible_readback_or_state_card_on_normal_same_workline_compaction_pause_resume_or_restart_reject_process_cache_lease_caller_capsule_or_prior_receipt_as_locator_bypasses_allow_ordinary_no_task_h7_continuity_without_task_or_state_card_allow_state_card_only_after_current_context_is_proven_unavailable_or_verified_parent_return_reserve_latest_assistant_for_detected_drift_diagnosis_only_run_h7_and_proof_validation_silently_in_background_for_ordinary_continuation_and_require_current_validation_before_stage_or_high_impact_action",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/turn_runtime.py",
+                      "acceptanceTests":  [
+                                              "visible_progress_receipt_required_replay",
+                                              "latest_visible_progress_exact_anchor_replay",
+                                              "visible_progress_project_proof_binding_replay",
+                                              "visible_progress_scope_binding_replay",
+                                              "stale_summary_cannot_resume_replay",
+                                              "handoff_summary_never_selects_recovery_anchor_replay",
+                                              "visible_tail_assertion_required_replay",
+                                              "visible_tail_assertion_mismatch_withheld_replay",
+                                              "visible_tail_assertion_host_scope_replay",
+                                              "automatic_host_tail_selection_replay",
+                                              "observed_tail_checkpoint_mismatch_without_write_replay",
+                                              "durable_visible_tail_auto_finalization_replay",
+                                              "unclassified_visible_tail_auto_finalization_withheld_replay",
+                                              "h7_exact_recovery_presentation_replay",
+                                              "h7_nonrecovery_ack_suppression_replay",
+                                              "h7_parent_return_exact_open_replay",
+                                              "user_attested_visible_progress_reconcile_replay",
+                                              "cross_session_latest_visible_progress_recovery_replay",
+                                              "user_attested_anchor_requires_assistant_publication_replay",
+                                              "close_user_attested_guard_replay",
+                                              "checkpoint_scope_change_without_proof_atomic_withheld_replay",
+                                              "preopen_assistant_progress_anchor_block_replay",
+                                              "newer_preopen_assistant_message_blocks_walkback_replay",
+                                              "auto_finalize_fallback_only_on_mismatch_replay",
+                                              "terminal_summary_cannot_replace_durable_anchor_replay",
+                                              "newer_assistant_message_blocks_old_durable_anchor_replay",
+                                              "visible_readback_cas_replay",
+                                              "pause_resume_visible_context_replay",
+                                              "parent_return_state_card_selection_replay",
+                                              "v4_visible_anchor_shape_replay",
+                                              "v4_visible_anchor_receipt_binding_replay",
+                                              "v4_prefix_with_display_prose_replay",
+                                              "bounded_current_thread_tail_retry_replay",
+                                              "hot_update_identity_scope_proof_rebind_replay",
+                                              "hot_update_hot_index_activation_rebuild_replay",
+                                              "explicit_reconciliation_required_no_auto_mutation_replay",
+                                              "host_three_line_compaction_replay",
+                                              "host_truncation_fourth_line_withheld_replay",
+                                              "host_five_second_timeout_replay",
+                                              "host_timeout_no_fallback_replay",
+                                              "current_visible_assistant_display_only_replay",
+                                              "latest_durable_current_candidate_only_replay",
+                                              "latest_assistant_drift_only_replay",
+                                              "no_old_state_anchor_fallback_replay",
+                                              "plain_boundary_tail_acknowledgement_without_progress_promotion_replay",
+                                              "v4_current_candidate_required_for_formal_stage_transition_replay",
+                                              "visible_tail_before_task_step_mapping_replay",
+                                              "no_task_card_for_ordinary_reply_replay",
+                                              "state_card_context_unavailable_only_replay",
+                                              "background_validation_nonblocking_ordinary_replay",
+                                              "high_impact_current_validation_required_replay",
+                                              "time_latest_visible_reply_locator_replay",
+                                              "tail_locator_then_same_scope_mapping_replay",
+                                              "no_old_anchor_backscan_for_locator_replay",
+                                              "ordinary_no_task_h7_without_cards_replay",
+                                              "state_card_only_after_proven_context_unavailable_replay",
+                                              "silent_background_continuity_validation_replay",
+                                              "normal_same_workline_transient_h7_binding_replay",
+                                              "no_persistent_visible_readback_card_replay",
+                                              "timeout_not_context_unavailable_no_card_replay",
+                                              "host_unavailable_current_capsule_nonvisual_replay",
+                                              "capsule_cannot_claim_host_visible_tail_replay",
+                                              "capsule_cannot_advance_formal_stage_replay",
+                                              "caller_supplied_capsule_forbidden_replay",
+                                              "untrusted_visible_assertion_forbidden_replay",
+                                              "current_visible_locator_required_every_same_workline_turn_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-CONTROL-PLANE-MAINTAINABILITY-001",
+                      "revision":  10,
+                      "priority":  119,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "continuity",
+                                      "repair",
+                                      "root_cause",
+                                      "optimization",
+                                      "cleanup",
+                                      "super_brain_defect"
+                                  ],
+                      "effect":  "preserve_one_small_single_authoritative_continuation_control_plane_with_one_bounded_host_derived_visible_observation_then_same_scope_task_and_live_project_mapping_one_ordinary_no_task_path_one_drift_repair_path_and_one_state_card_selector_limited_to_proven_context_unavailable_or_verified_parent_return_remove_dead_conflicting_duplicate_or_cache_lease_routes_avoid_extra_mcp_processes_avoid_unnecessary_architectural_sprawl_remove_unnecessary_code_only_after_scoped_impact_audit_preserve_required_contracts_and_require_each_retained_branch_to_have_one_named_invariant_and_one_regression",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/turn_runtime.py",
+                      "acceptanceTests":  [
+                                              "single_normal_control_plane_path_replay",
+                                              "dead_compatibility_path_removal_replay",
+                                              "maintainability_branch_inventory_replay",
+                                              "mcp_process_lifecycle_audit_replay",
+                                              "mcp_orphan_report_only_replay",
+                                              "no_same_workline_state_card_bypass_replay",
+                                              "three_selector_control_plane_inventory_replay",
+                                              "no_old_state_fallback_replay",
+                                              "no_task_card_creation_for_ordinary_reply_replay",
+                                              "state_card_selector_boundary_replay",
+                                              "drift_latest_state_dedupe_root_repair_replay",
+                                              "two_stage_locator_mapping_inventory_replay",
+                                              "state_card_proven_unavailable_boundary_replay",
+                                              "silent_routine_control_plane_validation_replay",
+                                              "normal_path_no_persistent_visible_readback_card_replay",
+                                              "timeout_is_not_state_card_eligibility_replay",
+                                              "single_authoritative_continuation_path_replay",
+                                              "external_continuation_state_forbidden_replay",
+                                              "no_extra_worker_or_database_replay",
+                                              "unnecessary_code_cleanup_impact_audit_replay",
+                                              "public_contract_preservation_replay",
+                                              "no_architectural_sprawl_replay",
+                                              "no_internal_lease_or_duplicate_route_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-PROGRESS-TRUTH-001",
+                      "revision":  14,
+                      "priority":  115,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "design",
+                                      "evaluate",
+                                      "plan",
+                                      "super_brain_defect",
+                                      "root_cause",
+                                      "repair",
+                                      "resume",
+                                      "continue",
+                                      "recovery",
+                                      "status",
+                                      "stage_complete",
+                                      "phase_transition",
+                                      "verification"
+                                  ],
+                      "effect":  "map_normal_continuation_from_current_visible_tail_resume_locator_to_one_same_scope_task_workline_and_actual_project_phase_step_use_transient_h7_receipt_binding_without_persistent_visible_readback_or_state_card_for_normal_same_workline_compaction_pause_resume_or_restart_run_h7_checkpoint_and_live_project_proof_validation_silently_in_background_without_blocking_ordinary_continuation_allow_plain_current_tail_only_as_display_not_progress_truth_require_current_h7_checkpoint_live_project_proof_and_host_readback_user_stage_receipt_before_published_progress_phase_completion_formal_stage_or_high_impact_action_and_after_detected_drift_require_actual_task_project_deduplication_current_state_correction_root_repair_and_same_path_regression",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/turn_runtime.py",
+                      "acceptanceTests":  [
+                                              "h7_progress_truth_projection_replay",
+                                              "project_progress_without_evidence_withheld_replay",
+                                              "phase_evidence_verification_binding_replay",
+                                              "recovery_progress_truth_replay",
+                                              "visible_progress_project_proof_binding_replay",
+                                              "observed_tail_checkpoint_mismatch_without_write_replay",
+                                              "durable_visible_tail_auto_finalization_replay",
+                                              "unclassified_visible_tail_auto_finalization_withheld_replay",
+                                              "checkpoint_scope_change_without_proof_atomic_withheld_replay",
+                                              "terminal_summary_cannot_replace_durable_anchor_replay",
+                                              "v4_prefix_with_display_prose_replay",
+                                              "truncated_text_without_v4_prefix_replay",
+                                              "h7_checkpoint_live_proof_phase_claim_replay",
+                                              "host_readback_stage_receipt_replay",
+                                              "forward_stage_transition_provenance_replay",
+                                              "explicit_checkpoint_required_after_drift_replay",
+                                              "visible_readback_cas_replay",
+                                              "plain_current_tail_display_acknowledgement_replay",
+                                              "v4_only_progress_truth_and_formal_stage_transition_replay",
+                                              "background_proof_validation_nonblocking_normal_continuation_replay",
+                                              "current_validation_required_for_high_impact_action_replay",
+                                              "drift_latest_task_state_dedupe_root_repair_replay",
+                                              "tail_locator_same_scope_project_step_truth_replay",
+                                              "silent_background_progress_validation_replay",
+                                              "drift_current_state_correction_then_root_repair_replay",
+                                              "normal_continuation_transient_receipt_no_state_card_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-PROPOSAL-GATE-001",
+                      "revision":  3,
+                      "priority":  100,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "mutation_guard",
+                                      "plan",
+                                      "proposal",
+                                      "evaluate",
+                                      "architecture"
+                                  ],
+                      "effect":  "require_exact_user_or_approved_plan_authorization_for_destructive_mutation",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/cognitive-enforce.ps1",
+                      "acceptanceTests":  [
+                                              "proposal_approval_gate_replay",
+                                              "exact_action_target_impact_authorization_replay",
+                                              "vague_instruction_denial_replay",
+                                              "wildcard_target_drift_fail_closed_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-AUTO-RESUME-001",
+                      "revision":  3,
+                      "priority":  100,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "side_branch",
+                                      "status_insertion",
+                                      "continue",
+                                      "child_return"
+                                  ],
+                      "effect":  "resume_latest_approved_parent_after_insertion",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/execution-contract.ps1",
+                      "acceptanceTests":  [
+                                              "parent_resume_replay",
+                                              "cross_session_resume_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+                                         "decision:mid-task-side-branch-parent-resume-v1",
+                                         "decision:approved-workline-auto-resume"
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-STAGE-VERIFY-001",
+                      "revision":  3,
+                      "priority":  90,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "stage_complete",
+                                      "verification",
+                                      "phase_transition"
+                                  ],
+                      "effect":  "require_current_h7_phase_closeout_live_project_proof_and_host_readback_user_stage_receipt_before_forward_formal_stage_transition",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/task-verification.ps1",
+                      "acceptanceTests":  [
+                                              "stage_gate_replay",
+                                              "user_level_simulation",
+                                              "r5_stage_closeout_required_replay",
+                                              "same_line_branch_bypass_denial_replay",
+                                              "phase_state_correction_replay",
+                                              "verify_each_stage_before_next_stage",
+                                              "host_stage_receipt_replay",
+                                              "forward_stage_live_proof_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-EFFICIENT-DELIVERY-001",
+                      "revision":  3,
+                      "priority":  95,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "project",
+                                      "task",
+                                      "repair",
+                                      "optimization"
+                                  ],
+                      "effect":  "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_read_only_the_current_thread_tail_once_without_project_tree_scanning_for_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_never_claim_unverified_progress_and_emit_user_visible_updates_only_for_stage_boundaries_real_blockers_or_exceptions",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/auto-continuation.ps1",
+                      "acceptanceTests":  [
+                                              "bounded_parallel_delivery_replay",
+                                              "fast_feedback_timeout_replay",
+                                              "child_close_after_return_replay",
+                                              "actual_problem_resolution_replay",
+                                              "silent_routine_validation_replay",
+                                              "minimal_control_plane_overhead_replay",
+                                              "concrete_fix_over_status_chatter_replay",
+                                              "unverified_progress_claim_denial_replay",
+                                              "fast_path_preserves_verification_replay",
+                                              "current_thread_tail_latency_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-NO-REPEAT-FAILED-ROUTE-001",
+                      "revision":  1,
+                      "priority":  90,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "repair",
+                                      "retry",
+                                      "failure"
+                                  ],
+                      "effect":  "block_previously_failed_route_without_new_evidence",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/causal-change-review.ps1",
+                      "acceptanceTests":  [
+                                              "failed_route_dedupe_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-CHILD-LIFECYCLE-001",
+                      "revision":  3,
+                      "priority":  90,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "subagent",
+                                      "child_complete",
+                                      "child_failure",
+                                      "child_stop"
+                                  ],
+                      "effect":  "close_only_verified_agent_child_and_never_mutate_parent_or_user_task",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/agent-bridge.ps1",
+                      "acceptanceTests":  [
+                                              "child_close_identity_replay",
+                                              "mcp_transport_cleanup_exclusion_replay",
+                                              "parent_user_task_mutation_denial_replay",
+                                              "unknown_child_identity_fail_closed_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-H7-ACTIVATION-001",
+                      "revision":  7,
+                      "priority":  110,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "governed_turn",
+                                      "normal_operation",
+                                      "status",
+                                      "status_recovery",
+                                      "memory_recall",
+                                      "memory_write",
+                                      "repair",
+                                      "maintenance",
+                                      "continuation",
+                                      "continuity",
+                                      "resume",
+                                      "continue",
+                                      "recovery",
+                                      "stage_complete",
+                                      "stage_acceptance",
+                                      "phase_transition",
+                                      "verification",
+                                      "learning",
+                                      "learning_candidate",
+                                      "install",
+                                      "mcp_unavailable",
+                                      "h7_cli_fallback",
+                                      "p7",
+                                      "hook",
+                                      "hook_reinstall",
+                                      "hook_repair",
+                                      "legacy_transport"
+                                  ],
+                      "effect":  "run_h7_mcp_or_same_h7_cli_identity_and_proof_validation_in_background_for_ordinary_continuation_without_creating_or_requiring_task_card_require_current_h7_identity_scope_proof_and_derived_index_rebuild_before_formal_stage_high_impact_action_durable_learning_or_runtime_identity_repair_use_one_package_local_writable_activation_receipt_root_and_treat_p7_hook_and_legacy_host_receipt_junctions_as_fail_open_historical_compatibility_only_without_install_repair_authorization_or_evidence",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/turn_runtime.py",
+                      "acceptanceTests":  [
+                                              "activation_registry_binding",
+                                              "stale_registry_withheld",
+                                              "stale_mcp_cli_preference_replay",
+                                              "h7_cli_equivalent_transport_replay",
+                                              "h7_dual_transport_unavailable_withheld",
+                                              "no_governed_direct_downgrade_replay",
+                                              "normal_h7_transport_only_replay",
+                                              "maintenance_h7_transport_only_replay",
+                                              "stage_acceptance_h7_transport_only_replay",
+                                              "learning_h7_transport_only_replay",
+                                              "p7_hook_fail_open_compatibility_only_replay",
+                                              "p7_hook_reinstall_denial_replay",
+                                              "p7_hook_repair_denial_replay",
+                                              "p7_hook_authorization_denial_replay",
+                                              "p7_hook_progress_evidence_denial_replay",
+                                              "p7_hook_acceptance_evidence_denial_replay",
+                                              "p7_hook_learning_evidence_denial_replay",
+                                              "h7_package_local_activation_receipt_replay",
+                                              "hot_update_same_h7_cli_repair_replay",
+                                              "hot_update_identity_scope_proof_rebind_replay",
+                                              "hot_update_activation_rebuild_replay",
+                                              "background_h7_validation_nonblocking_ordinary_no_task_replay",
+                                              "h7_validation_required_for_stage_high_impact_and_durable_learning_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-INDEPENDENT-CONTROL-PLANE-AGENT-001",
+                      "revision":  2,
+                      "priority":  119,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "control_plane_agent",
+                                      "governed_turn",
+                                      "status",
+                                      "continuity",
+                                      "delegation",
+                                      "capability_route",
+                                      "install",
+                                      "refresh"
+                                  ],
+                      "effect":  "operate_super_brain_as_independent_control_plane_agent_with_native_super_brain_identity_role_separated_user_execution_progress_fact_behavior_authorities_and_non_authorizing_host_adapters_memory_capabilities_and_collaborator_agents",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/brain_core.py",
+                      "acceptanceTests":  [
+                                              "agent_identity_status_projection_replay",
+                                              "agent_identity_turn_receipt_projection_replay",
+                                              "authority_role_separation_replay",
+                                              "host_adapter_non_authorizing_replay",
+                                              "collaborator_agent_non_authorizing_replay",
+                                              "native_super_brain_identity_projection_replay",
+                                              "host_platform_metadata_non_authorizing_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-RUNTIME-ADAPTER-INDEPENDENCE-001",
+                      "revision":  2,
+                      "priority":  110,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "install",
+                                      "refresh",
+                                      "restore",
+                                      "maintenance",
+                                      "skill_deleted",
+                                      "optional_host",
+                                      "zcode_host",
+                                      "agent_discovery"
+                                  ],
+                      "effect":  "keep_core_runtime_and_memory_independent_of_all_optional_host_adapters_and_make_host_specific_startup_failures_non_authorizing",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "scripts/first-load-bootstrap.ps1",
+                      "acceptanceTests":  [
+                                              "adapter_absence_core_health_replay",
+                                              "adapter_rehydrate_non_destructive_replay",
+                                              "zcode_optional_host_core_ready_replay",
+                                              "generic_agent_discovery_without_zcode_replay",
+                                              "host_adapter_failure_not_core_failure_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-PRIMARY-HOST-ENTRY-001",
+                      "revision":  2,
+                      "priority":  117,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "install",
+                                      "refresh",
+                                      "startup",
+                                      "primary_host_entry",
+                                      "entry_adapter",
+                                      "mcp_runtime_identity",
+                                      "adapter_stale"
+                                  ],
+                      "effect":  "require_the_current_primary_codex_host_entry_and_live_mcp_served_runtime_identity_and_rule_registry_for_host_ready_state_keep_zcode_and_other_compatibility_hosts_explicit_opt_in_and_withhold_stale_or_missing_primary_entry_or_long_lived_runtime_drift_without_reporting_optional_or_degraded_readiness",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/brain_core.py",
+                      "acceptanceTests":  [
+                                              "primary_codex_entry_freshness_replay",
+                                              "mcp_runtime_identity_binding_replay",
+                                              "stale_mcp_identity_withheld_replay",
+                                              "live_mcp_runtime_registry_drift_withheld_replay",
+                                              "zcode_opt_in_install_replay",
+                                              "primary_entry_no_optional_health_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-STAGE-USER-RECEIPT-001",
+                      "revision":  2,
+                      "priority":  95,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "stage_complete",
+                                      "stage_failed",
+                                      "stage_blocked",
+                                      "phase_transition"
+                                  ],
+                      "effect":  "require_h7_bound_host_readback_user_visible_stage_receipt_before_next_phase",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/execution-contract.ps1",
+                      "acceptanceTests":  [
+                                              "stage_user_receipt_replay",
+                                              "stage_receipt_before_advance_replay",
+                                              "host_readback_stage_receipt_replay",
+                                              "stage_receipt_h7_proof_binding_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-ADAPTER-CONCISENESS-001",
+                      "revision":  2,
+                      "priority":  95,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "skill_adapter",
+                                      "entry_skill",
+                                      "refresh",
+                                      "maintenance",
+                                      "optimization"
+                                  ],
+                      "effect":  "keep_host_adapter_compact_complete_without_fixed_byte_cap_or_functional_loss",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "super-memory-brain/SKILL.md",
+                      "acceptanceTests":  [
+                                              "adapter_conciseness_quality_replay",
+                                              "adapter_functional_completeness_replay",
+                                              "adapter_no_fixed_byte_cap_replay",
+                                              "startup_router_no_fixed_cap_replay",
+                                              "adapter_freshness_refresh_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-BOOTSTRAP-SINGLE-SOURCE-001",
+                      "revision":  1,
+                      "priority":  116,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "install",
+                                      "refresh",
+                                      "bootstrap",
+                                      "adapter"
+                                  ],
+                      "effect":  "keep_external_host_bootstrap_as_minimal_h7_route_only_and_resolve_all_behavioral_policy_from_versioned_core_rule_registry",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "scripts/common.ps1",
+                      "acceptanceTests":  [
+                                              "thin_bootstrap_no_behavioral_rule_duplication_replay",
+                                              "bootstrap_registry_authority_replay",
+                                              "adapter_freshness_refresh_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-DIRECT-GIT-SOURCE-001",
+                      "revision":  1,
+                      "priority":  116,
+                      "scope":  "global",
+                      "trigger":  [
+                                      "repository_readiness",
+                                      "git",
+                                      "privacy_preflight",
+                                      "cleanup",
+                                      "publish",
+                                      "share_export"
+                                  ],
+                      "effect":  "use_the_current_source_tree_as_the_only_publication_truth_keep_private_memory_and_machine_state_local_and_git_ignored_remove_separate_share_or_export_package_routes",
+                      "enforcement":  "host_policy",
+                      "entrypoint":  "scripts/release-readiness.ps1",
+                      "acceptanceTests":  [
+                                              "direct_git_source_truth_replay",
+                                              "private_memory_git_exclusion_replay",
+                                              "no_share_export_route_replay",
+                                              "direct_git_privacy_scan_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  }
+              ]
+}

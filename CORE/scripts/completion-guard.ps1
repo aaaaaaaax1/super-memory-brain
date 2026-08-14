@@ -1,0 +1,485 @@
+param(
+  [switch]$Json,
+  [switch]$AllowPrivacyRisk,
+  [switch]$AllowActiveCheckpoint,
+  [switch]$ContractOnly,
+  [switch]$PackageVerificationInProgress,
+  [switch]$RequireEngineeringDecision,
+  [int]$MaxEvidenceAgeMinutes = 720,
+  [string]$TaskId = ''
+)
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+
+$ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
+$workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
+$manifest = Get-SuperBrainManifest $Root
+$currentVersion = [string]$manifest.version
+if ($PackageVerificationInProgress -and -not $ContractOnly) { throw 'PACKAGE_VERIFICATION_IN_PROGRESS_REQUIRES_CONTRACT_ONLY' }
+if ($PackageVerificationInProgress) { $TaskId = '' }
+
+function Read-WorkspaceJson([string]$Name) {
+  $path = Join-Path $workspace $Name
+  if (-not (Test-Path $path)) { return $null }
+  try { return Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+}
+function Read-CheckedAt($Obj) {
+  if (-not $Obj -or [string]::IsNullOrWhiteSpace([string]$Obj.checkedAt)) { return $null }
+  try { return [datetime]::Parse([string]$Obj.checkedAt) } catch { return $null }
+}
+function Test-CurrentPackageEvidence($Obj,[switch]$RequireSourceTreeBinding) {
+  if (-not $Obj -or $Obj.ok -ne $true) { return $false }
+  if ([string]$Obj.version -ne $currentVersion) { return $false }
+  if ([string]::IsNullOrWhiteSpace([string]$Obj.packageRoot)) { return $false }
+  try {
+    if ((Get-NormalizedSuperBrainRoot ([string]$Obj.packageRoot)) -ne (Get-NormalizedSuperBrainRoot $Root)) { return $false }
+  } catch { return $false }
+  $checkedAt = Read-CheckedAt $Obj
+  if (-not $checkedAt -or $checkedAt -gt (Get-Date).AddMinutes(5)) { return $false }
+  if (((Get-Date) - $checkedAt).TotalMinutes -gt $MaxEvidenceAgeMinutes) { return $false }
+  if ($RequireSourceTreeBinding) {
+    if (-not $Obj.PSObject.Properties['sourceTreeBinding'] -or -not $Obj.sourceTreeBinding) { return $false }
+    $binding = $Obj.sourceTreeBinding
+    $currentTree = Get-SuperBrainSourceTreeBinding $Root
+    if ([string]$binding.treeAlgorithm -ne [string]$currentTree.treeAlgorithm) { return $false }
+    if ([string]$binding.gitTreeHash -ne [string]$currentTree.gitTreeHash) { return $false }
+    if ([string]$binding.gitHeadTreeHash -ne [string]$currentTree.gitHeadTreeHash) { return $false }
+  }
+  return $true
+}
+function Get-PackageEvidenceReason($Obj,[switch]$RequireSourceTreeBinding) {
+  if (-not $Obj) { return 'missing evidence' }
+  if ($Obj.ok -ne $true) { return 'ok=false' }
+  if ([string]$Obj.version -ne $currentVersion) { return "version=$($Obj.version) required=$currentVersion" }
+  if ([string]::IsNullOrWhiteSpace([string]$Obj.packageRoot)) { return 'packageRoot missing' }
+  try {
+    if ((Get-NormalizedSuperBrainRoot ([string]$Obj.packageRoot)) -ne (Get-NormalizedSuperBrainRoot $Root)) { return "packageRoot=$($Obj.packageRoot) required=$Root" }
+  } catch { return 'packageRoot invalid' }
+  $checkedAt = Read-CheckedAt $Obj
+  if (-not $checkedAt) { return 'checkedAt missing or invalid' }
+  if ($checkedAt -gt (Get-Date).AddMinutes(5)) { return "checkedAt is in the future: $checkedAt" }
+  if (((Get-Date) - $checkedAt).TotalMinutes -gt $MaxEvidenceAgeMinutes) { return "ageMinutes=$([Math]::Round(((Get-Date) - $checkedAt).TotalMinutes,2)) max=$MaxEvidenceAgeMinutes" }
+  if ($RequireSourceTreeBinding) {
+    if (-not $Obj.PSObject.Properties['sourceTreeBinding'] -or -not $Obj.sourceTreeBinding) { return 'sourceTreeBinding missing' }
+    $binding = $Obj.sourceTreeBinding
+    $currentTree = Get-SuperBrainSourceTreeBinding $Root
+    if ([string]$binding.treeAlgorithm -ne [string]$currentTree.treeAlgorithm -or [string]$binding.gitTreeHash -ne [string]$currentTree.gitTreeHash -or [string]$binding.gitHeadTreeHash -ne [string]$currentTree.gitHeadTreeHash) { return 'source tree binding stale or mismatched' }
+  }
+  return "ageMinutes=$([Math]::Round(((Get-Date) - $checkedAt).TotalMinutes,2)) max=$MaxEvidenceAgeMinutes"
+}
+function Safe-TaskId([string]$Value) { if ([string]::IsNullOrWhiteSpace($Value)) { return '' }; $safe=(($Value -replace '[^A-Za-z0-9._-]+','-').Trim('-')).ToLowerInvariant(); if ([string]::IsNullOrWhiteSpace($safe)) { return '' }; if ($safe.Length -gt 120) { return $safe.Substring(0,120) }; return $safe }
+function Read-TaskScopedJson([string]$RelativeDir,[string]$FallbackName) {
+  $safe = Safe-TaskId $TaskId
+  if (-not [string]::IsNullOrWhiteSpace($safe)) {
+    $root = Join-Path (Join-Path $workspace 'guard-state') $RelativeDir
+    $canonical = Get-SuperBrainCanonicalTaskPath $root $TaskId '.json'
+    if (Test-Path -LiteralPath $canonical) { try { $value=Get-Content -LiteralPath $canonical -Raw -Encoding UTF8 | ConvertFrom-Json; if([string]$value.taskId-eq$TaskId){return $value} } catch {} }
+    $candidate = Join-Path $root ($safe + '.json')
+    if (Test-Path -LiteralPath $candidate) { try { $value=Get-Content -LiteralPath $candidate -Raw -Encoding UTF8 | ConvertFrom-Json; if([string]$value.taskId-eq$TaskId){return $value} } catch {} }
+    $taskDir = Join-Path $root $safe
+    if (Test-Path -LiteralPath $taskDir) {
+      $latest = Get-ChildItem -LiteralPath $taskDir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if ($latest) { try { $value=Get-Content -LiteralPath $latest.FullName -Raw -Encoding UTF8 | ConvertFrom-Json; if([string]$value.taskId-eq$TaskId){return $value} } catch {} }
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($TaskId)) { return $null }
+  $fallback = Read-WorkspaceJson $FallbackName
+  if ($fallback -and [string]$fallback.taskId -eq $TaskId) { return $fallback }
+  return $null
+}
+function Read-TaskStateAuthority([string]$Id) {
+  if ($ContractOnly -or [string]::IsNullOrWhiteSpace($Id)) {
+    return [pscustomobject]@{ required=$false; projection=$null; projectionPath=''; eventPath=''; parseErrorCount=0; incompleteTransactions=@() }
+  }
+  $storeRoot = Join-Path $workspace 'task-state-store'
+  $projectionPath = Get-SuperBrainCanonicalTaskPath (Join-Path $storeRoot 'projections') $Id '.json'
+  $eventPath = Get-SuperBrainCanonicalTaskPath (Join-Path $storeRoot 'events') $Id '.jsonl'
+  $projection = $null
+  $parseErrors = 0
+  if (Test-Path -LiteralPath $projectionPath -PathType Leaf) {
+    try { $projection = Get-Content -LiteralPath $projectionPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $parseErrors++ }
+  }
+  $prepared = @{}
+  $terminal = @{}
+  if (Test-Path -LiteralPath $eventPath -PathType Leaf) {
+    foreach ($line in @(Get-Content -LiteralPath $eventPath -Encoding UTF8)) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      try { $event = $line | ConvertFrom-Json } catch { $parseErrors++; continue }
+      $transactionId = if ($event.PSObject.Properties['transactionId']) { [string]$event.transactionId } else { '' }
+      if ([string]::IsNullOrWhiteSpace($transactionId)) { continue }
+      $phase = if ($event.PSObject.Properties['phase']) { ([string]$event.phase).ToLowerInvariant() } else { 'committed' }
+      if ($phase -eq 'prepared') { $prepared[$transactionId] = $event }
+      elseif ($phase -in @('committed','aborted')) { $terminal[$transactionId] = $true }
+    }
+  }
+  $incomplete = @($prepared.Keys | Where-Object { -not $terminal.ContainsKey([string]$_) } | Sort-Object)
+  return [pscustomobject]@{ required=$true; projection=$projection; projectionPath=$projectionPath; eventPath=$eventPath; parseErrorCount=$parseErrors; incompleteTransactions=@($incomplete) }
+}
+function Test-TaskScopedEvidence($Obj) {
+  if (-not $Obj) { return $true }
+  if ($ContractOnly) { return $true }
+  if ([string]::IsNullOrWhiteSpace($TaskId)) { return $false }
+  if ([string]$Obj.taskId -ne $TaskId) { return $false }
+  if ($Obj.version -and [string]$Obj.version -ne $currentVersion) { return $false }
+  $checkedAt = if ($Obj.checkedAt) { Read-CheckedAt $Obj } elseif ($Obj.timestamp) { try { [datetime]::Parse([string]$Obj.timestamp) } catch { $null } } else { $null }
+  if ($checkedAt -and ($checkedAt -gt (Get-Date).AddMinutes(5) -or ((Get-Date) - $checkedAt).TotalMinutes -gt $MaxEvidenceAgeMinutes)) { return $false }
+  if ($currentTaskContext -and $currentTaskContext.workspaceKey -and $Obj.workspaceKey) {
+    if (-not (Test-SuperBrainWorkspaceKey ([string]$Obj.workspaceKey) ([string]$currentTaskContext.workspaceKey))) { return $false }
+  }
+  if ($Obj.packageRoot) {
+    try {
+      if ((Get-NormalizedSuperBrainRoot ([string]$Obj.packageRoot)) -ne (Get-NormalizedSuperBrainRoot $Root)) { return $false }
+    } catch { return $false }
+  }
+  return $true
+}
+function Get-TaskEvidenceBindingStatus($Verification,$Context) {
+  if ($ContractOnly) { return [pscustomobject]@{ ok=$true; reason='contract_only' } }
+  if (-not $Verification) { return [pscustomobject]@{ ok=$false; reason='task_verification_missing' } }
+  if (-not $Verification.PSObject.Properties['evidenceBinding'] -or -not $Verification.evidenceBinding) { return [pscustomobject]@{ ok=$false; reason='historical_evidence_binding_missing' } }
+  if (-not $Context -or [string]::IsNullOrWhiteSpace([string]$Context.ownerSessionKey)) { return [pscustomobject]@{ ok=$false; reason='current_context_session_missing' } }
+  return Test-SuperBrainEvidenceBinding -Binding $Verification.evidenceBinding -TaskId $TaskId -WorkspaceKey ([string]$Context.workspaceKey) -OwnerSessionKey ([string]$Context.ownerSessionKey) -Root $Root
+}
+function Get-TaskDecisionBindingStatus($Verification,$Context) {
+  if ($ContractOnly) { return [pscustomobject]@{ ok=$true; required=$false; reason='contract_only' } }
+  $stageKind = if ($Context -and $Context.PSObject.Properties['stageKind']) { [string]$Context.stageKind } else { '' }
+  if ([string]::IsNullOrWhiteSpace($stageKind)) { return [pscustomobject]@{ ok=$true; required=$false; reason='not_required' } }
+  if (-not $Verification -or -not $Verification.PSObject.Properties['decisionBinding'] -or -not $Verification.decisionBinding) { return [pscustomobject]@{ ok=$false; required=$true; reason='decision_verification_missing' } }
+  $binding = $Verification.decisionBinding
+  $expectedDigest = if ($Context.PSObject.Properties['decisionBindingDigest']) { [string]$Context.decisionBindingDigest } else { '' }
+  if ($binding.required -ne $true -or $binding.ok -ne $true) { return [pscustomobject]@{ ok=$false; required=$true; reason='decision_verification_unsatisfied' } }
+  if ([string]$binding.stageKind -ne $stageKind) { return [pscustomobject]@{ ok=$false; required=$true; reason='decision_stage_mismatch' } }
+  if ([string]::IsNullOrWhiteSpace($expectedDigest) -or [string]$binding.bindingDigest -ne $expectedDigest) { return [pscustomobject]@{ ok=$false; required=$true; reason='decision_binding_digest_mismatch' } }
+  if ([string]$binding.status -notin @('bound','none_applicable')) { return [pscustomobject]@{ ok=$false; required=$true; reason='decision_binding_withheld' } }
+  return [pscustomobject]@{ ok=$true; required=$true; reason='decision_binding_current' }
+}
+function Get-TaskIntentFulfillmentStatus($Verification,$Projection) {
+  if ($ContractOnly) { return [pscustomobject]@{ ok=$true; required=$false; reason='contract_only' } }
+  $lifecycle = if($Projection -and $Projection.PSObject.Properties['lifecycle']){$Projection.lifecycle}else{$null}
+  $binding = if($lifecycle -and $lifecycle.PSObject.Properties['intentCompletion']){$lifecycle.intentCompletion}else{$null}
+  $verificationRecord = if($Verification -and $Verification.PSObject.Properties['intentFulfillment']){$Verification.intentFulfillment}else{$null}
+  if (-not $binding) {
+    if ($verificationRecord -and $verificationRecord.required -eq $true) { return [pscustomobject]@{ ok=$false; required=$true; reason='terminal_intent_binding_missing' } }
+    return [pscustomobject]@{ ok=$true; required=$false; reason='not_required' }
+  }
+  if ($binding.required -ne $true) {
+    if ($verificationRecord -and $verificationRecord.required -eq $true) { return [pscustomobject]@{ ok=$false; required=$true; reason='intent_requirement_state_mismatch' } }
+    return [pscustomobject]@{ ok=$true; required=$false; reason='not_required' }
+  }
+  if (-not $verificationRecord -or $verificationRecord.required -ne $true -or $verificationRecord.ok -ne $true) { return [pscustomobject]@{ ok=$false; required=$true; reason='intent_fulfillment_missing_or_unsatisfied' } }
+  foreach ($name in @('intentRevision','intentContractFingerprint','intentReceiptId','intentReceiptPayloadHash','requirementsFingerprint','fulfillmentFingerprint')) {
+    if ([string]$binding.$name -ne [string]$verificationRecord.$name) { return [pscustomobject]@{ ok=$false; required=$true; reason=('intent_' + $name + '_mismatch') } }
+  }
+  if ([int]$binding.requirementCount -ne @($verificationRecord.items).Count) { return [pscustomobject]@{ ok=$false; required=$true; reason='intent_requirement_count_mismatch' } }
+  $artifactPath = if($Verification.PSObject.Properties['verificationEvidencePath']){[string]$Verification.verificationEvidencePath}else{''}
+  if ([string]::IsNullOrWhiteSpace($artifactPath) -or -not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) { return [pscustomobject]@{ ok=$false; required=$true; reason='intent_fulfillment_artifact_missing' } }
+  try {
+    $artifactHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash
+    if ([string]$artifactHash -ne [string]$binding.fulfillmentArtifactHash) { return [pscustomobject]@{ ok=$false; required=$true; reason='intent_fulfillment_artifact_hash_mismatch' } }
+    $artifact = Get-Content -LiteralPath $artifactPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch { return [pscustomobject]@{ ok=$false; required=$true; reason='intent_fulfillment_artifact_read_failed' } }
+  if (-not $artifact.intentFulfillment -or [string]$artifact.intentFulfillment.fulfillmentFingerprint -ne [string]$binding.fulfillmentFingerprint -or $artifact.intentFulfillment.ok -ne $true) { return [pscustomobject]@{ ok=$false; required=$true; reason='intent_fulfillment_artifact_content_mismatch' } }
+  foreach ($terminalSpec in @(
+    [pscustomobject]@{path=if($lifecycle.PSObject.Properties['terminalPlanSealPath']){[string]$lifecycle.terminalPlanSealPath}else{''};hash=if($lifecycle.PSObject.Properties['terminalPlanSealHash']){[string]$lifecycle.terminalPlanSealHash}else{''};name='terminal_plan_seal'},
+    [pscustomobject]@{path=if($lifecycle.PSObject.Properties['completionReceiptPath']){[string]$lifecycle.completionReceiptPath}else{''};hash=if($lifecycle.PSObject.Properties['completionReceiptHash']){[string]$lifecycle.completionReceiptHash}else{''};name='completion_receipt'}
+  )) {
+    if ([string]::IsNullOrWhiteSpace($terminalSpec.path) -or -not (Test-Path -LiteralPath $terminalSpec.path -PathType Leaf)) { return [pscustomobject]@{ ok=$false; required=$true; reason=('intent_' + $terminalSpec.name + '_missing') } }
+    try {
+      if (-not [string]::IsNullOrWhiteSpace($terminalSpec.hash) -and (Get-FileHash -LiteralPath $terminalSpec.path -Algorithm SHA256).Hash -ne [string]$terminalSpec.hash) { return [pscustomobject]@{ ok=$false; required=$true; reason=('intent_' + $terminalSpec.name + '_hash_mismatch') } }
+      $terminal = Get-Content -LiteralPath $terminalSpec.path -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch { return [pscustomobject]@{ ok=$false; required=$true; reason=('intent_' + $terminalSpec.name + '_read_failed') } }
+    if (-not $terminal.intentCompletion -or [string]$terminal.intentCompletion.fulfillmentFingerprint -ne [string]$binding.fulfillmentFingerprint) { return [pscustomobject]@{ ok=$false; required=$true; reason=('intent_' + $terminalSpec.name + '_binding_mismatch') } }
+  }
+  return [pscustomobject]@{ ok=$true; required=$true; reason='intent_fulfillment_bound_to_terminal_evidence' }
+}
+function Get-RouteCheckpointBindingStatus($Route,$Projection,$Context) {
+  if ($ContractOnly) { return [pscustomobject]@{ ok=$true; reason='contract_only' } }
+  if (-not $Route) { return [pscustomobject]@{ ok=$false; reason='missing_route_checkpoint' } }
+  if ([string]$Route.bindingState -ne 'bound') { return [pscustomobject]@{ ok=$false; reason=('binding_state_' + [string]$Route.bindingState) } }
+  foreach ($name in @('taskStateRevision','contractRevision','planFingerprint','ownerSessionKey','lifecycleStatus','compatibilityEpoch','contractFileName','targetHash','workspaceKey')) {
+    if (-not $Route.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$Route.$name)) { return [pscustomobject]@{ ok=$false; reason=('missing_' + $name) } }
+  }
+  $routeEpoch = [string]$Route.compatibilityEpoch
+  if ($routeEpoch -notin @('route-checkpoint-contract-v1','route-checkpoint-contract-v2')) { return [pscustomobject]@{ ok=$false; reason='compatibility_epoch_mismatch' } }
+  if ($routeEpoch -eq 'route-checkpoint-contract-v2') {
+    foreach ($name in @('canonicalPlanId','canonicalGeneration','canonicalFingerprint')) {
+      if (-not $Route.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$Route.$name)) { return [pscustomobject]@{ ok=$false; reason=('missing_' + $name) } }
+    }
+  }
+  if (-not $Projection -or [string]$Projection.taskId -ne $TaskId) { return [pscustomobject]@{ ok=$false; reason='task_state_projection_missing_or_foreign' } }
+  $projectionStatus = if ($Projection.PSObject.Properties['lifecycle'] -and $Projection.lifecycle) { ([string]$Projection.lifecycle.status).ToLowerInvariant() } else { 'unknown' }
+  if ($projectionStatus -eq 'completed') {
+    if ([int]$Route.taskStateRevision -le 0 -or [int]$Route.taskStateRevision -gt [int]$Projection.revision) { return [pscustomobject]@{ ok=$false; reason='terminal_task_state_revision_invalid' } }
+    if (-not (Test-SuperBrainWorkspaceKey ([string]$Route.workspaceKey) ([string]$Projection.lifecycle.workspaceKey))) { return [pscustomobject]@{ ok=$false; reason='terminal_workspace_mismatch' } }
+    if ([int]$Route.contractRevision -ne [int]$Projection.lifecycle.contractRevision) { return [pscustomobject]@{ ok=$false; reason='terminal_contract_revision_mismatch' } }
+    if ([string]$Route.planFingerprint -ne [string]$Projection.lifecycle.planFingerprint) { return [pscustomobject]@{ ok=$false; reason='terminal_plan_fingerprint_mismatch' } }
+    if ([string]$Route.ownerSessionKey -ne [string]$Projection.lifecycle.ownerSessionKey) { return [pscustomobject]@{ ok=$false; reason='terminal_owner_session_mismatch' } }
+    if ($routeEpoch -eq 'route-checkpoint-contract-v2') {
+      $sealPath = if ($Projection.lifecycle.PSObject.Properties['terminalPlanSealPath']) { [string]$Projection.lifecycle.terminalPlanSealPath } else { '' }
+      if ([string]::IsNullOrWhiteSpace($sealPath) -or -not (Test-Path -LiteralPath $sealPath -PathType Leaf)) { return [pscustomobject]@{ ok=$false; reason='terminal_plan_seal_missing' } }
+      try {
+        if ($Projection.lifecycle.PSObject.Properties['terminalPlanSealHash'] -and -not [string]::IsNullOrWhiteSpace([string]$Projection.lifecycle.terminalPlanSealHash) -and (Get-FileHash -LiteralPath $sealPath -Algorithm SHA256).Hash -ne [string]$Projection.lifecycle.terminalPlanSealHash) { return [pscustomobject]@{ ok=$false; reason='terminal_plan_seal_hash_mismatch' } }
+        $seal = Get-Content -LiteralPath $sealPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      } catch { return [pscustomobject]@{ ok=$false; reason='terminal_plan_seal_read_failed' } }
+      if (-not $seal.canonicalPlan -or [string]$seal.canonicalPlan.planId -ne [string]$Route.canonicalPlanId -or [int]$seal.canonicalPlan.generation -ne [int]$Route.canonicalGeneration -or [string]$seal.canonicalPlan.currentFingerprint -ne [string]$Route.canonicalFingerprint) { return [pscustomobject]@{ ok=$false; reason='terminal_canonical_plan_mismatch' } }
+    }
+    return [pscustomobject]@{ ok=$true; reason='bound_to_terminal_lifecycle' }
+  }
+  if ($projectionStatus -ne 'active') { return [pscustomobject]@{ ok=$false; reason=('task_state_not_active_' + $projectionStatus) } }
+  if ([int]$Route.taskStateRevision -ne [int]$Projection.revision) { return [pscustomobject]@{ ok=$false; reason='active_task_state_revision_mismatch' } }
+  if ([string]$Route.lifecycleStatus -ne 'active') { return [pscustomobject]@{ ok=$false; reason='route_lifecycle_not_active' } }
+  $contractRoot = Join-Path $workspace 'runtime-state\execution-contracts'
+  $contractPath = Join-Path $contractRoot (Split-Path -Leaf ([string]$Route.contractFileName))
+  try {
+    $contractRootFull = [IO.Path]::GetFullPath($contractRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+    $contractPathFull = [IO.Path]::GetFullPath($contractPath)
+    if (-not $contractPathFull.StartsWith($contractRootFull,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $contractPathFull -PathType Leaf)) { return [pscustomobject]@{ ok=$false; reason='active_contract_path_invalid_or_missing' } }
+    if ((Get-FileHash -LiteralPath $contractPathFull -Algorithm SHA256).Hash -ne [string]$Route.targetHash) { return [pscustomobject]@{ ok=$false; reason='active_contract_hash_mismatch' } }
+    $contract = Get-Content -LiteralPath $contractPathFull -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch { return [pscustomobject]@{ ok=$false; reason='active_contract_read_failed' } }
+  if ([string]$contract.taskId -ne $TaskId -or [string]$contract.status -ne 'active') { return [pscustomobject]@{ ok=$false; reason='active_contract_identity_or_status_mismatch' } }
+  if (-not (Test-SuperBrainWorkspaceKey ([string]$contract.workspaceKey) ([string]$Route.workspaceKey))) { return [pscustomobject]@{ ok=$false; reason='active_contract_workspace_mismatch' } }
+  if ([int]$contract.revision -ne [int]$Route.contractRevision -or [string]$contract.planReceipt.planFingerprint -ne [string]$Route.planFingerprint -or [string]$contract.ownerSessionKey -ne [string]$Route.ownerSessionKey) { return [pscustomobject]@{ ok=$false; reason='active_contract_binding_mismatch' } }
+  $contractStageKind = if ($contract.PSObject.Properties['stageKind']) { [string]$contract.stageKind } else { '' }
+  $contractDecisionBindingStatus = if ($contract.PSObject.Properties['decisionBinding'] -and $contract.decisionBinding) { [string]$contract.decisionBinding.status } else { '' }
+  $contractDecisionBindingDigest = if ($contract.PSObject.Properties['decisionBinding'] -and $contract.decisionBinding) { [string]$contract.decisionBinding.bindingDigest } else { '' }
+  if ([string]$Route.stageKind -ne $contractStageKind) { return [pscustomobject]@{ ok=$false; reason='active_decision_stage_mismatch' } }
+  if ([string]$Route.decisionBindingStatus -ne $contractDecisionBindingStatus) { return [pscustomobject]@{ ok=$false; reason='active_decision_binding_status_mismatch' } }
+  if ([string]$Route.decisionBindingDigest -ne $contractDecisionBindingDigest) { return [pscustomobject]@{ ok=$false; reason='active_decision_binding_digest_mismatch' } }
+  if ($routeEpoch -eq 'route-checkpoint-contract-v2') {
+    if (-not $contract.PSObject.Properties['canonicalPlan'] -or -not $contract.canonicalPlan) { return [pscustomobject]@{ ok=$false; reason='active_canonical_plan_missing' } }
+    $canonicalState=Test-SuperBrainCanonicalPlan $contract.canonicalPlan
+    if(-not$canonicalState.ok){return [pscustomobject]@{ok=$false;reason='active_canonical_plan_invalid'}}
+    if ([string]$canonicalState.plan.planId -ne [string]$Route.canonicalPlanId -or [int]$canonicalState.plan.generation -ne [int]$Route.canonicalGeneration -or [string]$canonicalState.plan.currentFingerprint -ne [string]$Route.canonicalFingerprint) { return [pscustomobject]@{ ok=$false; reason='active_canonical_plan_mismatch' } }
+  }
+  if (-not $Context -or [string]$Context.bindingState -ne 'bound') { return [pscustomobject]@{ ok=$false; reason='current_context_not_bound' } }
+  if (-not (Test-SuperBrainWorkspaceKey ([string]$Route.workspaceKey) ([string]$Context.workspaceKey))) { return [pscustomobject]@{ ok=$false; reason='active_workspace_mismatch' } }
+  foreach ($name in @('taskStateRevision','contractRevision','planFingerprint','ownerSessionKey','targetHash')) {
+    if ([string]$Route.$name -ne [string]$Context.$name) { return [pscustomobject]@{ ok=$false; reason=('active_' + $name + '_mismatch') } }
+  }
+  foreach ($name in @('stageKind','decisionBindingStatus','decisionBindingDigest')) {
+    if ([string]$Route.$name -ne [string]$Context.$name) { return [pscustomobject]@{ ok=$false; reason=('active_' + $name + '_mismatch') } }
+  }
+  if ($routeEpoch -eq 'route-checkpoint-contract-v2') {
+    if ([string]$Context.compatibilityEpoch -ne 'context-contract-v2') { return [pscustomobject]@{ ok=$false; reason='active_context_compatibility_epoch_mismatch' } }
+    foreach ($name in @('canonicalPlanId','canonicalGeneration','canonicalFingerprint')) {
+      if ([string]$Route.$name -ne [string]$Context.$name) { return [pscustomobject]@{ ok=$false; reason=('active_' + $name + '_mismatch') } }
+    }
+  }
+  if ($Route.PSObject.Properties['expiresAt'] -and -not [string]::IsNullOrWhiteSpace([string]$Route.expiresAt)) {
+    try { if ([datetime]::Parse([string]$Route.expiresAt) -le (Get-Date)) { return [pscustomobject]@{ ok=$false; reason='route_binding_expired' } } } catch { return [pscustomobject]@{ ok=$false; reason='route_binding_expiry_invalid' } }
+  }
+  return [pscustomobject]@{ ok=$true; reason='bound_to_active_contract_and_task_state' }
+}
+function U([int[]]$Codes) { return -join ($Codes | ForEach-Object { [char]$_ }) }
+function Test-EngineeringJudgmentIntent([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+  $lower = $Value.ToLowerInvariant()
+  foreach ($term in @('fix','debug','repair','optimize','optimization','architecture','architect','root cause','tradeoff','trade-off','best option','optimal','performance','bottleneck','regression','refactor','migration','failure analysis')) {
+    if ($lower.Contains($term)) { return $true }
+  }
+  foreach ($term in @((U @(20462,22797)),(U @(20248,21270)),(U @(26550,26500)),(U @(26681,22240)),(U @(26368,20248)),(U @(26368,20339)),(U @(24615,33021)),(U @(37325,26500)),(U @(25925,38556)),(U @(35774,35745)),(U @(20915,31574)))) {
+    if ($Value.Contains($term)) { return $true }
+  }
+  return $false
+}
+function Test-MutationIntent([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+  $lower = $Value.ToLowerInvariant()
+  foreach ($term in @('add','implement','change','modify','edit','write','fix','debug','repair','optimize','refactor','migrate','create','delete','install','upgrade','patch','build','deploy','feature','mutation','code change','file change')) {
+    if ($lower.Contains($term)) { return $true }
+  }
+  foreach ($term in @((U @(20462,22797)),(U @(20248,21270)),(U @(25913,21151)),(U @(20889,20837)),(U @(28155,21152)),(U @(23454,29616)),(U @(23433,35013)),(U @(37096,32626)),(U @(21024,38500)),(U @(36801,31227)),(U @(23436,21892)),(U @(37325,26500)),(U @(26500,24314)),(U @(21464,26356)),(U @(26356,26032)),(U @(24320,21457)))) {
+    if ($Value.Contains($term)) { return $true }
+  }
+  return $false
+}
+
+$compatibilityTaskContext = Get-SuperBrainCurrentTaskContext $workspace
+if (-not $ContractOnly -and [string]::IsNullOrWhiteSpace($TaskId) -and $compatibilityTaskContext -and [string]$compatibilityTaskContext.status -eq 'active') { $TaskId = [string]$compatibilityTaskContext.taskId }
+$currentTaskContext = $compatibilityTaskContext
+if (-not [string]::IsNullOrWhiteSpace($TaskId)) {
+  $taskContext = Read-TaskScopedJson 'current-task-contexts' 'last-current-task-context.json'
+  if($taskContext){$currentTaskContext=$taskContext}
+}
+$lastVerify = Read-WorkspaceJson 'last-verify-package.json'
+$lastHotRefresh = Read-WorkspaceJson 'last-hot-refresh.json'
+$lastTask = Read-WorkspaceJson 'last-task-verification.json'
+$smartNextAudit = $null
+$completionAuditExpectedRoles = @('pre_action_constraint','challenge_gate','evidence_grounding','engineering_decision','review_verifier','test_strategy','real_user_path_verifier','version_record_keeper','cache_freshness_checker','skill_gap_repair')
+try {
+  $smartRaw = @(& (Join-Path $PSScriptRoot 'smart-next.ps1') -Text 'completion skill audit verify test regression before completion' -Json 2>$null)
+  if ($smartRaw) { $smartNextAudit = (($smartRaw -join "`n") | ConvertFrom-Json) }
+} catch {}
+$activeCheckpoint = $null
+if (-not [string]::IsNullOrWhiteSpace($TaskId)) {
+  $checkpointRoot = Join-Path $workspace 'runtime-state\checkpoints\active'
+  $scopedCheckpointPath = Get-SuperBrainCanonicalTaskPath $checkpointRoot $TaskId '.json'
+  $legacyCheckpointPath = Join-Path $checkpointRoot ((Safe-TaskId $TaskId) + '.json')
+  foreach($candidate in @($scopedCheckpointPath,$legacyCheckpointPath)){
+    if(-not(Test-Path -LiteralPath $candidate -PathType Leaf)){continue}
+    try{$value=Get-Content -LiteralPath $candidate -Raw -Encoding UTF8|ConvertFrom-Json;if([string]$value.taskId-eq$TaskId){$activeCheckpoint=$value;break}}catch{}
+  }
+} else {
+  $activeCheckpoint = Read-WorkspaceJson 'active-checkpoint.json'
+}
+$constraintPreflight = Read-WorkspaceJson 'last-accepted-constraints-preflight.json'
+$driftCheckpoint = Read-TaskScopedJson 'runtime-drift-checkpoints' 'last-runtime-drift-checkpoint.json'
+$routeCheckpoint = Read-TaskScopedJson 'route-checkpoints' 'last-route-checkpoint.json'
+$integrationParity = Read-TaskScopedJson 'integration-parity-check' 'last-integration-parity-check.json'
+$causalReview = Read-TaskScopedJson 'change-causality-reviews' 'last-causal-change-review.json'
+$contractReplay = Read-TaskScopedJson 'integration-contract-replay' 'last-integration-contract-replay.json'
+$engineeringDecisionRaw = Read-TaskScopedJson 'engineering-decisions' 'last-engineering-decision-gate.json'
+$engineeringDecision = if($engineeringDecisionRaw -and $engineeringDecisionRaw.latest){$engineeringDecisionRaw.latest}else{$engineeringDecisionRaw}
+$contextCurrent = $false
+if ($currentTaskContext -and [string]$currentTaskContext.status -eq 'active' -and $currentTaskContext.stale -ne $true -and [string]$currentTaskContext.version -eq $currentVersion) {
+  try { $contextCurrent = ([datetime]::Parse([string]$currentTaskContext.expiresAt) -gt (Get-Date)) } catch { $contextCurrent = $false }
+}
+$contextApplies = (-not $ContractOnly -and $contextCurrent -and ([string]::IsNullOrWhiteSpace($TaskId) -or [string]$currentTaskContext.taskId -eq $TaskId))
+$engineeringRequired = ([bool]$RequireEngineeringDecision -or ($contextApplies -and (Test-EngineeringJudgmentIntent ([string]$currentTaskContext.acceptedGoal))))
+$taskIdentityRequired = (-not $ContractOnly)
+$taskIdentityOk = (-not $taskIdentityRequired -or -not [string]::IsNullOrWhiteSpace($TaskId))
+$taskScopedLastTask = [bool]($lastTask -and (Test-TaskScopedEvidence $lastTask))
+$taskVerificationOk = if ($ContractOnly) { $true } else { [bool]($lastTask -and $lastTask.ok -eq $true -and $taskScopedLastTask) }
+$taskEvidenceBinding = if($ContractOnly){[pscustomobject]@{ok=$true;reason='contract_only'}}else{Get-TaskEvidenceBindingStatus $lastTask $currentTaskContext}
+$taskDecisionBinding = if($ContractOnly){[pscustomobject]@{ok=$true;required=$false;reason='contract_only'}}else{Get-TaskDecisionBindingStatus $lastTask $currentTaskContext}
+$changedFileEvidence = [bool]($taskScopedLastTask -and @($lastTask.changed | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0)
+$lastTaskSummaryEvidence = if ($taskScopedLastTask) { [string]$lastTask.summary } else { '' }
+$lastTaskChangedEvidence = if ($taskScopedLastTask) { (@($lastTask.changed) -join ' ') } else { '' }
+$lastTaskCommandEvidence = if ($taskScopedLastTask) { (@($lastTask.commands) -join ' ') } else { '' }
+$taskContextGoalEvidence = if ($contextApplies) { [string]$currentTaskContext.acceptedGoal } else { '' }
+$taskContextRouteEvidence = if ($contextApplies) { (@($currentTaskContext.acceptedRoute) -join ' ') } else { '' }
+$mutationEvidenceText = @(
+  $taskContextGoalEvidence,
+  $taskContextRouteEvidence,
+  [string]$activeCheckpoint.goal,
+  [string]$activeCheckpoint.currentStep,
+  [string]$activeCheckpoint.currentPhase,
+  $lastTaskSummaryEvidence,
+  $lastTaskChangedEvidence,
+  $lastTaskCommandEvidence
+) -join ' '
+$mutationIntent = [bool](Test-MutationIntent $mutationEvidenceText)
+$causalReviewRequired = [bool]($taskIdentityRequired -and ($engineeringRequired -or $mutationIntent -or $changedFileEvidence))
+$taskStateAuthority = Read-TaskStateAuthority $TaskId
+$taskStateProjection = $taskStateAuthority.projection
+$taskStateProjectionIdentityOk = [bool]($ContractOnly -or ($taskStateProjection -and [string]$taskStateProjection.taskId -eq $TaskId))
+$taskStateLifecycleStatus = if ($taskStateProjection -and $taskStateProjection.PSObject.Properties['lifecycle'] -and $taskStateProjection.lifecycle) { ([string]$taskStateProjection.lifecycle.status).ToLowerInvariant() } else { 'missing' }
+$taskStateContextClosed = [bool]($taskStateProjection -and $taskStateProjection.entities -and $null -eq $taskStateProjection.entities.context)
+$taskStateCheckpointCompleted = [bool]($taskStateProjection -and $taskStateProjection.entities -and $taskStateProjection.entities.checkpoint -and [string]$taskStateProjection.entities.checkpoint.status -eq 'completed')
+$taskStateCardCompleted = [bool]($taskStateProjection -and $taskStateProjection.entities -and $taskStateProjection.entities.task_card -and [string]$taskStateProjection.entities.task_card.status -eq 'completed')
+$taskStateTransactionOk = [bool]($ContractOnly -or ($taskStateAuthority.parseErrorCount -eq 0 -and @($taskStateAuthority.incompleteTransactions).Count -eq 0))
+$taskStateLifecycleOk = [bool]($ContractOnly -or ($taskStateProjectionIdentityOk -and $taskStateLifecycleStatus -eq 'completed' -and $taskStateContextClosed -and $taskStateCheckpointCompleted -and $taskStateCardCompleted))
+$taskIntentFulfillment = if($ContractOnly){[pscustomobject]@{ok=$true;required=$false;reason='contract_only'}}else{Get-TaskIntentFulfillmentStatus $lastTask $taskStateProjection}
+$routeCheckpointScoped = [bool]($ContractOnly -or ($routeCheckpoint -and (Test-TaskScopedEvidence $routeCheckpoint)))
+$routeCheckpointBinding = Get-RouteCheckpointBindingStatus $routeCheckpoint $taskStateProjection $currentTaskContext
+$routeCheckpointBindingOk = [bool]$routeCheckpointBinding.ok
+
+$checks = @()
+$verifyOk = ($PackageVerificationInProgress -or (Test-CurrentPackageEvidence $lastVerify -RequireSourceTreeBinding))
+$hotRefreshOk = ($PackageVerificationInProgress -or (Test-CurrentPackageEvidence $lastHotRefresh))
+$checks += [pscustomobject]@{ name='task-identity'; ok=$taskIdentityOk; evidence=if($ContractOnly){'contract-only validation does not claim a task completion'}elseif($taskIdentityOk){"taskId=$TaskId"}else{'missing current TaskId; refuse unscoped completion evidence'} }
+$checks += [pscustomobject]@{ name='task-state-projection'; ok=$taskStateProjectionIdentityOk; evidence=if($ContractOnly){'contract-only validation does not claim a task completion'}elseif($taskStateProjection){"taskId=$($taskStateProjection.taskId) revision=$($taskStateProjection.revision) path=$($taskStateAuthority.projectionPath)"}else{"missing canonical task projection path=$($taskStateAuthority.projectionPath)"} }
+$checks += [pscustomobject]@{ name='task-state-transaction'; ok=$taskStateTransactionOk; evidence=if($ContractOnly){'contract-only validation does not inspect task WAL'}else{"parseErrors=$($taskStateAuthority.parseErrorCount) incompleteTransactions=$(@($taskStateAuthority.incompleteTransactions).Count) eventPath=$($taskStateAuthority.eventPath)"} }
+$checks += [pscustomobject]@{ name='task-state-lifecycle'; ok=$taskStateLifecycleOk; evidence=if($ContractOnly){'contract-only validation does not claim a task completion'}else{"status=$taskStateLifecycleStatus contextClosed=$taskStateContextClosed checkpointCompleted=$taskStateCheckpointCompleted taskCardCompleted=$taskStateCardCompleted"} }
+$checks += [pscustomobject]@{ name='verify-package'; ok=$verifyOk; evidence=if ($PackageVerificationInProgress) { 'self-verification in progress; final verify-package result remains authoritative' } elseif ($lastVerify) { "$(Get-PackageEvidenceReason $lastVerify -RequireSourceTreeBinding)" } else { 'missing last-verify-package.json' } }
+$checks += [pscustomobject]@{ name='hot-refresh'; ok=$hotRefreshOk; evidence=if ($PackageVerificationInProgress) { 'self-verification in progress; hot-refresh freshness is deferred to package verification' } elseif ($lastHotRefresh) { "$(Get-PackageEvidenceReason $lastHotRefresh)" } else { 'missing last-hot-refresh.json' } }
+$checks += [pscustomobject]@{ name='task-verification'; ok=$taskVerificationOk; evidence=if ($ContractOnly) { 'contract-only validation does not reuse task verification' } elseif ($lastTask) { "taskId=$($lastTask.taskId) requiredTaskId=$TaskId match=$taskScopedLastTask version=$($lastTask.version) ok=$($lastTask.ok) summary=$($lastTask.summary)" } else { 'missing last-task-verification.json' } }
+$checks += [pscustomobject]@{ name='evidence-version-binding'; ok=[bool]$taskEvidenceBinding.ok; evidence=("reason=" + [string]$taskEvidenceBinding.reason) }
+$checks += [pscustomobject]@{ name='decision-binding'; ok=[bool]$taskDecisionBinding.ok; evidence=("required=" + [bool]$taskDecisionBinding.required + ';reason=' + [string]$taskDecisionBinding.reason) }
+$checks += [pscustomobject]@{ name='intent-fulfillment'; ok=[bool]$taskIntentFulfillment.ok; evidence=("required=" + [bool]$taskIntentFulfillment.required + ';reason=' + [string]$taskIntentFulfillment.reason) }
+$skillAudit = if ($smartNextAudit) { $smartNextAudit.completionSkillAudit } else { $null }
+$skillAuditMissing = if ($skillAudit) { @($skillAudit.missingRoles) } else { @('missing_completion_skill_audit') }
+$skillAuditOk = ($skillAudit -and $skillAudit.required -eq $true -and @($skillAuditMissing).Count -eq 0)
+$checks += [pscustomobject]@{ name='completion-skill-audit'; ok=$skillAuditOk; evidence=if($skillAudit){"source=smart-next.ps1 auditMode=$($skillAudit.auditMode) presentRoles=$((@($skillAudit.presentRoles)-join ',')) missingRoles=$((@($skillAuditMissing)-join ','))"}else{'missing smart-next completionSkillAudit'} }
+$constraintConflictCount = if ($constraintPreflight) { @($constraintPreflight.conflicts).Count } else { 0 }
+$constraintOk = (-not $constraintPreflight) -or ($constraintPreflight.ok -eq $true -and $constraintConflictCount -eq 0 -and (-not $taskScopedLastTask -or $lastTask.constraintsPreserved -ne $false))
+$checks += [pscustomobject]@{ name='accepted-constraints-preflight'; ok=$constraintOk; evidence=if ($constraintPreflight) { "required=$($constraintPreflight.required) constraints=$(@($constraintPreflight.constraints).Count) conflicts=$constraintConflictCount guardHash=$($constraintPreflight.guardHash)" } else { 'none' } }
+$activeCheckpointTaskOk = ($ContractOnly -or (Test-TaskScopedEvidence $activeCheckpoint))
+$activeCheckpointOk = ($ContractOnly -or ($activeCheckpointTaskOk -and (-not ($activeCheckpoint -and [string]$activeCheckpoint.status -eq 'active') -or $AllowActiveCheckpoint)))
+$checks += [pscustomobject]@{ name='active-checkpoint'; ok=$activeCheckpointOk; evidence=if ($activeCheckpoint) { "status=$($activeCheckpoint.status) taskId=$($activeCheckpoint.taskId) taskScopeOk=$activeCheckpointTaskOk allowActiveCheckpoint=$([bool]$AllowActiveCheckpoint)" } else { 'none' } }
+$driftTaskScoped = ($ContractOnly -or (Test-TaskScopedEvidence $driftCheckpoint))
+$driftOk = (-not $driftCheckpoint) -or (($driftCheckpoint.unresolvedDrift -ne $true -and $driftCheckpoint.ok -eq $true) -and $driftTaskScoped)
+$checks += [pscustomobject]@{ name='runtime-drift-checkpoint'; ok=$driftOk; evidence=if ($driftCheckpoint) { "taskId=$($driftCheckpoint.taskId) requiredTaskId=$TaskId taskScopeOk=$driftTaskScoped status=$($driftCheckpoint.status) unresolvedDrift=$($driftCheckpoint.unresolvedDrift) violations=$(@($driftCheckpoint.violations).Count)" } else { 'none' } }
+$checks += [pscustomobject]@{ name='task-scoped-route-checkpoint'; ok=$routeCheckpointScoped; evidence=if($routeCheckpoint){"taskId=$($routeCheckpoint.taskId) requiredTaskId=$TaskId"}else{'missing required task-scoped route checkpoint'} }
+$checks += [pscustomobject]@{ name='route-checkpoint-binding'; ok=$routeCheckpointBindingOk; evidence="reason=$($routeCheckpointBinding.reason) taskStateRevision=$($routeCheckpoint.taskStateRevision) contractRevision=$($routeCheckpoint.contractRevision) planFingerprint=$($routeCheckpoint.planFingerprint)" }
+$routeOk = [bool]($ContractOnly -or ($routeCheckpoint -and $routeCheckpoint.unresolvedRouteDrift -ne $true -and $routeCheckpoint.ok -eq $true -and $routeCheckpointScoped -and $routeCheckpointBindingOk))
+$checks += [pscustomobject]@{ name='route-checkpoint'; ok=$routeOk; evidence=if ($routeCheckpoint) { "status=$($routeCheckpoint.status) unresolvedRouteDrift=$($routeCheckpoint.unresolvedRouteDrift) violations=$(@($routeCheckpoint.violations).Count) binding=$($routeCheckpointBinding.reason)" } else { 'missing required route checkpoint' } }
+$checks += [pscustomobject]@{ name='task-scoped-integration-parity'; ok=(Test-TaskScopedEvidence $integrationParity); evidence=if($integrationParity){"taskId=$($integrationParity.taskId) requiredTaskId=$TaskId"}else{'none'} }
+$integrationOk = (-not $integrationParity) -or (($integrationParity.unresolvedIntegrationDrift -ne $true -and $integrationParity.ok -eq $true) -and (Test-TaskScopedEvidence $integrationParity))
+$checks += [pscustomobject]@{ name='integration-parity-check'; ok=$integrationOk; evidence=if ($integrationParity) { "unresolvedIntegrationDrift=$($integrationParity.unresolvedIntegrationDrift) drifts=$(@($integrationParity.drifts).Count) module=$($integrationParity.module) moduleVerification=$($integrationParity.moduleVerification.status) integrationVerification=$($integrationParity.integrationVerification.status) userAcceptanceVerification=$($integrationParity.userAcceptanceVerification.status)" } else { 'none' } }
+$checks += [pscustomobject]@{ name='task-scoped-causal-review'; ok=(Test-TaskScopedEvidence $causalReview); evidence=if($causalReview){"taskId=$($causalReview.taskId) requiredTaskId=$TaskId"}else{'none'} }
+$causalReviewTaskScoped = ($ContractOnly -or (Test-TaskScopedEvidence $causalReview))
+$verifiedCausalReviewBinding = if($lastTask -and $lastTask.PSObject.Properties['causalReviewBinding']){$lastTask.causalReviewBinding}else{$null}
+$causalReviewArtifactHashCurrent = ''
+if($causalReview -and -not[string]::IsNullOrWhiteSpace([string]$causalReview.path) -and (Test-Path -LiteralPath ([string]$causalReview.path) -PathType Leaf)){
+  try{$causalReviewArtifactHashCurrent=(Get-FileHash -LiteralPath ([string]$causalReview.path) -Algorithm SHA256).Hash.ToLowerInvariant()}catch{}
+}
+$causalReviewFreshnessOk = if($ContractOnly){$true}elseif(-not$causalReviewRequired){$true}else{[bool]($verifiedCausalReviewBinding -and $verifiedCausalReviewBinding.required -eq $true -and $verifiedCausalReviewBinding.ok -eq $true -and [string]$verifiedCausalReviewBinding.reviewId -eq [string]$causalReview.reviewId -and [string]$verifiedCausalReviewBinding.reviewFingerprint -eq [string]$causalReview.reviewBinding.reviewFingerprint -and [string]$verifiedCausalReviewBinding.reviewArtifactHash -eq $causalReviewArtifactHashCurrent)}
+$causalReviewQualityOk = if ($ContractOnly) { $true } else { [bool]($causalReview -and $causalReview.ok -eq $true -and @($causalReview.gaps).Count -eq 0 -and $causalReviewTaskScoped -and $causalReviewFreshnessOk -and -not [string]::IsNullOrWhiteSpace([string]$causalReview.actualResult) -and @($causalReview.evidence).Count -gt 0 -and [string]$causalReview.expectedVsActual.decision -in @('keep','revise','rollback') -and $causalReview.expectedVsActual.expectedPresent -eq $true -and $causalReview.expectedVsActual.actualPresent -eq $true -and $causalReview.expectedVsActual.weakTermMatch -eq $true -and -not [string]::IsNullOrWhiteSpace([string]$causalReview.verificationMethod) -and [string]$causalReview.planTaskId -eq $TaskId -and $causalReview.planTaskMatch -eq $true) }
+$postMutationReviewOk = [bool](-not $causalReviewRequired -or ($causalReviewQualityOk -and [string]$causalReview.expectedVsActual.decision -eq 'keep'))
+$checks += [pscustomobject]@{ name='post-mutation-review'; ok=$postMutationReviewOk; evidence=if($causalReviewRequired){if($causalReview){"required=true taskId=$($causalReview.taskId) requiredTaskId=$TaskId qualityOk=$causalReviewQualityOk freshnessOk=$causalReviewFreshnessOk bindingCode=$($verifiedCausalReviewBinding.code) decision=$($causalReview.expectedVsActual.decision)"}else{"required=true missing task-scoped causal review; mutationIntent=$mutationIntent changedFileEvidence=$changedFileEvidence"}}else{"required=false mutationIntent=$mutationIntent changedFileEvidence=$changedFileEvidence"} }
+$causalReviewOk = if ($ContractOnly) { $true } else { (-not $causalReview) -or $causalReviewQualityOk }
+$checks += [pscustomobject]@{ name='causal-change-review'; ok=$causalReviewOk; evidence=if ($causalReview) { "decision=$($causalReview.expectedVsActual.decision) gaps=$(@($causalReview.gaps).Count) expectedPresent=$($causalReview.expectedVsActual.expectedPresent) actualPresent=$($causalReview.expectedVsActual.actualPresent)" } else { 'none' } }
+$checks += [pscustomobject]@{ name='task-scoped-integration-contract-replay'; ok=(Test-TaskScopedEvidence $contractReplay); evidence=if($contractReplay){"taskId=$($contractReplay.taskId) requiredTaskId=$TaskId"}else{'none'} }
+$contractReplayOk = if ($ContractOnly) { $true } else { (-not $contractReplay) -or (($contractReplay.unresolvedBehaviorMismatch -ne $true -and $contractReplay.ok -eq $true) -and (Test-TaskScopedEvidence $contractReplay)) }
+$checks += [pscustomobject]@{ name='integration-contract-replay'; ok=$contractReplayOk; evidence=if ($contractReplay) { "module=$($contractReplay.module) normalizedMatch=$($contractReplay.normalizedMatch) mismatches=$(@($contractReplay.mismatches).Count)" } else { 'none' } }
+$engineeringTaskMatch = (Test-TaskScopedEvidence $engineeringDecision)
+$engineeringResolutionOk = (-not $engineeringDecision -or [string]$engineeringDecision.rootCause.status -eq 'verified' -or -not [string]::IsNullOrWhiteSpace([string]$engineeringDecision.rootCause.discriminatingTestEvidence))
+$engineeringDecisionOk = (-not $engineeringRequired -or ($engineeringDecision -and $engineeringDecision.ok -eq $true -and @($engineeringDecision.gaps).Count -eq 0 -and $engineeringDecision.epistemicGrounding.factsSupported -eq $true -and $engineeringDecision.optimality.qualified -eq $true -and $engineeringResolutionOk -and @($engineeringDecision.executionChain).Count -gt 0 -and @($engineeringDecision.acceptanceCriteria).Count -gt 0 -and $engineeringTaskMatch))
+$checks += [pscustomobject]@{ name='engineering-decision-gate'; ok=$engineeringDecisionOk; evidence=if($engineeringRequired){if($engineeringDecision){"taskId=$($engineeringDecision.taskId) requiredTaskId=$TaskId decisionId=$($engineeringDecision.decisionId) factsSupported=$($engineeringDecision.epistemicGrounding.factsSupported) optimalityQualified=$($engineeringDecision.optimality.qualified) rootCauseStatus=$($engineeringDecision.rootCause.status) discriminatingTestEvidence=$(-not [string]::IsNullOrWhiteSpace([string]$engineeringDecision.rootCause.discriminatingTestEvidence)) gaps=$(@($engineeringDecision.gaps).Count)"}else{'missing valid task-scoped engineering decision'}}else{'not_required'} }
+
+function Add-JsonScriptCheck([string]$Name, [string]$ScriptName) {
+  $ok = $false
+  $evidence = ''
+  try {
+    $output = & (Join-Path $PSScriptRoot $ScriptName) -Json
+    $obj = $output | ConvertFrom-Json
+    $ok = ($obj.ok -eq $true)
+    $evidence = "ok=$($obj.ok)"
+  } catch { $evidence = $_.Exception.Message }
+  return [pscustomobject]@{ name=$Name; ok=$ok; evidence=$evidence }
+}
+
+$checks += Add-JsonScriptCheck 'roadmap-manager' 'roadmap-manager.ps1'
+$checks += Add-JsonScriptCheck 'memory-regression' 'memory-regression-checker.ps1'
+$checks += Add-JsonScriptCheck 'task-state' 'task-state-reporter.ps1'
+$checks += Add-JsonScriptCheck 'review-gate' 'team-task-review-gate.ps1'
+
+$privacyOk = $false
+$privacyEvidence = ''
+try {
+  $privacyOutput = & (Join-Path $PSScriptRoot 'privacy-sentinel.ps1') -Json
+  $privacy = $privacyOutput | ConvertFrom-Json
+  $privacyOk = ($privacy.ok -eq $true -or $AllowPrivacyRisk)
+  $privacyEvidence = "privatePatternHits=$($privacy.privatePatternHits) allowPrivacyRisk=$([bool]$AllowPrivacyRisk)"
+} catch { $privacyEvidence = $_.Exception.Message }
+$checks += [pscustomobject]@{ name='privacy-sentinel'; ok=$privacyOk; evidence=$privacyEvidence }
+
+$failed = @($checks | Where-Object { $_.ok -ne $true })
+$allChecksOk = ($failed.Count -eq 0)
+$result = [pscustomobject]@{
+  ok = $allChecksOk
+  completionAuthorized = ($allChecksOk -and -not $PackageVerificationInProgress)
+  checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  allowPrivacyRisk = [bool]$AllowPrivacyRisk
+  contractOnly = [bool]$ContractOnly
+  packageVerificationInProgress = [bool]$PackageVerificationInProgress
+  engineeringJudgmentRequired = $engineeringRequired
+  postMutationReviewRequired = $causalReviewRequired
+  postMutationReview = [pscustomobject]@{ required=$causalReviewRequired; mutationIntent=$mutationIntent; changedFileEvidence=$changedFileEvidence; evidenceText=if($causalReviewRequired){$mutationEvidenceText}else{''}; qualityOk=$causalReviewQualityOk; freshnessOk=$causalReviewFreshnessOk; bindingCode=if($verifiedCausalReviewBinding){[string]$verifiedCausalReviewBinding.code}else{''}; decision=if($causalReview){[string]$causalReview.expectedVsActual.decision}else{''}; acceptance='Mutation-bearing completion requires task-scoped causal review with actual result, evidence, decision=keep, and a task-verification-bound current review artifact.' }
+  engineeringDecisionId = if($engineeringDecision){$engineeringDecision.decisionId}else{''}
+  taskId = $TaskId
+  failed = $failed.Count
+  checks = @($checks)
+}
+
+if ($Json) {
+  $result | ConvertTo-Json -Depth 10
+} else {
+  Write-Host "COMPLETION_GUARD ok=$($result.ok) completionAuthorized=$($result.completionAuthorized) failed=$($result.failed) allowPrivacyRisk=$($result.allowPrivacyRisk)"
+  foreach ($check in @($checks)) { Write-Host "COMPLETION_GUARD_CHECK name=$($check.name) ok=$($check.ok) evidence=$($check.evidence)" }
+}
+if (-not $result.ok) { exit 1 }
+exit 0

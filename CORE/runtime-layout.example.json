@@ -1,0 +1,8 @@
+{
+  "schema": "super-brain.runtime-layout.v1",
+  "sourceRoot": "..",
+  "runtimeRoot": ".",
+  "stateRoot": "../private-state",
+  "archiveRoot": "../private-archive",
+  "compatibilityMemoryJunction": true
+}

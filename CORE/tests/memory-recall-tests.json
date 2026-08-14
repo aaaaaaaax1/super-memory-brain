@@ -1,0 +1,42 @@
+[
+  {
+    "question": "当前 super-memory-brain 版本是多少？",
+    "sources": ["CURRENT_BASELINE.md", "manifest.json"],
+    "mustContain": ["0.6.0", "Package Version:"]
+  },
+  {
+    "question": "隐私记忆怎么写？",
+    "sources": ["memory-policy.json", "scripts/write-memory.ps1"],
+    "mustContain": ["-ConfirmPrivate", "[PRIVACY]"]
+  },
+  {
+    "question": "当前状态应该先查哪里？",
+    "sources": ["CURRENT_BASELINE.md", "super-memory-brain/SKILL.md", "manifest.json"],
+    "mustContain": ["latest real assistant-visible reply", "H7 maps it", "super-brain-rules.json"]
+  },
+  {
+    "question": "分层记忆有哪些层？",
+    "sources": ["memory-policy.json", "scripts/write-memory.ps1"],
+    "mustContain": ["profile", "project", "decision", "task", "session"]
+  },
+  {
+    "question": "Memory Eval Harness 怎么跑？",
+    "sources": ["scripts/memory-eval.ps1", "scripts/memory-eval-report.ps1", "tests/memory-eval-tests.json", "README.md"],
+    "mustContain": ["memory-eval.ps1", "last-memory-eval.json", "passRate"]
+  },
+  {
+    "question": "安装 UI 有哪些交互优化？",
+    "sources": ["README.md", "scripts/install-ui.ps1"],
+    "mustContain": ["Set-UiBusy", "INSTALL_UI_READY"]
+  },
+  {
+    "question": "长任务断点状态怎么处理？",
+    "sources": ["memory-policy.json", "scripts/checkpoint-writer.ps1", "scripts/auto-continuation.ps1", "scripts/completion-guard.ps1"],
+    "mustContain": ["checkpointLifecycle", "active-checkpoint.json", "Start", "Complete", "currentStep", "nextAction"]
+  },
+  {
+    "question": "结构化改动前如何说明根因和验证？",
+    "sources": ["scripts/causal-change-plan.ps1", "super-memory-brain/SKILL.md", "README.md"],
+    "mustContain": ["RootCause", "ExpectedOptimization", "VerificationMethod"]
+  }
+]

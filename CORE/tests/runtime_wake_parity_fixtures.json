@@ -1,0 +1,124 @@
+{
+  "schema": "super-brain.runtime-wake-parity-fixtures.v1",
+  "cases": [
+    {
+      "name": "context_reference_cjk",
+      "prompt": "\u4e0a\u9762\u8fd9\u4e2a\u7ee7\u7eed\u5904\u7406",
+      "contextReply": false,
+      "continuitySignal": false,
+      "contract": {
+        "focusId": "main-line",
+        "focusLabel": "Main line",
+        "returnStack": [],
+        "unfinishedWorkPlans": [],
+        "mergeIntents": []
+      },
+      "affinity": {
+        "topicAffinity": "unknown",
+        "targetLineId": "",
+        "targetLineLabel": "",
+        "confidence": "none",
+        "candidateLineIds": [],
+        "reason": "fixture"
+      },
+      "expected": {
+        "mode": "continue",
+        "topicAffinity": "active",
+        "targetLineId": "main-line",
+        "needsClarification": false,
+        "recommendedInstructionMode": "continue"
+      }
+    },
+    {
+      "name": "merge_only_queue_unknown",
+      "prompt": "check an unrelated idea",
+      "contextReply": false,
+      "continuitySignal": false,
+      "contract": {
+        "focusId": "main-line",
+        "focusLabel": "Main line",
+        "returnStack": [],
+        "unfinishedWorkPlans": [],
+        "mergeIntents": [
+          {
+            "mergeIntentId": "merge-ui-backend",
+            "status": "waiting_for_target",
+            "sourceFocusId": "ui-backend",
+            "sourceFocusLabel": "UI and backend"
+          }
+        ]
+      },
+      "affinity": {
+        "topicAffinity": "unknown",
+        "targetLineId": "",
+        "targetLineLabel": "",
+        "confidence": "none",
+        "candidateLineIds": [],
+        "reason": "fixture"
+      },
+      "expected": {
+        "mode": "unclassified",
+        "topicAffinity": "unknown",
+        "targetLineId": "",
+        "needsClarification": true,
+        "recommendedInstructionMode": "classify"
+      }
+    },
+    {
+      "name": "ambiguous_hot_affinity",
+      "prompt": "continue the task",
+      "contextReply": false,
+      "continuitySignal": false,
+      "contract": {
+        "focusId": "main-line",
+        "focusLabel": "Main line",
+        "returnStack": [],
+        "unfinishedWorkPlans": [],
+        "mergeIntents": []
+      },
+      "affinity": {
+        "topicAffinity": "ambiguous",
+        "targetLineId": "",
+        "targetLineLabel": "",
+        "confidence": "low",
+        "candidateLineIds": ["main-line", "side-line"],
+        "reason": "fixture"
+      },
+      "expected": {
+        "mode": "ambiguous",
+        "topicAffinity": "ambiguous",
+        "targetLineId": "",
+        "needsClarification": true,
+        "recommendedInstructionMode": "classify"
+      }
+    },
+    {
+      "name": "active_hot_affinity",
+      "prompt": "runtime parity check",
+      "contextReply": false,
+      "continuitySignal": false,
+      "contract": {
+        "focusId": "main-line",
+        "focusLabel": "Main line",
+        "returnStack": [],
+        "unfinishedWorkPlans": [],
+        "mergeIntents": []
+      },
+      "affinity": {
+        "topicAffinity": "active",
+        "targetLineId": "main-line",
+        "targetLineLabel": "Main line",
+        "confidence": "high",
+        "candidateLineIds": ["main-line"],
+        "reason": "fixture"
+      },
+      "expected": {
+        "mode": "continue",
+        "topicAffinity": "active",
+        "targetLineId": "main-line",
+        "needsClarification": false,
+        "recommendedInstructionMode": "continue"
+      }
+    }
+  ]
+}

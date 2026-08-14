@@ -1,0 +1,46 @@
+﻿{
+    "id":  "browser-act-suite",
+    "name":  "Browser Act Suite",
+    "summary":  "浏览器自动化与网页操作技能；安装技能本体后，首次实际使用仍需用户确认本机 browser-act CLI。",
+    "type":  "optional-extension",
+    "defaultEnabled":  false,
+    "sourceRepo":  "https://github.com/browser-act/skills",
+    "sourceCommit":  "main",
+    "license":  "unknown",
+    "licenseEvidence":  [
+                            "skills/browser-act/SKILL.md",
+                            "skills/browser-act-skill-forge/SKILL.md"
+                        ],
+    "installNote":  "browser-act CLI is not bundled. When a browser task requires this skill and browser-act is missing, prompt the user to install it with: uv tool install browser-act-cli --python 3.12. Do not install automatically without explicit user approval.",
+    "skills":  [
+                   {
+                       "name":  "browser-act",
+                       "path":  "skills/browser-act",
+                       "triggers":  [
+                                        "browser-act",
+                                        "Playwright cannot complete",
+                                        "Playwright browser limitation",
+                                        "checkbox verification",
+                                        "captcha assistance",
+                                        "browser-act profile",
+                                        "browser-act session",
+                                        "HAR network capture"
+                                    ],
+                       "setupRequired":  "Requires local browser-act CLI. Prompt for install if missing."
+                   },
+                   {
+                       "name":  "browser-act-skill-forge",
+                       "path":  "skills/browser-act-skill-forge",
+                       "triggers":  [
+                                        "forge website skill",
+                                        "reusable browser skill",
+                                        "site-specific automation",
+                                        "bulk extraction",
+                                        "monitor website",
+                                        "scrape many records",
+                                        "automate permanently"
+                                    ],
+                       "setupRequired":  "Requires browser-act CLI and configured browser before exploration."
+                   }
+               ]
+}
