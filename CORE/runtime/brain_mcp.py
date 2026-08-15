@@ -295,9 +295,39 @@ TOOLS = [
                     "required": ["schema", "phase", "currentStep", "completedItems", "projectEvidence", "verificationResults", "nextAction"],
                     "additionalProperties": False,
                 },
+                "execution_assist_request": {
+                    "type": "object",
+                    "description": "Optional compact semantic classification for H7-native four-quadrant assistance. It accepts no user prompt, transcript, query, source path, or authorization.",
+                    "properties": {
+                        "schema": {"const": "super-brain.execution-assist-request.v1"},
+                        "taskClass": {"type": "string", "enum": ["engineering", "product", "productivity", "learning", "general"]},
+                        "semanticSignals": {
+                            "type": "array",
+                            "maxItems": 6,
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "bug_diagnosis", "engineering_design", "product_planning",
+                                    "productivity_workflow", "learning_teaching", "challenge_assumptions",
+                                    "testing", "optimization", "implementation",
+                                ],
+                            },
+                        },
+                        "materialUnknown": {"type": "boolean"},
+                        "clarificationRequired": {"type": "boolean"},
+                        "sharedUnknown": {"type": "boolean"},
+                        "rawPromptStored": {"const": False},
+                        "rawTranscriptStored": {"const": False},
+                    },
+                    "required": [
+                        "schema", "taskClass", "semanticSignals", "materialUnknown", "clarificationRequired",
+                        "sharedUnknown", "rawPromptStored", "rawTranscriptStored",
+                    ],
+                    "additionalProperties": False,
+                },
                 "capability_route_receipt": {
                     "type": "object",
-                    "description": "Compact, router-owned Super Brain native-capability selection proof. It is non-authorizing and contains no source path, raw prompt, or transcript.",
+                    "description": "Legacy compact router receipt. H7 validates it only as compatibility evidence; H7-native execution assistance remains the sole capability selector.",
                     "properties": {
                         "schema": {"const": "super-brain.capability-route-receipt.v1"},
                         "state": {"type": "string", "enum": ["ready", "not_applicable", "withheld"]},
@@ -583,6 +613,7 @@ def handle_tool(core: BrainCore, name: str, arguments: dict[str, Any], snapshot_
                 progress_checkpoint=arguments.get("progress_checkpoint") if isinstance(arguments.get("progress_checkpoint"), dict) else None,
                 visible_progress_assertion=arguments.get("visible_progress_assertion") if isinstance(arguments.get("visible_progress_assertion"), dict) else None,
                 project_progress_proof=arguments.get("project_progress_proof") if isinstance(arguments.get("project_progress_proof"), dict) else None,
+                execution_assist_request=arguments.get("execution_assist_request"),
                 capability_route_receipt=arguments.get("capability_route_receipt"),
                 transition_id=str(arguments.get("transition_id", "")),
                 turn_intent=str(arguments.get("turn_intent", "direct")),
@@ -658,7 +689,7 @@ def serve(core: BrainCore, snapshot_path: Path | None = None) -> int:
                 host_binding = host_scope_binding_from_request(request)
                 scope = host_binding[0] if host_binding is not None else None
                 workspace_root = host_binding[1] if host_binding is not None else None
-                with core.bind_mcp_host_scope(scope, workspace_root=workspace_root):
+                with core.bind_host_scope(scope, workspace_root=workspace_root):
                     result = handle_tool(core, str(params.get("name", "")), params.get("arguments", {}) or {}, snapshot_path)
             elif method == "ping":
                 result = {}

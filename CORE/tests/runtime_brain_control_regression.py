@@ -1180,6 +1180,44 @@ def test_mcp_snapshot_publishes_bounded_scope_bound_task_projection(root: Path) 
     assert legacy_snapshot.read_bytes() == snapshot_path.read_bytes()
 
 
+def test_mcp_snapshot_accepts_allowed_h7_projection_as_display_only(root: Path) -> None:
+    """An allowed H7 state is observable, never an MCP execution grant."""
+
+    state_root = root / "mcp-allowed-task-projection"
+    control = BrainControl(state_root)
+    request = task_request("mcp-allowed-task-projection-import", initial_revision=0)
+    request.update(
+        {
+            "taskId": "private-allowed-task-id",
+            "taskInstanceId": "ti-" + "9" * 32,
+            "workspaceKey": "ws-" + "e" * 24,
+            "ownerSessionKey": "sid-" + "f" * 24,
+        }
+    )
+    control.import_task(request)
+    materialized = control.materialize_outbox()
+    snapshot_path = Path(materialized["mcpSnapshot"]["path"])
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["taskProjections"][0]["actionAuthorization"] = "allowed"
+    body = {key: value for key, value in snapshot.items() if key != "payloadHash"}
+    snapshot = {
+        **body,
+        "payloadHash": hashlib.sha256(
+            json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    selected = read_mcp_task_projection(
+        snapshot_path,
+        workspace_key=str(request["workspaceKey"]),
+        owner_session_key=str(request["ownerSessionKey"]),
+    )
+    assert selected["ok"] and selected["available"] and selected["status"] == "current", selected
+    assert selected["projection"]["actionAuthorization"] == "allowed", selected
+    assert selected["projection"]["rawPromptStored"] is False
+
+
 def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(root: Path) -> None:
     state_root = root / "mcp-task-recall"
     control = BrainControl(state_root)
@@ -1276,7 +1314,7 @@ def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(
 
 def test_card_schema_migration_recovery(root: Path) -> None:
     control = BrainControl(root / "card-migration-recovery")
-    assert control.status()["schemaVersion"] == 16
+    assert control.status()["schemaVersion"] == 17
     connection = sqlite3.connect(control.db_path)
     try:
         connection.execute("DROP TRIGGER card_revisions_no_update")
@@ -1302,7 +1340,7 @@ def test_card_schema_migration_recovery(root: Path) -> None:
     finally:
         connection.close()
     recovered = BrainControl(control.state_root)
-    assert recovered.status()["schemaVersion"] == 16
+    assert recovered.status()["schemaVersion"] == 17
     connection = sqlite3.connect(recovered.db_path)
     try:
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=4").fetchone()[0] == 1
@@ -3113,6 +3151,26 @@ def test_task_history_retention_is_logical_reversible_and_scope_bound(root: Path
     )
     control.import_task(trashed)
 
+    sealed = task_request("task-history-sealed-import", initial_revision=0)
+    sealed.update(
+        {
+            "taskId": "task-history-sealed-private-id",
+            "taskInstanceId": "ti-" + "d" * 32,
+            "workspaceKey": "ws-task-history-current",
+            "ownerSessionKey": "sid-" + "b" * 24,
+        }
+    )
+    sealed_state = sealed["state"]
+    assert isinstance(sealed_state, dict)
+    sealed_state.update(
+        {
+            "lifecycle": "completed",
+            "focusLabel": "等待紧凑证据的任务",
+            "completedAt": (datetime.now(UTC) - timedelta(days=24)).isoformat().replace("+00:00", "Z"),
+        }
+    )
+    control.import_task(sealed)
+
     missing_evidence = task_request("task-history-missing-evidence-import", initial_revision=0)
     missing_evidence.update(
         {
@@ -3159,39 +3217,76 @@ def test_task_history_retention_is_logical_reversible_and_scope_bound(root: Path
     (control.workspace / "last-execution-contract.json").write_text(json.dumps(contract), encoding="utf-8")
 
     history = control.task_history_for_ui()
-    completed_item = next(item for item in history["items"] if item["title"] == "完成归档任务")
+    assert history["settings"]["completedDays"] == 7
+    assert history["settings"]["trashDays"] == 15
+    assert history["settings"]["compactEvidenceDays"] == 30
     trashed_item = next(item for item in history["items"] if item["title"] == "应进入回收站的任务")
     missing_item = next(item for item in history["items"] if item["title"] == "缺少完成时间的旧任务")
-    assert completed_item["statusLabel"] == "已完成" and completed_item["isCompleted"] is True
-    assert completed_item["retentionState"] == "cleanup_preview" and completed_item["canRestore"] is True
+    assert all(item["title"] != "完成归档任务" for item in history["items"])
+    assert all(item["title"] != "等待紧凑证据的任务" for item in history["items"])
+    assert history["counts"]["evidenceOnly"] == 1
+    assert history["counts"]["sealed"] == 1
+    assert history["completionEvidence"]["count"] == 1
+    assert history["completionEvidence"]["detailedTaskCardsVisible"] is False
     assert trashed_item["retentionState"] == "trashed" and trashed_item["canRestore"] is True
     assert missing_item["retentionState"] == "needs_review" and missing_item["canRestore"] is False
     history_json = json.dumps(history, ensure_ascii=False)
     assert "Foreign task details must never enter task history." not in history_json
     assert "task-history-completed-private-id" not in history_json
+    assert "完成归档任务" not in history_json
     assert "ws-task-history-current" not in history_json
     connection = sqlite3.connect(control.db_path)
     try:
         automatic_receipt = connection.execute(
             "SELECT actor_receipt FROM ui_task_retention_receipts WHERE action='moved_to_trash' ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
+        compact_evidence = connection.execute(
+            "SELECT payload_json FROM ui_task_completion_evidence ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
     finally:
         connection.close()
     assert automatic_receipt is not None
     assert json.loads(automatic_receipt[0])["authorization"] == "system"
+    assert compact_evidence is not None
+    compact_payload = json.loads(compact_evidence[0])
+    assert compact_payload["schema"] == "super-brain.task-completion-evidence.v1"
+    assert compact_payload["completedStepCount"] >= 0
+    assert compact_payload["rawPromptStored"] is False and compact_payload["rawTranscriptStored"] is False
+
+    try:
+        control.update_task_retention_settings(
+            completed_days=15,
+            trash_days=30,
+            expected_revision=int(history["settings"]["revision"]),
+            actor_receipt=actor_receipt(),
+        )
+        raise AssertionError("retention window beyond the day-30 cutoff must fail")
+    except BrainControlError as exc:
+        assert exc.code == "BRAIN_CONTROL_TASK_RETENTION_WINDOW_INVALID"
 
     settings = control.update_task_retention_settings(
-        completed_days=15,
-        trash_days=30,
+        completed_days=8,
+        trash_days=15,
         expected_revision=int(history["settings"]["revision"]),
         actor_receipt=actor_receipt(),
     )
-    assert settings["settings"]["completedDays"] == 15 and settings["settings"]["trashDays"] == 30
+    assert settings["settings"]["completedDays"] == 8 and settings["settings"]["trashDays"] == 15
+    assert settings["settings"]["compactEvidenceDays"] == 30
+    try:
+        control.update_task_retention_settings(
+            completed_days=7,
+            trash_days=15,
+            expected_revision=int(history["settings"]["revision"]),
+            actor_receipt=actor_receipt(),
+        )
+        raise AssertionError("stale retention settings CAS must fail")
+    except BrainControlError as exc:
+        assert exc.code == "BRAIN_CONTROL_TASK_RETENTION_STALE"
 
-    restored = control.restore_task_card_for_ui(completed_item["taskCardKey"], actor_receipt())
+    restored = control.restore_task_card_for_ui(trashed_item["taskCardKey"], actor_receipt())
     assert restored["retentionState"] == "visible"
     after_restore = control.task_history_for_ui()
-    restored_item = next(item for item in after_restore["items"] if item["title"] == "完成归档任务")
+    restored_item = next(item for item in after_restore["items"] if item["title"] == "应进入回收站的任务")
     assert restored_item["retentionState"] == "visible" and restored_item["canRestore"] is False
     connection = sqlite3.connect(control.db_path)
     try:
@@ -3201,6 +3296,26 @@ def test_task_history_retention_is_logical_reversible_and_scope_bound(root: Path
     finally:
         connection.close()
     assert lifecycle == ("completed",)
+
+    # A compacted card is intentionally not restorable: its task UI content is
+    # gone and only the minimal completion evidence remains.
+    connection = sqlite3.connect(control.db_path)
+    try:
+        compacted_key_row = connection.execute(
+            "SELECT task_key FROM ui_task_card_retention WHERE retention_state='evidence_only' LIMIT 1"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert compacted_key_row is not None
+    try:
+        control.restore_task_card_for_ui(
+            str(compacted_key_row[0]),
+            actor_receipt(),
+        )
+    except BrainControlError as exc:
+        assert exc.code == "BRAIN_CONTROL_TASK_RETENTION_RESTORE_INVALID"
+    else:
+        raise AssertionError("a compacted task card must not be restorable")
 
 
 def test_instruction_anchor_and_continuation_receipt_preserve_latest_progress(root: Path) -> None:
@@ -3362,7 +3477,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-control-") as directory:
         root = Path(directory)
         control = BrainControl(root)
-        assert control.status()["schemaVersion"] == 16
+        assert control.status()["schemaVersion"] == 17
 
         first = control.apply(command("cmd-1", 0))
         assert first["revision"] == 1 and not first["idempotent"]
@@ -3431,6 +3546,7 @@ def main() -> None:
         test_mcp_reads_published_control_snapshot(root)
         test_mcp_rejects_future_control_snapshot(root)
         test_mcp_snapshot_publishes_bounded_scope_bound_task_projection(root)
+        test_mcp_snapshot_accepts_allowed_h7_projection_as_display_only(root)
         test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(root)
         test_card_schema_migration_recovery(root)
         test_control_center_card_queries_and_privacy(root)

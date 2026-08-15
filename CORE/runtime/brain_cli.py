@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import hashlib
 import json
+import os
 import sys
+from contextlib import nullcontext
+from pathlib import Path
 
 from brain_core import DEFAULT_RECALL_MAX_TOKENS, DEFAULT_RECALL_TOP_K, BrainCore
 from activation_receipt import activate as activate_brain, ensure_current
@@ -12,10 +17,40 @@ from turn_runtime import run_turn, visible_tail_assertion_payload_parse_invalid
 from turn_intent import TURN_INTENTS, public_projection as public_turn_intent, resolve_turn_intent
 
 
+def _parse_object_payload(json_payload: str, base64_payload: str) -> tuple[object | None, bool]:
+    """Decode one compact object transport without accepting arbitrary text."""
+
+    if json_payload and base64_payload:
+        return {"invalid": True}, True
+    try:
+        decoded = (
+            base64.b64decode(base64_payload, validate=True).decode("utf-8")
+            if base64_payload
+            else json_payload
+        )
+        if not decoded:
+            return None, False
+        value = json.loads(decoded)
+    except (TypeError, ValueError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        return {"invalid": True}, True
+    return (value, False) if isinstance(value, dict) else ({"invalid": True}, True)
+
+
+def _cli_host_scope(workspace_root: Path) -> tuple[str, str] | None:
+    """Convert an explicit CLI workspace into the same ephemeral Host scope as MCP."""
+
+    thread_id = os.environ.get("CODEX_THREAD_ID", "").strip()
+    source = str(workspace_root).rstrip("/\\").lower()
+    if not thread_id or not source:
+        return None
+    return "ws-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:24], thread_id
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Super Brain local runtime CLI")
     parser.add_argument("--package-root", required=True)
     parser.add_argument("--memory-root", default="")
+    parser.add_argument("--workspace-root", default="")
     parser.add_argument("--base64", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -96,6 +131,8 @@ def build_parser() -> argparse.ArgumentParser:
     turn_runtime.add_argument("--progress-checkpoint-base64", default="")
     turn_runtime.add_argument("--project-progress-proof-json", default="")
     turn_runtime.add_argument("--project-progress-proof-base64", default="")
+    turn_runtime.add_argument("--execution-assist-request-json", default="")
+    turn_runtime.add_argument("--execution-assist-request-base64", default="")
     turn_runtime.add_argument("--capability-route-receipt-json", default="")
     turn_runtime.add_argument("--capability-route-receipt-base64", default="")
     turn_runtime.add_argument("--transition-id", default="")
@@ -175,6 +212,22 @@ def _ensure_core_activation(
 
 def main() -> int:
     args = build_parser().parse_args()
+    workspace_root: Path | None = None
+    if args.workspace_root:
+        candidate = Path(args.workspace_root).expanduser().resolve()
+        if not candidate.is_dir():
+            result = {
+                "ok": False,
+                "schema": "super-brain.turn-runtime.v1",
+                "available": False,
+                "code": "H7_WORKSPACE_ROOT_INVALID",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+            payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            sys.stdout.write(base64.b64encode(payload).decode("ascii") if args.base64 else payload.decode("utf-8"))
+            return 2
+        workspace_root = candidate
     core = BrainCore(args.package_root, args.memory_root or None)
     activation = None
     # Status and health are observational.  They must never create an
@@ -268,100 +321,52 @@ def main() -> int:
             session_key=args.session_key,
         )
     elif args.command == "turn-runtime":
-        visible_progress_assertion: object | None = None
-        visible_progress_assertion_parse_failed = False
-        if args.visible_progress_assertion_json and args.visible_progress_assertion_base64:
-            visible_progress_assertion_parse_failed = True
-        elif args.visible_progress_assertion_base64:
-            try:
-                decoded_assertion = base64.b64decode(
-                    args.visible_progress_assertion_base64, validate=True
-                ).decode("utf-8")
-                parsed_assertion = json.loads(decoded_assertion)
-                if isinstance(parsed_assertion, dict):
-                    visible_progress_assertion = parsed_assertion
-                else:
-                    visible_progress_assertion_parse_failed = True
-            except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                visible_progress_assertion_parse_failed = True
-        elif args.visible_progress_assertion_json:
-            try:
-                parsed_assertion = json.loads(args.visible_progress_assertion_json)
-                if isinstance(parsed_assertion, dict):
-                    visible_progress_assertion = parsed_assertion
-                else:
-                    visible_progress_assertion_parse_failed = True
-            except (TypeError, json.JSONDecodeError):
-                visible_progress_assertion_parse_failed = True
-        progress_checkpoint: object | None = None
-        if args.progress_checkpoint_json and args.progress_checkpoint_base64:
-            progress_checkpoint = {"invalid": True}
-        elif args.progress_checkpoint_base64:
-            try:
-                decoded_checkpoint = base64.b64decode(args.progress_checkpoint_base64, validate=True).decode("utf-8")
-                parsed_checkpoint = json.loads(decoded_checkpoint)
-                progress_checkpoint = parsed_checkpoint if isinstance(parsed_checkpoint, dict) else {"invalid": True}
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                progress_checkpoint = {"invalid": True}
-        elif args.progress_checkpoint_json:
-            try:
-                parsed_checkpoint = json.loads(args.progress_checkpoint_json)
-                progress_checkpoint = parsed_checkpoint if isinstance(parsed_checkpoint, dict) else {"invalid": True}
-            except json.JSONDecodeError:
-                progress_checkpoint = {"invalid": True}
-        project_progress_proof: object | None = None
-        if args.project_progress_proof_json and args.project_progress_proof_base64:
-            project_progress_proof = {"invalid": True}
-        elif args.project_progress_proof_base64:
-            try:
-                decoded_proof = base64.b64decode(args.project_progress_proof_base64, validate=True).decode("utf-8")
-                parsed_proof = json.loads(decoded_proof)
-                project_progress_proof = parsed_proof if isinstance(parsed_proof, dict) else {"invalid": True}
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                project_progress_proof = {"invalid": True}
-        elif args.project_progress_proof_json:
-            try:
-                parsed_proof = json.loads(args.project_progress_proof_json)
-                project_progress_proof = parsed_proof if isinstance(parsed_proof, dict) else {"invalid": True}
-            except json.JSONDecodeError:
-                project_progress_proof = {"invalid": True}
-        capability_route_receipt: object | None = None
-        if args.capability_route_receipt_json and args.capability_route_receipt_base64:
-            capability_route_receipt = {"invalid": True}
-        elif args.capability_route_receipt_base64:
-            try:
-                decoded_route_receipt = base64.b64decode(
-                    args.capability_route_receipt_base64, validate=True
-                ).decode("utf-8")
-                parsed_route_receipt = json.loads(decoded_route_receipt)
-                capability_route_receipt = parsed_route_receipt if isinstance(parsed_route_receipt, dict) else {"invalid": True}
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                capability_route_receipt = {"invalid": True}
-        elif args.capability_route_receipt_json:
-            try:
-                parsed_route_receipt = json.loads(args.capability_route_receipt_json)
-                capability_route_receipt = parsed_route_receipt if isinstance(parsed_route_receipt, dict) else {"invalid": True}
-            except json.JSONDecodeError:
-                capability_route_receipt = {"invalid": True}
+        visible_progress_assertion, visible_progress_assertion_parse_failed = _parse_object_payload(
+            args.visible_progress_assertion_json,
+            args.visible_progress_assertion_base64,
+        )
+        progress_checkpoint, _ = _parse_object_payload(
+            args.progress_checkpoint_json,
+            args.progress_checkpoint_base64,
+        )
+        project_progress_proof, _ = _parse_object_payload(
+            args.project_progress_proof_json,
+            args.project_progress_proof_base64,
+        )
+        execution_assist_request, _ = _parse_object_payload(
+            args.execution_assist_request_json,
+            args.execution_assist_request_base64,
+        )
+        capability_route_receipt, _ = _parse_object_payload(
+            args.capability_route_receipt_json,
+            args.capability_route_receipt_base64,
+        )
         if visible_progress_assertion_parse_failed:
             result = visible_tail_assertion_payload_parse_invalid(args.phase)
         else:
-            result = run_turn(
-                core,
-                phase=args.phase,
-                memory_mode=args.memory_mode,
-                recovery_event=args.recovery_event,
-                turn_outcome=args.turn_outcome,
-                user_control=args.user_control,
-                completion_evidence_ref=args.completion_evidence_ref,
-                visible_progress_assertion=visible_progress_assertion,
-                progress_checkpoint=progress_checkpoint,
-                project_progress_proof=project_progress_proof,
-                capability_route_receipt=capability_route_receipt,
-                transition_id=args.transition_id,
-                timeout=args.timeout_seconds,
-                turn_intent=args.turn_intent,
+            scope_context = (
+                core.bind_host_scope(_cli_host_scope(workspace_root), workspace_root=workspace_root)
+                if workspace_root is not None
+                else nullcontext()
             )
+            with scope_context:
+                result = run_turn(
+                    core,
+                    phase=args.phase,
+                    memory_mode=args.memory_mode,
+                    recovery_event=args.recovery_event,
+                    turn_outcome=args.turn_outcome,
+                    user_control=args.user_control,
+                    completion_evidence_ref=args.completion_evidence_ref,
+                    visible_progress_assertion=visible_progress_assertion,
+                    progress_checkpoint=progress_checkpoint,
+                    project_progress_proof=project_progress_proof,
+                    execution_assist_request=execution_assist_request,
+                    capability_route_receipt=capability_route_receipt,
+                    transition_id=args.transition_id,
+                    timeout=args.timeout_seconds,
+                    turn_intent=args.turn_intent,
+                )
     elif args.command == "status":
         result = core.status()
     elif args.command == "activate":

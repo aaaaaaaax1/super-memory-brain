@@ -21,6 +21,10 @@ from typing import Any
 from activation_receipt import canonical_hash, ensure_current
 from brain_context import canonical_hash as context_hash
 from brain_core import BrainCore, agent_identity
+from execution_assist import capability_route_receipt as execution_assist_capability_route_receipt
+from execution_assist import public_projection as public_execution_assist
+from execution_assist import receipt_is_valid as execution_assist_receipt_is_valid
+from execution_assist import resolve_execution_assist
 from turn_close_dispatcher import _invoke_contract, dispatch_turn_close, record_progress_checkpoint
 from turn_intent import public_projection as public_turn_intent
 from turn_intent import resolve_turn_intent
@@ -52,6 +56,18 @@ CAPABILITY_ROUTE_CODE_RE = re.compile(r"^CAPABILITY_ROUTE_[A-Z0-9_]{3,96}$")
 CAPABILITY_NATIVE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._:-]{1,159}$")
 CAPABILITY_NATIVE_CONTRACT_ID_RE = re.compile(r"^sb\.native\.[a-z0-9][a-z0-9._-]{1,159}$")
 CAPABILITY_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+CAPABILITY_ROUTE_COMPATIBILITY_SCHEMA = "super-brain.capability-route-compatibility.v1"
+CAPABILITY_ROUTE_COMPATIBILITY_FIELDS = {
+    "schema",
+    "state",
+    "externalRouteHash",
+    "externalSelectionHash",
+    "nonAuthorizing",
+    "cannotSelectCapabilities",
+    "rawPromptStored",
+    "rawTranscriptStored",
+    "payloadHash",
+}
 VISIBLE_TAIL_ASSERTION_SCHEMA_V2 = "super-brain.visible-tail-observation.v2"
 VISIBLE_TAIL_ASSERTION_SCHEMA_V3 = "super-brain.visible-tail-observation.v3"
 VISIBLE_TAIL_ASSERTION_SCHEMA_V4 = "super-brain.visible-tail-observation.v4"
@@ -132,6 +148,10 @@ FORMAL_OPEN_INTENTS = {
     "plan_proposal",
     "memory_write",
 }
+# A normal continuation is read-only and must not spawn a second authority
+# process.  Persisted memory/task-card mutations, however, must project the
+# exact action authorization returned by execution-contract.ps1.
+ACTION_AUTHORIZATION_REQUIRED_INTENTS = {"memory_write"}
 
 
 def _utc_now() -> str:
@@ -863,6 +883,95 @@ def _capability_route_receipt_valid(value: Any) -> bool:
     return isinstance(normalized, dict) and selection_hash == str(normalized.get("selectionHash", "")) and value == normalized
 
 
+def _external_capability_route_compatibility(value: Any) -> tuple[dict[str, Any] | None, str]:
+    """Accept legacy router input only as non-authorizing compatibility evidence.
+
+    H7 always derives the actual route through ``execution_assist``.  A prior
+    adapter may still submit its compact receipt while rolling forward, but it
+    is reduced to two hashes and can never choose a capability or alter the
+    H7-derived receipt.
+    """
+
+    if value is None:
+        return None, "H7_CAPABILITY_ROUTE_COMPATIBILITY_NOT_SUPPLIED"
+    normalized, code = _normalize_capability_route_receipt(value)
+    if normalized is None:
+        return None, code or "H7_CAPABILITY_ROUTE_RECEIPT_INVALID"
+    body = {
+        "schema": CAPABILITY_ROUTE_COMPATIBILITY_SCHEMA,
+        "state": "accepted_compatibility_only",
+        "externalRouteHash": str(normalized.get("routeHash", "")),
+        "externalSelectionHash": str(normalized.get("selectionHash", "")),
+        "nonAuthorizing": True,
+        "cannotSelectCapabilities": True,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    return {
+        **body,
+        "payloadHash": canonical_hash(body),
+    }, "H7_CAPABILITY_ROUTE_COMPATIBILITY_CURRENT"
+
+
+def _external_capability_route_compatibility_valid(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != CAPABILITY_ROUTE_COMPATIBILITY_FIELDS:
+        return False
+    if (
+        value.get("schema") != CAPABILITY_ROUTE_COMPATIBILITY_SCHEMA
+        or value.get("state") != "accepted_compatibility_only"
+        or _strict_hash(value.get("externalRouteHash")) is None
+        or _strict_hash(value.get("externalSelectionHash")) is None
+        or value.get("nonAuthorizing") is not True
+        or value.get("cannotSelectCapabilities") is not True
+        or value.get("rawPromptStored") is not False
+        or value.get("rawTranscriptStored") is not False
+        or _strict_hash(value.get("payloadHash")) is None
+    ):
+        return False
+    return str(value.get("payloadHash", "")) == canonical_hash(
+        {key: item for key, item in value.items() if key != "payloadHash"}
+    )
+
+
+def _resolve_execution_assist_for_turn(
+    core: BrainCore,
+    intent: dict[str, Any],
+    execution_assist_request: Any,
+    external_capability_route_receipt: Any,
+    *,
+    apply_phase: str = "planning",
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, str]:
+    """Create the H7-owned assist receipt and reduce legacy input to hashes.
+
+    The router runs inside the H7 runtime after typed intent is resolved.  It
+    receives at most the compact semantic request; raw user text, source paths
+    and external route selections remain outside this control-plane path.
+    """
+
+    if intent.get("executionAssistAllowed") is not True:
+        if execution_assist_request is not None or external_capability_route_receipt is not None:
+            return None, None, None, "H7_EXECUTION_ASSIST_NOT_ALLOWED"
+        return None, None, None, "H7_EXECUTION_ASSIST_NOT_APPLICABLE"
+    execution_assist, code = resolve_execution_assist(
+        core.package_root,
+        intent,
+        execution_assist_request,
+        apply_phase=apply_phase,
+    )
+    if execution_assist is None or not execution_assist_receipt_is_valid(execution_assist):
+        return None, None, None, code or "H7_EXECUTION_ASSIST_RECEIPT_INVALID"
+    route_input = execution_assist_capability_route_receipt(execution_assist)
+    route_receipt, route_code = _normalize_capability_route_receipt(route_input)
+    if route_receipt is None:
+        return None, None, None, route_code or "H7_EXECUTION_ASSIST_ROUTE_INVALID"
+    compatibility, compatibility_code = _external_capability_route_compatibility(
+        external_capability_route_receipt
+    )
+    if external_capability_route_receipt is not None and compatibility is None:
+        return None, None, None, compatibility_code or "H7_CAPABILITY_ROUTE_RECEIPT_INVALID"
+    return execution_assist, route_receipt, compatibility, "H7_EXECUTION_ASSIST_CURRENT"
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -1051,6 +1160,117 @@ def _contract_binding(core: BrainCore, context: dict[str, Any]) -> tuple[dict[st
     return contract, "TURN_RUNTIME_CONTRACT_CURRENT"
 
 
+def _resolve_action_authorization(
+    core: BrainCore,
+    context: dict[str, Any],
+    contract: dict[str, Any],
+    intent: dict[str, Any],
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    """Project mutation authorization from the execution-contract authority.
+
+    ``BrainCore.context`` is deliberately a read-side projection and keeps
+    executable actions withheld.  A material memory/task-card write needs one
+    explicit authority read after current-tail mapping; otherwise activation
+    can silently disagree with the contract (the old hard-coded ``withheld``
+    defect).  Only bounded identity/hash fields are retained.
+    """
+
+    intent_kind = str(intent.get("kind", ""))
+    if intent_kind not in ACTION_AUTHORIZATION_REQUIRED_INTENTS:
+        return {
+            "required": False,
+            "state": "withheld",
+            "code": "H7_ACTION_AUTHORIZATION_NOT_REQUESTED",
+            "source": "not_requested",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
+    workspace_key = str(scope.get("workspaceKey", ""))
+    session_key = str(scope.get("ownerSessionKey", ""))
+    task_id = str(contract.get("taskId", ""))
+    task_instance_id = str(contract.get("taskInstanceId", ""))
+    try:
+        bounded_timeout = max(1.0, min(12.0, float(timeout)))
+    except (TypeError, ValueError):
+        bounded_timeout = 8.0
+    return_code, resolution = _invoke_contract(
+        core.package_root,
+        core.memory_base,
+        action="Resolve",
+        task_id=task_id,
+        workspace_key=workspace_key,
+        session_key=session_key,
+        timeout=bounded_timeout,
+    )
+    if return_code != 0 or not isinstance(resolution, dict) or resolution.get("ok") is not True:
+        return {
+            "required": True,
+            "state": "withheld",
+            "code": "H7_ACTION_AUTHORIZATION_RESOLVE_UNAVAILABLE",
+            "source": "execution_contract",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    authorization = str(resolution.get("actionAuthorization", "withheld"))
+    try:
+        resolved_revision = int(resolution.get("contractRevision", -1) or -1)
+    except (TypeError, ValueError):
+        resolved_revision = -1
+    try:
+        expected_revision = int(contract.get("revision", -2) or -2)
+    except (TypeError, ValueError):
+        expected_revision = -2
+    identity_matches = (
+        str(resolution.get("taskId", "")) == task_id
+        and str(resolution.get("taskInstanceId", "")) == task_instance_id
+        and str(resolution.get("workspaceKey", "")) == workspace_key
+        and resolved_revision == expected_revision
+    )
+    plan = contract.get("planReceipt") if isinstance(contract.get("planReceipt"), dict) else {}
+    expected_plan = str(plan.get("planFingerprint", ""))
+    plan_matches = not expected_plan or str(resolution.get("planFingerprint", "")) == expected_plan
+    allowed_claim = resolution.get("claimAllowed") is True and resolution.get("needsConfirmation") is False
+    if (
+        authorization not in {"allowed", "withheld"}
+        or str(resolution.get("resolutionSource", "")) != "execution_contract"
+        or not identity_matches
+        or not plan_matches
+        or (
+        authorization == "allowed" and not allowed_claim
+        )
+    ):
+        authorization = "withheld"
+        code = "H7_ACTION_AUTHORIZATION_RESOLVE_INVALID"
+    else:
+        code = "H7_ACTION_AUTHORIZATION_RESOLVED" if authorization == "allowed" else "H7_ACTION_AUTHORIZATION_WITHHELD"
+    safe_resolution = {
+        "schema": "super-brain.action-authorization-resolution.v1",
+        "required": True,
+        "state": authorization,
+        "code": code,
+        "source": "execution_contract",
+        "contractRevision": int(contract.get("revision", 0) or 0),
+        "resolutionHash": canonical_hash(
+            {
+                "actionAuthorization": authorization,
+                "claimAllowed": bool(resolution.get("claimAllowed") is True),
+                "needsConfirmation": bool(resolution.get("needsConfirmation") is True),
+                "taskId": task_id,
+                "taskInstanceId": task_instance_id,
+                "workspaceKey": workspace_key,
+                "contractRevision": int(contract.get("revision", 0) or 0),
+                "planFingerprint": expected_plan,
+            }
+        ),
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    return safe_resolution
+
+
 def _rebind_contract_to_current_host_session(
     core: BrainCore,
     contract: dict[str, Any],
@@ -1156,6 +1376,8 @@ def _activation(
     context: dict[str, Any],
     contract: dict[str, Any],
     memory_mode: str,
+    *,
+    action_authorization: str = "withheld",
 ) -> tuple[dict[str, Any], str, list[str]]:
     scope = context["scope"]
     typed_memory = context.get("typedMemory") if isinstance(context.get("typedMemory"), dict) else {}
@@ -1187,7 +1409,7 @@ def _activation(
         recovery_checkpoint_id=str(recovery.get("checkpointId") or recovery.get("id") or ""),
         recovery_state_hash=str(recovery.get("stateHash") or recovery.get("hash") or ""),
         return_point=contract.get("returnPoint") if isinstance(contract.get("returnPoint"), dict) else None,
-        action_authorization="withheld",
+        action_authorization=action_authorization,
         require_scope=True,
     )
     return receipt, code, refs
@@ -1269,7 +1491,9 @@ def _receipt_body(
     completion_evidence_hash: str = "",
     turn_intent: dict[str, Any] | None = None,
     progress_status: dict[str, Any] | None = None,
+    execution_assist: dict[str, Any] | None = None,
     capability_route_receipt: dict[str, Any] | None = None,
+    capability_route_compatibility: dict[str, Any] | None = None,
     visible_tail_assertion: dict[str, Any] | None = None,
     recovery_presentation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1353,8 +1577,12 @@ def _receipt_body(
         body["visibleTailAssertion"] = visible_tail_assertion
     if isinstance(recovery_presentation, dict):
         body["recoveryPresentation"] = _public_recovery_presentation(recovery_presentation)
+    if isinstance(execution_assist, dict):
+        body["executionAssist"] = execution_assist
     if isinstance(capability_route_receipt, dict):
         body["capabilityRouteReceipt"] = capability_route_receipt
+    if isinstance(capability_route_compatibility, dict):
+        body["capabilityRouteCompatibility"] = capability_route_compatibility
     if isinstance(continuation, dict):
         body["continuation"] = {
             "decision": str(continuation.get("decision", "")),
@@ -1429,6 +1657,24 @@ def _record_telemetry(memory_base: Path, scope_ref: str, receipt: dict[str, Any]
                 "capabilityRouteNonAuthorizing": capability_route_receipt.get("nonAuthorizing") is True,
             }
         )
+    execution_assist = receipt.get("executionAssist")
+    if execution_assist_receipt_is_valid(execution_assist):
+        event.update(
+            {
+                "executionAssistState": str(execution_assist.get("state", "")),
+                "executionAssistHash": str(execution_assist.get("payloadHash", "")),
+                "executionAssistAutomatic": execution_assist.get("automatic") is True,
+                "executionAssistNonAuthorizing": execution_assist.get("nonAuthorizing") is True,
+            }
+        )
+    compatibility = receipt.get("capabilityRouteCompatibility")
+    if _external_capability_route_compatibility_valid(compatibility):
+        event.update(
+            {
+                "capabilityRouteCompatibilityHash": str(compatibility.get("payloadHash", "")),
+                "capabilityRouteCompatibilityOnly": compatibility.get("cannotSelectCapabilities") is True,
+            }
+        )
     if events and isinstance(events[-1], dict) and events[-1].get("receiptHash") == event["receiptHash"]:
         return prior, True
     next_events = [item for item in events if isinstance(item, dict)][-(MAX_TELEMETRY_EVENTS - 1) :] + [event]
@@ -1467,6 +1713,10 @@ def _public_receipt(value: dict[str, Any]) -> dict[str, Any]:
     }
     if _capability_route_receipt_valid(value.get("capabilityRouteReceipt")):
         result["capabilityRouteReceipt"] = value["capabilityRouteReceipt"]
+    if execution_assist_receipt_is_valid(value.get("executionAssist")):
+        result["executionAssist"] = public_execution_assist(value["executionAssist"])
+    if _external_capability_route_compatibility_valid(value.get("capabilityRouteCompatibility")):
+        result["capabilityRouteCompatibility"] = value["capabilityRouteCompatibility"]
     return result
 
 
@@ -1508,6 +1758,12 @@ def _receipt_valid(
     capability_route_receipt = value.get("capabilityRouteReceipt")
     if capability_route_receipt is not None and not _capability_route_receipt_valid(capability_route_receipt):
         return False
+    execution_assist = value.get("executionAssist")
+    if not execution_assist_receipt_is_valid(execution_assist):
+        return False
+    compatibility = value.get("capabilityRouteCompatibility")
+    if compatibility is not None and not _external_capability_route_compatibility_valid(compatibility):
+        return False
     receipt_rules = value.get("coreRules") if isinstance(value.get("coreRules"), dict) else {}
     if (
         core_rules.get("status") != "current"
@@ -1534,6 +1790,7 @@ def _telemetry_valid(
     intent_hash: str = "",
     project_progress: dict[str, Any] | None = None,
     visible_progress: dict[str, Any] | None = None,
+    execution_assist: dict[str, Any] | None = None,
     capability_route_receipt: dict[str, Any] | None = None,
 ) -> bool:
     if not isinstance(value, dict):
@@ -1569,6 +1826,16 @@ def _telemetry_valid(
             and latest.get("capabilityRouteNonAuthorizing") is True
         )
     )
+    expected_execution_assist = execution_assist if execution_assist_receipt_is_valid(execution_assist) else None
+    execution_assist_current = (
+        expected_execution_assist is None
+        or (
+            str(latest.get("executionAssistState", "")) == str(expected_execution_assist.get("state", ""))
+            and str(latest.get("executionAssistHash", "")) == str(expected_execution_assist.get("payloadHash", ""))
+            and latest.get("executionAssistAutomatic") is True
+            and latest.get("executionAssistNonAuthorizing") is True
+        )
+    )
     return (
         str(value.get("payloadHash", "")) == expected
         and core_rules.get("status") == "current"
@@ -1577,6 +1844,7 @@ def _telemetry_valid(
         and (not intent_hash or str(latest.get("turnIntentHash", "")) == intent_hash)
         and progress_current
         and visible_current
+        and execution_assist_current
         and capability_route_current
     )
 
@@ -1841,10 +2109,12 @@ def open_turn(
     record_telemetry: bool = True,
     turn_intent: str = "direct",
     recovery_event: str = "none",
+    execution_assist_request: Any = None,
     capability_route_receipt: Any = None,
     visible_progress_assertion: Any = None,
     require_visible_tail_assertion: bool = True,
     user_control: str = "unknown",
+    execution_apply_phase: str = "planning",
     timeout: float = 8.0,
 ) -> dict[str, Any]:
     """Build one scope-bound memory/continuity packet and receipt.
@@ -1858,6 +2128,21 @@ def open_turn(
         return _withheld("open", {"turnIntent": public_turn_intent(intent)}, str(intent.get("code", "TURN_INTENT_INVALID")))
     if intent.get("governed") is not True:
         return _direct_host_path("open", intent)
+    execution_assist, normalized_capability_route_receipt, capability_route_compatibility, execution_assist_code = (
+        _resolve_execution_assist_for_turn(
+            core,
+            intent,
+            execution_assist_request,
+            capability_route_receipt,
+            apply_phase=execution_apply_phase,
+        )
+    )
+    if execution_assist is None or normalized_capability_route_receipt is None:
+        return _withheld(
+            "open",
+            {"turnIntent": public_turn_intent(intent)},
+            execution_assist_code or "H7_EXECUTION_ASSIST_UNAVAILABLE",
+        )
     normalized_recovery_event = str(recovery_event or "none")
     if normalized_recovery_event not in RECOVERY_EVENTS:
         return _withheld("open", {"turnIntent": public_turn_intent(intent)}, "H7_RECOVERY_EVENT_INVALID")
@@ -1869,16 +2154,6 @@ def open_turn(
         )
         if normalized_visible_tail_assertion is None:
             return _withheld("open", {"turnIntent": public_turn_intent(intent)}, visible_tail_assertion_code)
-    normalized_capability_route_receipt, capability_route_code = _normalize_capability_route_receipt(
-        capability_route_receipt
-    )
-    if capability_route_receipt is not None and normalized_capability_route_receipt is None:
-        return _withheld(
-            "open",
-            {"turnIntent": public_turn_intent(intent)},
-            capability_route_code or "H7_CAPABILITY_ROUTE_RECEIPT_INVALID",
-        )
-
     # Tail-first normal continuation -------------------------------------------------
     #
     # The newest visible assistant reply answers only "where do we resume?".
@@ -1969,6 +2244,11 @@ def open_turn(
         dict.fromkeys(
             ["control_plane_agent"]
             + [str(item) for item in (intent.get("ruleSignals") or ()) if str(item).strip()]
+            + (
+                ["four_quadrant", "native_capability"]
+                if str(execution_assist.get("state", "")) != "not_applicable"
+                else []
+            )
         )
     )
     context = core.context(
@@ -2023,6 +2303,9 @@ def open_turn(
             tail_first_mapping,
         )
     context["turnIntent"] = public_turn_intent(intent)
+    context["executionAssist"] = public_execution_assist(execution_assist)
+    if capability_route_compatibility is not None:
+        context["capabilityRouteCompatibility"] = capability_route_compatibility
     contract, contract_code = _contract_binding(core, context)
     if contract is None:
         return _withheld_tail_first_mapping(context, contract_code, tail_first_mapping)
@@ -2316,7 +2599,27 @@ def open_turn(
     if recovery_presentation is None:
         return _withheld("open", context, recovery_presentation_code)
     context["recoveryPresentation"] = recovery_presentation
-    activation, activation_code, refs = _activation(core, context, contract, effective_memory_mode)
+    contract_authorization = _resolve_action_authorization(
+        core,
+        context,
+        contract,
+        intent,
+        timeout=timeout,
+    )
+    if contract_authorization.get("required") is True:
+        context["contractAuthorization"] = contract_authorization
+        task_context = context.get("task") if isinstance(context.get("task"), dict) else {}
+        task_context["actionAuthorization"] = str(contract_authorization.get("state", "withheld"))
+        context["task"] = task_context
+        if contract_authorization.get("state") != "allowed":
+            return _withheld("open", context, str(contract_authorization.get("code", "H7_ACTION_AUTHORIZATION_WITHHELD")))
+    activation, activation_code, refs = _activation(
+        core,
+        context,
+        contract,
+        effective_memory_mode,
+        action_authorization=str(contract_authorization.get("state", "withheld")),
+    )
     binding = {
         "phase": "open",
         "scopeRef": str(context["scope"].get("scopeRef", "")),
@@ -2330,6 +2633,7 @@ def open_turn(
         "coreRuleEffectsHash": str((context.get("coreRules") or {}).get("activeEffectsHash", "")),
         "coreRuleApplicableHash": str((context.get("coreRules") or {}).get("applicableEffectsHash", "")),
         "turnIntentHash": str(intent.get("payloadHash", "")),
+        "executionAssistHash": str(execution_assist.get("payloadHash", "")),
         "projectProgressState": str(progress_status.get("state", "withheld")),
         "projectProgressHash": str(progress_status.get("payloadHash", "")),
         "visibleProgressState": str(visible_progress_status.get("state", "withheld")),
@@ -2344,6 +2648,9 @@ def open_turn(
         "recoveryPresentationHash": str(recovery_presentation.get("payloadHash", "")),
         "capabilityRouteHash": str((normalized_capability_route_receipt or {}).get("routeHash", "")),
         "capabilitySelectionHash": str((normalized_capability_route_receipt or {}).get("selectionHash", "")),
+        "capabilityRouteCompatibilityHash": str((capability_route_compatibility or {}).get("payloadHash", "")),
+        "actionAuthorization": str(contract_authorization.get("state", "withheld")),
+        "actionAuthorizationResolutionHash": str(contract_authorization.get("resolutionHash", "")),
     }
     body = _receipt_body(
         phase="open",
@@ -2355,7 +2662,9 @@ def open_turn(
         binding=binding,
         turn_intent=intent,
         progress_status=progress_status,
+        execution_assist=execution_assist,
         capability_route_receipt=normalized_capability_route_receipt,
+        capability_route_compatibility=capability_route_compatibility,
         visible_tail_assertion=public_visible_tail_assertion,
         recovery_presentation=recovery_presentation,
     )
@@ -2403,6 +2712,7 @@ def checkpoint_turn(
     transition_id: str = "",
     timeout: float = 8.0,
     turn_intent: str = "continuity",
+    execution_assist_request: Any = None,
     capability_route_receipt: Any = None,
 ) -> dict[str, Any]:
     """Persist one latest-assistant-progress checkpoint through H7 authority.
@@ -2429,7 +2739,9 @@ def checkpoint_turn(
         memory_mode=memory_mode,
         record_telemetry=False,
         turn_intent=turn_intent,
+        execution_assist_request=execution_assist_request,
         capability_route_receipt=capability_route_receipt,
+        execution_apply_phase="execution",
         require_visible_tail_assertion=False,
     )
     checkpoint_reconcile = False
@@ -2555,7 +2867,9 @@ def checkpoint_turn(
         memory_mode=memory_mode,
         record_telemetry=True,
         turn_intent=turn_intent,
+        execution_assist_request=execution_assist_request,
         capability_route_receipt=capability_route_receipt,
+        execution_apply_phase="execution",
         require_visible_tail_assertion=False,
     )
     if refreshed.get("available") is not True:
@@ -2622,6 +2936,7 @@ def close_turn(
     transition_id: str = "",
     timeout: float = 8.0,
     turn_intent: str = "direct",
+    execution_assist_request: Any = None,
     capability_route_receipt: Any = None,
     visible_progress_assertion: Any = None,
 ) -> dict[str, Any]:
@@ -2632,11 +2947,17 @@ def close_turn(
     if checkpoint_intent_code:
         return _withheld("close", {}, checkpoint_intent_code)
 
-    normalized_capability_route_receipt, capability_route_code = _normalize_capability_route_receipt(
-        capability_route_receipt
+    execution_assist, normalized_capability_route_receipt, capability_route_compatibility, execution_assist_code = (
+        _resolve_execution_assist_for_turn(
+            core,
+            close_intent,
+            execution_assist_request,
+            capability_route_receipt,
+            apply_phase="verification",
+        )
     )
-    if capability_route_receipt is not None and normalized_capability_route_receipt is None:
-        return _withheld("close", {}, capability_route_code or "H7_CAPABILITY_ROUTE_RECEIPT_INVALID")
+    if execution_assist is None or normalized_capability_route_receipt is None:
+        return _withheld("close", {}, execution_assist_code or "H7_EXECUTION_ASSIST_UNAVAILABLE")
     # An explicit close transition id belongs to the CloseTurn dispatcher.
     # Its optional progress checkpoint is a distinct Set transaction; sharing
     # the id would make an otherwise-safe Set look like a close replay.
@@ -2650,8 +2971,10 @@ def close_turn(
         memory_mode=memory_mode,
         record_telemetry=False,
         turn_intent=turn_intent,
+        execution_assist_request=execution_assist_request,
         capability_route_receipt=capability_route_receipt,
         visible_progress_assertion=visible_progress_assertion,
+        execution_apply_phase="verification",
     )
     entry_visible_tail_assertion = (
         opened.get("visibleTailAssertion")
@@ -2671,6 +2994,7 @@ def close_turn(
                 transition_id=checkpoint_transition_id,
                 timeout=timeout,
                 turn_intent=turn_intent,
+                execution_assist_request=execution_assist_request,
                 capability_route_receipt=capability_route_receipt,
             )
             if migrated.get("available") is not True:
@@ -2716,7 +3040,9 @@ def close_turn(
             memory_mode=memory_mode,
             record_telemetry=False,
             turn_intent=turn_intent,
+            execution_assist_request=execution_assist_request,
             capability_route_receipt=capability_route_receipt,
+            execution_apply_phase="verification",
             require_visible_tail_assertion=False,
         )
         if opened.get("available") is not True:
@@ -2748,7 +3074,9 @@ def close_turn(
         memory_mode=memory_mode,
         record_telemetry=False,
         turn_intent=turn_intent,
+        execution_assist_request=execution_assist_request,
         capability_route_receipt=capability_route_receipt,
+        execution_apply_phase="verification",
         require_visible_tail_assertion=False,
     )
     post_context = post_open.get("context") if isinstance(post_open.get("context"), dict) else context
@@ -2775,6 +3103,7 @@ def close_turn(
         "coreRuleEffectsHash": str((post_context.get("coreRules") or {}).get("activeEffectsHash", "")),
         "coreRuleApplicableHash": str((post_context.get("coreRules") or {}).get("applicableEffectsHash", "")),
         "turnIntentHash": str((post_context.get("turnIntent") or {}).get("payloadHash", "")),
+        "executionAssistHash": str(execution_assist.get("payloadHash", "")),
         "projectProgressState": str(post_progress_status.get("state", "withheld")),
         "projectProgressHash": str(post_progress_status.get("payloadHash", "")),
         "visibleProgressState": str(((post_context.get("task") or {}).get("visibleProgress") or {}).get("state", "withheld")),
@@ -2784,6 +3113,7 @@ def close_turn(
         "visibleTailHostMessageHash": str(entry_visible_tail_assertion.get("hostMessageHash", "")),
         "capabilityRouteHash": str((normalized_capability_route_receipt or {}).get("routeHash", "")),
         "capabilitySelectionHash": str((normalized_capability_route_receipt or {}).get("selectionHash", "")),
+        "capabilityRouteCompatibilityHash": str((capability_route_compatibility or {}).get("payloadHash", "")),
     }
     body = _receipt_body(
         phase="close",
@@ -2798,7 +3128,9 @@ def close_turn(
         completion_evidence_hash=evidence_hash,
         turn_intent=(post_context.get("turnIntent") if isinstance(post_context.get("turnIntent"), dict) else {}),
         progress_status=post_progress_status,
+        execution_assist=execution_assist,
         capability_route_receipt=normalized_capability_route_receipt,
+        capability_route_compatibility=capability_route_compatibility,
         visible_tail_assertion=entry_visible_tail_assertion,
     )
     scope_ref = str(post_context["scope"].get("scopeRef", ""))
@@ -2903,6 +3235,8 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
         visible_progress=visible_progress_status,
     )
     open_intent = (open_receipt or {}).get("turnIntent") if isinstance((open_receipt or {}).get("turnIntent"), dict) else {}
+    execution_assist_raw = (open_receipt or {}).get("executionAssist")
+    execution_assist = execution_assist_raw if execution_assist_receipt_is_valid(execution_assist_raw) else None
     route_receipt_raw = (open_receipt or {}).get("capabilityRouteReceipt")
     capability_route_receipt = route_receipt_raw if _capability_route_receipt_valid(route_receipt_raw) else None
     project_evidence_required = open_intent.get("projectEvidenceRequired") is True
@@ -2913,6 +3247,7 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
         intent_hash=str(open_intent.get("payloadHash", "")),
         project_progress=progress_status,
         visible_progress=visible_progress_status,
+        execution_assist=execution_assist,
         capability_route_receipt=capability_route_receipt,
     )
     memory = (open_receipt or {}).get("memory") if isinstance((open_receipt or {}).get("memory"), dict) else {}
@@ -2960,6 +3295,7 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
         },
         "visibleProgress": _visible_progress_truth(visible_progress_status),
         "turnIntent": _public_receipt(open_receipt).get("turnIntent", {}) if isinstance(open_receipt, dict) else {},
+        "executionAssist": public_execution_assist(execution_assist),
         "capabilityRouteReceipt": capability_route_receipt,
         "memoryInjection": {
             "snapshotPayloadHash": str(memory.get("snapshotPayloadHash", "")),
@@ -2991,6 +3327,7 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
             memory_mode=str(kwargs.get("memory_mode", "auto")),
             turn_intent=str(kwargs.get("turn_intent", kwargs.get("intent", "direct"))),
             recovery_event=str(kwargs.get("recovery_event", "none")),
+            execution_assist_request=kwargs.get("execution_assist_request"),
             capability_route_receipt=kwargs.get("capability_route_receipt"),
             visible_progress_assertion=kwargs.get("visible_progress_assertion"),
             user_control=str(kwargs.get("user_control", "unknown")),
@@ -3008,6 +3345,7 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
             transition_id=str(kwargs.get("transition_id", "")),
             timeout=float(kwargs.get("timeout", 8.0)),
             turn_intent=str(kwargs.get("turn_intent", kwargs.get("intent", "direct"))),
+            execution_assist_request=kwargs.get("execution_assist_request"),
             capability_route_receipt=kwargs.get("capability_route_receipt"),
             visible_progress_assertion=kwargs.get("visible_progress_assertion"),
         )
@@ -3021,6 +3359,7 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
             transition_id=str(kwargs.get("transition_id", "")),
             timeout=float(kwargs.get("timeout", 8.0)),
             turn_intent=str(kwargs.get("turn_intent", kwargs.get("intent", "continuity"))),
+            execution_assist_request=kwargs.get("execution_assist_request"),
             capability_route_receipt=kwargs.get("capability_route_receipt"),
         )
     if phase == "evidence":

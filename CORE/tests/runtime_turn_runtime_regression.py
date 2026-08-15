@@ -20,6 +20,7 @@ from brain_core import BrainCore
 from host_visible_tail import observe_visible_context_message, select_latest_assistant, select_latest_durable_assistant
 from turn_runtime import MODE, RECEIPT_SCHEMA, TELEMETRY_SCHEMA, run_turn
 import turn_close_dispatcher as turn_close_dispatcher
+import turn_runtime as turn_runtime
 
 
 VISIBLE_RECEIPT_HASH_BY_HOST_SESSION: dict[str, str] = {}
@@ -145,6 +146,26 @@ def native_capability_route_receipt(*, state: str = "ready") -> dict[str, object
         "sourcePathsOmitted": True,
     }
     return route_input
+
+
+def native_execution_assist_request(
+    *,
+    signals: list[str] | None = None,
+    clarification_required: bool = False,
+    shared_unknown: bool = False,
+) -> dict[str, object]:
+    """Compact semantic input only; user text and paths are intentionally absent."""
+
+    return {
+        "schema": "super-brain.execution-assist-request.v1",
+        "taskClass": "engineering",
+        "semanticSignals": signals or ["challenge_assumptions", "implementation"],
+        "materialUnknown": clarification_required,
+        "clarificationRequired": clarification_required,
+        "sharedUnknown": shared_unknown,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
 
 
 def visible_tail_assertion(
@@ -382,8 +403,11 @@ def test_open_is_idempotent_and_binds_typed_memory() -> None:
         assert first["context"]["task"]["lastConfirmedSource"] == "assistant_visible_reply"
         assert first["runtimeReceipt"]["memory"]["refs"] == ["card-turn-runtime-preference@3"]
         assert "coreRules" not in first["context"]["typedMemory"]
-        assert first["context"]["coreRules"]["applicableRuleIds"] == [
+        applicable_rules = first["context"]["coreRules"]["applicableRuleIds"]
+        assert applicable_rules == [
             "SB-PROJECT-GROUNDED-DESIGN-001",
+            "SB-ABILITY-ABSORPTION-001",
+            "SB-FOUR-QUADRANT-EXECUTION-001",
             "SB-PROGRESS-TRUTH-001",
             "SB-PROPOSAL-GATE-001",
             "SB-INDEPENDENT-CONTROL-PLANE-AGENT-001",
@@ -400,13 +424,13 @@ def test_open_is_idempotent_and_binds_typed_memory() -> None:
         assert first["context"]["authorityModel"]["hostAdapterAuthority"] == "entry_only_non_authorizing"
         assert first["runtimeReceipt"]["agentIdentity"] == first["context"]["agentIdentity"]
         assert first["runtimeReceipt"]["authorityModel"] == first["context"]["authorityModel"]
-        assert "capabilityRouteReceipt" not in first["runtimeReceipt"]
-        assert first["runtimeReceipt"]["coreRules"]["applicableRuleIds"] == [
-            "SB-PROJECT-GROUNDED-DESIGN-001",
-            "SB-PROGRESS-TRUTH-001",
-            "SB-PROPOSAL-GATE-001",
-            "SB-INDEPENDENT-CONTROL-PLANE-AGENT-001",
-        ]
+        execution_assist = first["runtimeReceipt"]["executionAssist"]
+        selection = first["runtimeReceipt"]["capabilityRouteReceipt"]
+        assert execution_assist["state"] == "ready", execution_assist
+        assert execution_assist["automatic"] is True and execution_assist["nonAuthorizing"] is True, execution_assist
+        assert selection["state"] == "ready", selection
+        assert selection["selectedNativeCapabilityIds"], selection
+        assert first["runtimeReceipt"]["coreRules"]["applicableRuleIds"] == applicable_rules
         progress_truth = first["runtimeReceipt"]["progressTruth"]
         assert progress_truth["state"] == "current"
         assert progress_truth["payloadHash"]
@@ -439,8 +463,82 @@ def test_open_is_idempotent_and_binds_typed_memory() -> None:
         assert "rawTranscriptStored\":true" not in serialized
 
 
+def test_memory_write_projects_exact_contract_authorization_and_fails_closed() -> None:
+    """A material write follows Resolve; generic context remains non-authorizing."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-memory-write-auth-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        host_root = Path(directory) / "host"
+        memory_root.mkdir(parents=True)
+        host_root.mkdir()
+        (memory_root / "sandglass.txt").write_text("", encoding="utf-8")
+        session_key = "sid-" + "d" * 24
+        task_id = "task-memory-write-authorization"
+        write_native_memory_snapshot(state_root / "workspace")
+        write_context_contract(state_root, host_root, session_key, task_id=task_id)
+        workspace_key = host_workspace_key(host_root)
+        core = BrainCore(ROOT, memory_root)
+        original = turn_runtime._invoke_contract
+
+        def resolve_allowed(*_args: object, action: str, **_kwargs: object) -> tuple[int, dict[str, object] | None]:
+            assert action == "Resolve"
+            return 0, {
+                "ok": True,
+                "resolutionSource": "execution_contract",
+                "actionAuthorization": "allowed",
+                "claimAllowed": True,
+                "needsConfirmation": False,
+                "taskId": task_id,
+                "taskInstanceId": "ti-" + "1" * 32,
+                "workspaceKey": workspace_key,
+                "contractRevision": 7,
+                "planFingerprint": "fixture-plan-7",
+            }
+
+        turn_runtime._invoke_contract = resolve_allowed
+        try:
+            with with_host_scope(host_root, session_key):
+                allowed = run_turn(core, phase="open", turn_intent="memory_write")
+        finally:
+            turn_runtime._invoke_contract = original
+
+        assert allowed["available"] is True, allowed
+        assert allowed["activation"]["actionAuthorization"] == "allowed", allowed
+        assert allowed["context"]["task"]["actionAuthorization"] == "allowed", allowed
+        authorization = allowed["context"]["contractAuthorization"]
+        assert authorization["state"] == "allowed" and authorization["source"] == "execution_contract", authorization
+        assert authorization["resolutionHash"], authorization
+
+        def resolve_withheld(*_args: object, action: str, **_kwargs: object) -> tuple[int, dict[str, object] | None]:
+            assert action == "Resolve"
+            return 0, {
+                "ok": True,
+                "resolutionSource": "execution_contract",
+                "actionAuthorization": "withheld",
+                "claimAllowed": False,
+                "needsConfirmation": True,
+                "taskId": task_id,
+                "taskInstanceId": "ti-" + "1" * 32,
+                "workspaceKey": workspace_key,
+                "contractRevision": 7,
+                "planFingerprint": "fixture-plan-7",
+            }
+
+        turn_runtime._invoke_contract = resolve_withheld
+        try:
+            with with_host_scope(host_root, session_key):
+                withheld = run_turn(core, phase="open", turn_intent="memory_write")
+        finally:
+            turn_runtime._invoke_contract = original
+
+        assert withheld["available"] is False, withheld
+        assert withheld["code"] == "H7_ACTION_AUTHORIZATION_WITHHELD", withheld
+        assert withheld["context"]["contractAuthorization"]["state"] == "withheld", withheld
+
+
 def test_native_capability_route_receipt_is_h7_bound_without_authorization() -> None:
-    """H7 binds only the router's safe native-capability proof and its hashes."""
+    """Legacy router input is retained only as compatibility evidence."""
 
     with tempfile.TemporaryDirectory(prefix="super-brain-native-capability-route-") as directory:
         state_root = Path(directory) / "state"
@@ -467,13 +565,14 @@ def test_native_capability_route_receipt_is_h7_bound_without_authorization() -> 
         assert opened["available"] is True, opened
         selection = opened["runtimeReceipt"]["capabilityRouteReceipt"]
         assert selection["state"] == "ready", selection
-        assert selection["selectedNativeCapabilityIds"] == ["sb.native.engineering.diagnosing-bugs.v1"], selection
-        assert selection["nativeContractIds"] == ["sb.native.engineering.diagnosing-bugs.contract.v1"], selection
-        assert selection["provenanceHashes"][0]["provenanceHash"] == "a" * 64, selection
-        assert selection["parityHashes"][0]["parityHash"] == "b" * 64, selection
-        assert selection["selectionHash"] == canonical_hash(route_receipt), selection
+        assert "sb.native.mattpocock.codebase-design.v1" in selection["selectedNativeCapabilityIds"], selection
+        assert selection["routeHash"] != route_receipt["routeHash"], selection
         assert selection["nonAuthorizing"] is True, selection
         assert "actionAuthorization" not in selection, selection
+        compatibility = opened["runtimeReceipt"]["capabilityRouteCompatibility"]
+        assert compatibility["state"] == "accepted_compatibility_only", compatibility
+        assert compatibility["externalRouteHash"] == route_receipt["routeHash"], compatibility
+        assert compatibility["cannotSelectCapabilities"] is True, compatibility
         assert opened["runtimeReceipt"]["activation"]["actionAuthorization"] == "withheld", opened
         assert evidence["code"] == "H7_EVIDENCE_CURRENT", evidence
         assert evidence["capabilityRouteReceipt"] == selection, evidence
@@ -484,10 +583,13 @@ def test_native_capability_route_receipt_is_h7_bound_without_authorization() -> 
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         telemetry = json.loads(telemetry_path.read_text(encoding="utf-8"))
         assert receipt["capabilityRouteReceipt"] == selection, receipt
+        assert receipt["capabilityRouteCompatibility"] == compatibility, receipt
         latest = telemetry["events"][-1]
-        assert latest["capabilityRouteHash"] == route_receipt["routeHash"], latest
+        assert latest["capabilityRouteHash"] == selection["routeHash"], latest
         assert latest["capabilitySelectionHash"] == selection["selectionHash"], latest
         assert latest["capabilityRouteNonAuthorizing"] is True, latest
+        assert latest["capabilityRouteCompatibilityHash"] == compatibility["payloadHash"], latest
+        assert latest["capabilityRouteCompatibilityOnly"] is True, latest
         serialized = json.dumps({"receipt": receipt, "telemetry": telemetry}, ensure_ascii=False)
         assert '"sourcePath":' not in serialized
         assert '"upstreamPath":' not in serialized
@@ -554,8 +656,10 @@ def test_h7_accepts_the_actual_compact_router_receipt() -> None:
 
         assert opened["available"] is True, opened
         selection = opened["runtimeReceipt"]["capabilityRouteReceipt"]
-        assert selection["selectionHash"] == canonical_hash(route_receipt), selection
-        assert selection["parityHashes"] == route_receipt["parityHashes"], selection
+        compatibility = opened["runtimeReceipt"]["capabilityRouteCompatibility"]
+        assert selection["routeHash"] != route_receipt["routeHash"], selection
+        assert compatibility["externalRouteHash"] == route_receipt["routeHash"], compatibility
+        assert compatibility["externalSelectionHash"] == canonical_hash(route_receipt), compatibility
         assert evidence["code"] == "H7_EVIDENCE_CURRENT", evidence
         serialized = json.dumps({"selection": selection, "evidence": evidence}, ensure_ascii=False)
         assert router_query not in serialized
@@ -595,6 +699,83 @@ def test_capability_route_receipt_rejects_paths_prompts_and_authorization() -> N
                 )
             assert result["available"] is False, result
             assert result["code"] == "H7_CAPABILITY_ROUTE_RECEIPT_FIELDS_INVALID", result
+            assert not (state_root / "workspace" / "runtime-state" / "turn-runtime").exists(), result
+
+
+def test_direct_execution_assist_is_h7_native_and_private() -> None:
+    """A compact semantic request activates one H7-owned native procedure."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-native-execution-assist-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        host_root = Path(directory) / "host"
+        memory_root.mkdir(parents=True)
+        host_root.mkdir()
+        (memory_root / "sandglass.txt").write_text("", encoding="utf-8")
+        session_key = "sid-" + "9" * 24
+        write_native_memory_snapshot(state_root / "workspace")
+        write_context_contract(state_root, host_root, session_key, task_id="task-native-execution-assist")
+        core = BrainCore(ROOT, memory_root)
+
+        with with_host_scope(host_root, session_key):
+            opened = run_turn(
+                core,
+                phase="open",
+                turn_intent="direct",
+                execution_assist_request=native_execution_assist_request(),
+            )
+            evidence = run_turn(core, phase="evidence")
+
+        assert opened["available"] is True, opened
+        assist = opened["runtimeReceipt"]["executionAssist"]
+        route = opened["runtimeReceipt"]["capabilityRouteReceipt"]
+        assert assist["state"] == "ready", assist
+        assert assist["selectedNativeCapabilityIds"] == ["sb.native.mattpocock.grill-me.v1"], assist
+        assert assist["capabilityApplyPhase"] == "planning", assist
+        assert assist["activeNativeCapabilityIds"] == ["sb.native.mattpocock.grill-me.v1"], assist
+        assert assist["deferredNativeCapabilityIds"] == [], assist
+        assert assist["automatic"] is True and assist["nonAuthorizing"] is True, assist
+        assert route["selectedNativeCapabilityIds"] == assist["selectedNativeCapabilityIds"], route
+        assert "SB-FOUR-QUADRANT-EXECUTION-001" in opened["context"]["coreRules"]["applicableRuleIds"], opened
+        assert "SB-ABILITY-ABSORPTION-001" in opened["context"]["coreRules"]["applicableRuleIds"], opened
+        assert evidence["code"] == "H7_EVIDENCE_CURRENT", evidence
+        assert evidence["executionAssist"] == assist, evidence
+        serialized = json.dumps({"opened": opened, "evidence": evidence}, ensure_ascii=False)
+        assert '"sourcePath"' not in serialized and '"rawPrompt"' not in serialized
+        assert '"rawTranscript"' not in serialized and str(host_root) not in serialized
+
+
+def test_execution_assist_request_rejects_raw_fields_without_runtime_write() -> None:
+    """H7 rejects accidental prompt/path transport before creating a receipt."""
+
+    for field, value in {
+        "rawPrompt": "must never reach H7",
+        "rawTranscript": "must never reach H7",
+        "sourcePath": "C:\\private\\source",
+        "query": "must never reach H7",
+    }.items():
+        with tempfile.TemporaryDirectory(prefix="super-brain-execution-assist-reject-") as directory:
+            state_root = Path(directory) / "state"
+            memory_root = state_root / "shared"
+            host_root = Path(directory) / "host"
+            memory_root.mkdir(parents=True)
+            host_root.mkdir()
+            (memory_root / "sandglass.txt").write_text("", encoding="utf-8")
+            session_key = "sid-" + "a" * 24
+            write_native_memory_snapshot(state_root / "workspace")
+            write_context_contract(state_root, host_root, session_key, task_id=f"task-execution-assist-{field.lower()}")
+            request = native_execution_assist_request()
+            request[field] = value
+            core = BrainCore(ROOT, memory_root)
+            with with_host_scope(host_root, session_key):
+                result = run_turn(
+                    core,
+                    phase="open",
+                    turn_intent="direct",
+                    execution_assist_request=request,
+                )
+            assert result["available"] is False, result
+            assert result["code"] == "H7_EXECUTION_ASSIST_REQUEST_FIELDS_INVALID", result
             assert not (state_root / "workspace" / "runtime-state" / "turn-runtime").exists(), result
 
 
@@ -3054,6 +3235,7 @@ def test_mcp_checkpoint_recovers_latest_progress_after_visible_state_change() ->
             "nextAction": progress["next_action"],
         }
         route_receipt = native_capability_route_receipt()
+        execution_assist_request = native_execution_assist_request()
         tail_assertion = visible_tail_assertion(
             host_thread_id=thread_id,
             sentence=progress["last_confirmed_sentence"],
@@ -3087,6 +3269,7 @@ def test_mcp_checkpoint_recovers_latest_progress_after_visible_state_change() ->
                                 "turn_intent": "continuity",
                                 "progress_checkpoint": progress,
                                 "project_progress_proof": project_proof,
+                                "execution_assist_request": execution_assist_request,
                                 "capability_route_receipt": route_receipt,
                             },
                             "_meta": metadata,
@@ -3103,6 +3286,7 @@ def test_mcp_checkpoint_recovers_latest_progress_after_visible_state_change() ->
                             "arguments": {
                                 "phase": "open",
                                 "turn_intent": "continuity",
+                                "execution_assist_request": execution_assist_request,
                                 "capability_route_receipt": route_receipt,
                                 "visible_progress_assertion": tail_assertion,
                             },
@@ -3120,6 +3304,7 @@ def test_mcp_checkpoint_recovers_latest_progress_after_visible_state_change() ->
                             "arguments": {
                                 "phase": "open",
                                 "turn_intent": "continuity",
+                                "execution_assist_request": execution_assist_request,
                                 "capability_route_receipt": route_receipt,
                                 "visible_progress_assertion": normal_tail_assertion,
                             },
@@ -3160,6 +3345,7 @@ def test_mcp_checkpoint_recovers_latest_progress_after_visible_state_change() ->
         ], turn_tool
         assert set(turn_tool["inputSchema"]["properties"]["progress_checkpoint"]["required"]) == set(progress), turn_tool
         assert "project_progress_proof" in turn_tool["inputSchema"]["properties"], turn_tool
+        assert "execution_assist_request" in turn_tool["inputSchema"]["properties"], turn_tool
         assert "capability_route_receipt" in turn_tool["inputSchema"]["properties"], turn_tool
         assert set(turn_tool["inputSchema"]["properties"]["visible_progress_assertion"]["required"]) == {
             "schema", "observation_source", "host_thread_id", "host_turn_id", "host_message_id",
@@ -3209,6 +3395,7 @@ def test_mcp_checkpoint_recovers_latest_progress_after_visible_state_change() ->
                             "name": "brain_turn",
                             "arguments": {
                                 "phase": "open", "turn_intent": "continuity",
+                                "execution_assist_request": execution_assist_request,
                                 "capability_route_receipt": route_receipt,
                                 "visible_progress_assertion": v4_tail_assertion,
                             },
@@ -3222,6 +3409,7 @@ def test_mcp_checkpoint_recovers_latest_progress_after_visible_state_change() ->
                             "name": "brain_turn",
                             "arguments": {
                                 "phase": "open", "turn_intent": "continuity",
+                                "execution_assist_request": execution_assist_request,
                                 "capability_route_receipt": route_receipt,
                                 "visible_progress_assertion": v4_normal_tail_assertion,
                             },
@@ -3255,8 +3443,15 @@ def test_mcp_checkpoint_recovers_latest_progress_after_visible_state_change() ->
         assert normal_recovered["available"] is True, normal_recovered
         assert normal_recovered["visibleTailAssertion"]["selection"] == "current_visible_assistant", normal_recovered
         assert normal_recovered["autoVisibleTailFinalization"] == {}, normal_recovered
-        assert checkpointed["runtimeReceipt"]["capabilityRouteReceipt"]["routeHash"] == route_receipt["routeHash"], checkpointed
-        assert recovered["runtimeReceipt"]["capabilityRouteReceipt"]["selectionHash"] == canonical_hash(route_receipt), recovered
+        assert checkpointed["runtimeReceipt"]["executionAssist"]["selectedNativeCapabilityIds"] == ["sb.native.mattpocock.grill-me.v1"], checkpointed
+        assert checkpointed["runtimeReceipt"]["executionAssist"]["capabilityApplyPhase"] == "execution", checkpointed
+        assert checkpointed["runtimeReceipt"]["executionAssist"]["activeNativeCapabilityIds"] == [], checkpointed
+        assert checkpointed["runtimeReceipt"]["executionAssist"]["deferredNativeCapabilityIds"] == ["sb.native.mattpocock.grill-me.v1"], checkpointed
+        assert recovered["runtimeReceipt"]["executionAssist"]["state"] == "ready", recovered
+        assert checkpointed["runtimeReceipt"]["capabilityRouteReceipt"]["state"] == "ready", checkpointed
+        assert recovered["runtimeReceipt"]["capabilityRouteReceipt"]["state"] == "ready", recovered
+        assert checkpointed["runtimeReceipt"]["capabilityRouteCompatibility"]["externalRouteHash"] == route_receipt["routeHash"], checkpointed
+        assert recovered["runtimeReceipt"]["capabilityRouteCompatibility"]["externalSelectionHash"] == canonical_hash(route_receipt), recovered
         serialized = json.dumps({"checkpointed": checkpointed, "recovered": recovered}, ensure_ascii=False)
         assert thread_id not in serialized
         assert str(host_root) not in serialized
@@ -3314,6 +3509,10 @@ def test_cli_utf8_checkpoint_fallback_preserves_h7_authority() -> None:
         encoded_route_receipt = base64.b64encode(
             json.dumps(route_receipt, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).decode("ascii")
+        execution_assist_request = native_execution_assist_request()
+        encoded_execution_assist_request = base64.b64encode(
+            json.dumps(execution_assist_request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
         environment = os.environ.copy()
         environment["CODEX_THREAD_ID"] = session_key
         completed = subprocess.run(
@@ -3325,6 +3524,8 @@ def test_cli_utf8_checkpoint_fallback_preserves_h7_authority() -> None:
                 str(ROOT),
                 "--memory-root",
                 str(memory_root),
+                "--workspace-root",
+                str(host_root),
                 "turn-runtime",
                 "--phase",
                 "checkpoint",
@@ -3334,10 +3535,12 @@ def test_cli_utf8_checkpoint_fallback_preserves_h7_authority() -> None:
                 encoded,
                 "--project-progress-proof-base64",
                 encoded_project_proof,
+                "--execution-assist-request-base64",
+                encoded_execution_assist_request,
                 "--capability-route-receipt-base64",
                 encoded_route_receipt,
             ],
-            cwd=str(host_root),
+            cwd=str(ROOT),
             env=environment,
             capture_output=True,
             text=True,
@@ -3351,7 +3554,9 @@ def test_cli_utf8_checkpoint_fallback_preserves_h7_authority() -> None:
         assert checkpointed["code"] == "H7_VISIBLE_PROGRESS_RECEIPT_RECONCILED_READY", checkpointed
         assert checkpointed["context"]["task"]["lastConfirmedSentence"] == progress["last_confirmed_sentence"], checkpointed
         assert checkpointed["context"]["task"]["currentStep"] == progress["current_step"], checkpointed
-        assert checkpointed["runtimeReceipt"]["capabilityRouteReceipt"]["routeHash"] == route_receipt["routeHash"], checkpointed
+        assert checkpointed["runtimeReceipt"]["executionAssist"]["selectedNativeCapabilityIds"] == ["sb.native.mattpocock.grill-me.v1"], checkpointed
+        assert checkpointed["runtimeReceipt"]["capabilityRouteReceipt"]["state"] == "ready", checkpointed
+        assert checkpointed["runtimeReceipt"]["capabilityRouteCompatibility"]["externalRouteHash"] == route_receipt["routeHash"], checkpointed
         restart_assertion = visible_tail_assertion(
             host_thread_id=session_key,
             sentence=progress["last_confirmed_sentence"],
@@ -3373,6 +3578,8 @@ def test_cli_utf8_checkpoint_fallback_preserves_h7_authority() -> None:
                 str(ROOT),
                 "--memory-root",
                 str(memory_root),
+                "--workspace-root",
+                str(host_root),
                 "turn-runtime",
                 "--phase",
                 "open",
@@ -3380,10 +3587,12 @@ def test_cli_utf8_checkpoint_fallback_preserves_h7_authority() -> None:
                 "continuity",
                 "--recovery-event",
                 "restart",
+                "--execution-assist-request-base64",
+                encoded_execution_assist_request,
                 "--visible-progress-assertion-base64",
                 encoded_restart_assertion,
             ],
-            cwd=str(host_root),
+            cwd=str(ROOT),
             env=environment,
             capture_output=True,
             text=True,
@@ -3408,11 +3617,13 @@ def test_cli_utf8_checkpoint_fallback_preserves_h7_authority() -> None:
                 str(ROOT),
                 "--memory-root",
                 str(memory_root),
+                "--workspace-root",
+                str(host_root),
                 "turn-runtime",
                 "--phase",
                 "evidence",
             ],
-            cwd=str(host_root),
+            cwd=str(ROOT),
             env=environment,
             capture_output=True,
             text=True,
@@ -3757,8 +3968,11 @@ def test_checkpoint_set_replay_is_never_misreported_as_a_parent_return() -> None
 
 def main() -> int:
     test_open_is_idempotent_and_binds_typed_memory()
+    test_memory_write_projects_exact_contract_authorization_and_fails_closed()
     test_native_capability_route_receipt_is_h7_bound_without_authorization()
     test_capability_route_receipt_rejects_paths_prompts_and_authorization()
+    test_direct_execution_assist_is_h7_native_and_private()
+    test_execution_assist_request_rejects_raw_fields_without_runtime_write()
     test_capability_route_hash_mismatch_withholds_h7_evidence()
     test_h7_accepts_the_actual_compact_router_receipt()
     test_project_progress_proof_fails_closed_on_missing_or_drift()
@@ -3797,7 +4011,7 @@ def main() -> int:
     test_checkpoint_retries_one_unacknowledged_transport_with_same_transition_id_and_timeout_floor()
     test_checkpoint_does_not_retry_a_rejected_cas_transaction()
     test_checkpoint_set_replay_is_never_misreported_as_a_parent_return()
-    print("runtime turn-runtime regression: passed (37/37)")
+    print("runtime turn-runtime regression: passed (38/38)")
     return 0
 
 

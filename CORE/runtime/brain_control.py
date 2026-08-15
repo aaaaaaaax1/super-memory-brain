@@ -28,7 +28,7 @@ from migration_control import LegacyMigrationControl, MigrationControlError
 from memory_consolidation import plan as plan_memory_consolidation
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 CARD_KINDS = frozenset({"decision", "preference", "experience", "note", "procedure", "reflection"})
 LIFECYCLES = frozenset({"proposed", "active", "superseded", "cancelled", "rejected", "archived", "trashed", "forgotten"})
 AUTHORITIES = frozenset({"user_confirmed", "system", "legacy", "unknown"})
@@ -192,19 +192,21 @@ TASK_CARD_UI_STATUS_LABELS = {
 TASK_CARD_RETENTION_LABELS = {
     "visible": "任务记录",
     "trashed": "回收站",
-    "cleanup_preview": "待整理",
+    "sealed": "已离开管理界面",
+    "evidence_only": "仅保留完成证据",
 }
-TASK_RETENTION_SETTINGS_SCHEMA = "super-brain.task-retention-settings.v1"
-TASK_RETENTION_RECEIPT_SCHEMA = "super-brain.task-retention-receipt.v1"
-TASK_RETENTION_PREVIEW_SCHEMA = "super-brain.task-retention-preview.v1"
+TASK_RETENTION_SETTINGS_SCHEMA = "super-brain.task-retention-settings.v2"
+TASK_RETENTION_RECEIPT_SCHEMA = "super-brain.task-retention-receipt.v2"
+TASK_RETENTION_PREVIEW_SCHEMA = "super-brain.task-retention-preview.v2"
 TASK_TIMELINE_SCHEMA = "super-brain.ui-memory-timeline.v1"
 TASK_HISTORY_SCHEMA = "super-brain.ui-task-history.v1"
 MEMORY_STARMAP_SCHEMA = "super-brain.ui-memory-starmap.v1"
 MEMORY_STARMAP_MAX_MEMORY_NODES = 160
 MEMORY_STARMAP_MAX_TASK_NODES = 24
 MEMORY_STARMAP_MAX_EDGES = 480
-TASK_RETENTION_DEFAULT_COMPLETED_DAYS = 15
-TASK_RETENTION_DEFAULT_TRASH_DAYS = 30
+TASK_RETENTION_DEFAULT_COMPLETED_DAYS = 7
+TASK_RETENTION_DEFAULT_TRASH_DAYS = 15
+TASK_RETENTION_COMPACT_EVIDENCE_DAYS = 30
 TASK_RETENTION_MAX_DAYS = 3650
 INSTRUCTION_ANCHOR_SCHEMA = "super-brain.instruction-anchor.v1"
 INSTRUCTION_ANCHOR_MAX_CHARS = 480
@@ -878,7 +880,8 @@ def _normalize_mcp_task_projection(value: Any) -> dict[str, Any] | None:
     lifecycle = value.get("lifecycle")
     if lifecycle not in TASK_LIFECYCLES:
         return None
-    if value.get("actionAuthorization") != "withheld":
+    action_authorization = value.get("actionAuthorization")
+    if action_authorization not in {"allowed", "withheld"}:
         return None
     if value.get("rawPromptStored") is not False or value.get("rawTranscriptStored") is not False:
         return None
@@ -921,7 +924,9 @@ def _normalize_mcp_task_projection(value: Any) -> dict[str, Any] | None:
         **texts,
         **lists,
         "updatedAt": updated_at,
-        "actionAuthorization": "withheld",
+        # The MCP snapshot is display-only.  Preserve the H7-projected state
+        # for observability, but readers still cannot execute from it.
+        "actionAuthorization": action_authorization,
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
@@ -2212,6 +2217,102 @@ class BrainControl:
             connection.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", (16, _utc_now())
             )
+        if 17 not in applied:
+            # Task cards are temporary operational state, while compact
+            # completion evidence is durable audit context.  SQLite cannot
+            # widen the old CHECK constraints in place, so migrate both
+            # retention tables atomically and preserve every existing receipt.
+            connection.executescript(
+                """
+                DROP TRIGGER IF EXISTS ui_task_retention_receipts_no_update;
+                DROP TRIGGER IF EXISTS ui_task_retention_receipts_no_delete;
+                DROP INDEX IF EXISTS idx_ui_task_retention_state;
+                DROP INDEX IF EXISTS idx_ui_task_retention_receipts_task;
+                ALTER TABLE ui_task_card_retention RENAME TO ui_task_card_retention_v1;
+                ALTER TABLE ui_task_retention_receipts RENAME TO ui_task_retention_receipts_v1;
+
+                CREATE TABLE ui_task_card_retention (
+                  task_key TEXT PRIMARY KEY,
+                  aggregate_id TEXT NOT NULL,
+                  workspace_key TEXT NOT NULL,
+                  owner_session_key TEXT NOT NULL,
+                  task_revision INTEGER NOT NULL,
+                  state_hash TEXT NOT NULL,
+                  retention_state TEXT NOT NULL CHECK(retention_state IN ('visible','trashed','sealed','evidence_only')),
+                  effective_completed_at TEXT NOT NULL,
+                  state_changed_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                INSERT INTO ui_task_card_retention(
+                  task_key,aggregate_id,workspace_key,owner_session_key,task_revision,state_hash,
+                  retention_state,effective_completed_at,state_changed_at,updated_at
+                )
+                SELECT task_key,aggregate_id,workspace_key,owner_session_key,task_revision,state_hash,
+                  CASE retention_state WHEN 'cleanup_preview' THEN 'sealed' ELSE retention_state END,
+                  effective_completed_at,state_changed_at,updated_at
+                FROM ui_task_card_retention_v1;
+
+                CREATE TABLE ui_task_retention_receipts (
+                  receipt_id TEXT PRIMARY KEY,
+                  task_key TEXT NOT NULL,
+                  aggregate_id TEXT NOT NULL,
+                  task_revision INTEGER NOT NULL,
+                  state_hash TEXT NOT NULL,
+                  action TEXT NOT NULL CHECK(action IN ('settings_updated','moved_to_trash','sealed_after_trash','compacted_to_evidence','restored','reopened')),
+                  from_state TEXT NOT NULL,
+                  to_state TEXT NOT NULL,
+                  effective_completed_at TEXT NOT NULL,
+                  settings_json TEXT NOT NULL,
+                  actor_receipt TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                );
+                INSERT INTO ui_task_retention_receipts(
+                  receipt_id,task_key,aggregate_id,task_revision,state_hash,action,from_state,to_state,
+                  effective_completed_at,settings_json,actor_receipt,created_at
+                )
+                SELECT receipt_id,task_key,aggregate_id,task_revision,state_hash,
+                  CASE action WHEN 'marked_for_cleanup' THEN 'sealed_after_trash' ELSE action END,
+                  CASE from_state WHEN 'cleanup_preview' THEN 'sealed' ELSE from_state END,
+                  CASE to_state WHEN 'cleanup_preview' THEN 'sealed' ELSE to_state END,
+                  effective_completed_at,settings_json,actor_receipt,created_at
+                FROM ui_task_retention_receipts_v1;
+
+                CREATE TABLE ui_task_completion_evidence (
+                  task_key TEXT PRIMARY KEY,
+                  workspace_key TEXT NOT NULL,
+                  task_revision INTEGER NOT NULL,
+                  state_hash TEXT NOT NULL,
+                  effective_completed_at TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  payload_hash TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                );
+                CREATE INDEX idx_ui_task_retention_state
+                  ON ui_task_card_retention(retention_state, updated_at DESC);
+                CREATE INDEX idx_ui_task_retention_receipts_task
+                  ON ui_task_retention_receipts(task_key, created_at DESC);
+                CREATE INDEX idx_ui_task_completion_evidence_workspace
+                  ON ui_task_completion_evidence(workspace_key, effective_completed_at DESC);
+                CREATE TRIGGER ui_task_retention_receipts_no_update
+                  BEFORE UPDATE ON ui_task_retention_receipts
+                  BEGIN SELECT RAISE(ABORT, 'task retention receipts are immutable'); END;
+                CREATE TRIGGER ui_task_retention_receipts_no_delete
+                  BEFORE DELETE ON ui_task_retention_receipts
+                  BEGIN SELECT RAISE(ABORT, 'task retention receipts are immutable'); END;
+                CREATE TRIGGER ui_task_completion_evidence_no_update
+                  BEFORE UPDATE ON ui_task_completion_evidence
+                  BEGIN SELECT RAISE(ABORT, 'task completion evidence is immutable'); END;
+                CREATE TRIGGER ui_task_completion_evidence_no_delete
+                  BEFORE DELETE ON ui_task_completion_evidence
+                  BEGIN SELECT RAISE(ABORT, 'task completion evidence is immutable'); END;
+
+                DROP TABLE ui_task_card_retention_v1;
+                DROP TABLE ui_task_retention_receipts_v1;
+                """
+            )
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", (17, _utc_now())
+            )
 
     @staticmethod
     def _write_card_search_row(
@@ -2930,7 +3031,11 @@ class BrainControl:
                     "evidenceRefs": _mcp_projection_list(state.get("evidence", [])),
                     "verificationResults": _mcp_projection_list(state.get("verificationResults", [])),
                     "updatedAt": _mcp_projection_text(row["updated_at"], 48),
-                    "actionAuthorization": "withheld",
+                    # This is a non-authorizing status projection; keeping an
+                    # allowed H7 state here never grants execution to MCP.
+                    "actionAuthorization": str(state.get("actionAuthorization", "withheld"))
+                    if str(state.get("actionAuthorization", "withheld")) in {"allowed", "withheld"}
+                    else "withheld",
                     "rawPromptStored": False,
                     "rawTranscriptStored": False,
                 }
@@ -8167,6 +8272,8 @@ class BrainControl:
                     "nextAction": self._task_ui_plan_label(_optional_string(state.get("nextAction"), "taskHistory.nextAction", 240)),
                     "completedSteps": self._task_card_ui_list(state.get("completedSteps")),
                     "pendingSteps": self._task_card_ui_list(state.get("pendingSteps")),
+                    "verificationResults": self._task_card_ui_list(state.get("verificationResults")),
+                    "evidence": self._task_card_ui_list(state.get("evidence")),
                     "completedAt": self._task_completed_at(state),
                     "updatedAt": str(row["updated_at"]),
                     "eligibleForRetention": lifecycle == "completed" and bool(self._task_completed_at(state)),
@@ -8191,13 +8298,57 @@ class BrainControl:
             return {
                 "completedDays": TASK_RETENTION_DEFAULT_COMPLETED_DAYS,
                 "trashDays": TASK_RETENTION_DEFAULT_TRASH_DAYS,
+                "compactEvidenceDays": TASK_RETENTION_COMPACT_EVIDENCE_DAYS,
                 "revision": 1,
                 "updatedAt": now,
             }
+        completed_days = int(row["completed_days"])
+        trash_days = int(row["trash_days"])
+        revision = int(row["revision"])
+        # Migrate only the untouched historical default.  Any later user
+        # choice has a newer revision and remains authoritative.
+        if (completed_days, trash_days, revision) == (15, 30, 1):
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE ui_task_retention_settings
+                SET completed_days=?,trash_days=?,revision=?,updated_at=? WHERE settings_key='default'
+                """,
+                (TASK_RETENTION_DEFAULT_COMPLETED_DAYS, TASK_RETENTION_DEFAULT_TRASH_DAYS, 2, now),
+            )
+            return {
+                "completedDays": TASK_RETENTION_DEFAULT_COMPLETED_DAYS,
+                "trashDays": TASK_RETENTION_DEFAULT_TRASH_DAYS,
+                "compactEvidenceDays": TASK_RETENTION_COMPACT_EVIDENCE_DAYS,
+                "revision": 2,
+                "updatedAt": now,
+            }
+        # The completion card itself is never allowed to outlive the fixed
+        # day-30 evidence cutoff.  Earlier user-selected windows remain
+        # supported, but historical values that would cross the cutoff are
+        # atomically normalized to the approved R7 default.
+        if completed_days + trash_days > TASK_RETENTION_COMPACT_EVIDENCE_DAYS:
+            now = _utc_now()
+            revised = revision + 1
+            connection.execute(
+                """
+                UPDATE ui_task_retention_settings
+                SET completed_days=?,trash_days=?,revision=?,updated_at=? WHERE settings_key='default'
+                """,
+                (TASK_RETENTION_DEFAULT_COMPLETED_DAYS, TASK_RETENTION_DEFAULT_TRASH_DAYS, revised, now),
+            )
+            return {
+                "completedDays": TASK_RETENTION_DEFAULT_COMPLETED_DAYS,
+                "trashDays": TASK_RETENTION_DEFAULT_TRASH_DAYS,
+                "compactEvidenceDays": TASK_RETENTION_COMPACT_EVIDENCE_DAYS,
+                "revision": revised,
+                "updatedAt": now,
+            }
         return {
-            "completedDays": int(row["completed_days"]),
-            "trashDays": int(row["trash_days"]),
-            "revision": int(row["revision"]),
+            "completedDays": completed_days,
+            "trashDays": trash_days,
+            "compactEvidenceDays": TASK_RETENTION_COMPACT_EVIDENCE_DAYS,
+            "revision": revision,
             "updatedAt": str(row["updated_at"]),
         }
 
@@ -8216,9 +8367,12 @@ class BrainControl:
     @staticmethod
     def _task_retention_target_state(completed_at: datetime, now: datetime, settings: Mapping[str, Any]) -> tuple[str, datetime]:
         trash_at = completed_at + timedelta(days=int(settings["completedDays"]))
-        cleanup_at = trash_at + timedelta(days=int(settings["trashDays"]))
-        if now >= cleanup_at:
-            return "cleanup_preview", cleanup_at
+        sealed_at = trash_at + timedelta(days=int(settings["trashDays"]))
+        evidence_at = completed_at + timedelta(days=TASK_RETENTION_COMPACT_EVIDENCE_DAYS)
+        if now >= evidence_at:
+            return "evidence_only", evidence_at
+        if now >= sealed_at:
+            return "sealed", sealed_at
         if now >= trash_at:
             return "trashed", trash_at
         return "visible", completed_at
@@ -8259,6 +8413,81 @@ class BrainControl:
             ),
         )
 
+    @classmethod
+    def _task_completion_evidence_payload(
+        cls,
+        record: Mapping[str, Any],
+        *,
+        effective_completed_at: str,
+    ) -> dict[str, Any]:
+        """Build the only residual record after a temporary task card expires.
+
+        This is intentionally evidence-shaped rather than a hidden copy of the
+        task card: it retains a scope-safe opaque key, completion timestamp,
+        revision binding, and bounded completion/verification counts.  Existing
+        independently governed decision cards are left untouched.
+        """
+
+        body = {
+            "schema": "super-brain.task-completion-evidence.v1",
+            "taskCardKey": str(record["taskKey"]),
+            "taskRevision": int(record["taskRevision"]),
+            "stateHash": str(record["stateHash"]),
+            "completedAt": effective_completed_at,
+            "completedStepCount": len(cls._task_card_ui_list(record.get("completedSteps"))),
+            "verificationCount": len(cls._task_card_ui_list(record.get("verificationResults"))),
+            "evidenceCount": len(cls._task_card_ui_list(record.get("evidence"))),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+        return {**body, "payloadHash": _sha256(body)}
+
+    def _ensure_task_completion_evidence(
+        self,
+        connection: sqlite3.Connection,
+        record: Mapping[str, Any],
+        *,
+        effective_completed_at: str,
+        now: str,
+    ) -> bool:
+        """Insert one immutable compact completion-evidence record if absent."""
+
+        task_key = str(record["taskKey"])
+        row = connection.execute(
+            "SELECT state_hash,payload_hash FROM ui_task_completion_evidence WHERE task_key=?",
+            (task_key,),
+        ).fetchone()
+        if row is not None:
+            if str(row["state_hash"]) != str(record["stateHash"]):
+                raise BrainControlError(
+                    "BRAIN_CONTROL_TASK_RETENTION_EVIDENCE_CONFLICT",
+                    "completed task evidence changed after it was compacted",
+                )
+            return False
+        payload = self._task_completion_evidence_payload(
+            record,
+            effective_completed_at=effective_completed_at,
+        )
+        connection.execute(
+            """
+            INSERT INTO ui_task_completion_evidence(
+              task_key,workspace_key,task_revision,state_hash,effective_completed_at,
+              payload_json,payload_hash,created_at
+            ) VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                task_key,
+                str(record["workspaceKey"]),
+                int(record["taskRevision"]),
+                str(record["stateHash"]),
+                effective_completed_at,
+                _canonical_json(payload),
+                str(payload["payloadHash"]),
+                now,
+            ),
+        )
+        return True
+
     def _sweep_task_retention_in_transaction(
         self,
         connection: sqlite3.Connection,
@@ -8269,7 +8498,13 @@ class BrainControl:
     ) -> tuple[dict[str, str], dict[str, int], dict[str, Any]]:
         settings = self._task_retention_settings_in_transaction(connection)
         state_by_task: dict[str, str] = {}
-        changes = {"movedToTrash": 0, "markedForCleanup": 0, "restored": 0, "needsReview": 0}
+        changes = {
+            "movedToTrash": 0,
+            "sealedAfterTrash": 0,
+            "compactedToEvidence": 0,
+            "restored": 0,
+            "needsReview": 0,
+        }
         now_text = _utc_timestamp(now)
         for record in records:
             task_key = str(record["taskKey"])
@@ -8350,7 +8585,11 @@ class BrainControl:
                     ),
                 )
                 if target_state != "visible":
-                    action = "marked_for_cleanup" if target_state == "cleanup_preview" else "moved_to_trash"
+                    action = {
+                        "trashed": "moved_to_trash",
+                        "sealed": "sealed_after_trash",
+                        "evidence_only": "compacted_to_evidence",
+                    }[target_state]
                     self._record_task_retention_receipt(
                         connection,
                         record,
@@ -8362,11 +8601,22 @@ class BrainControl:
                         actor_receipt=actor_receipt,
                         now=now_text,
                     )
-                    changes["markedForCleanup" if target_state == "cleanup_preview" else "movedToTrash"] += 1
+                    if target_state == "trashed":
+                        changes["movedToTrash"] += 1
+                    elif target_state == "sealed":
+                        changes["sealedAfterTrash"] += 1
+                    else:
+                        if self._ensure_task_completion_evidence(
+                            connection,
+                            record,
+                            effective_completed_at=_utc_timestamp(effective_completed_at),
+                            now=now_text,
+                        ):
+                            changes["compactedToEvidence"] += 1
                 state_by_task[task_key] = target_state
                 continue
             current_state = str(row["retention_state"])
-            order = {"visible": 0, "trashed": 1, "cleanup_preview": 2}
+            order = {"visible": 0, "trashed": 1, "sealed": 2, "evidence_only": 3}
             if order[target_state] > order.get(current_state, -1):
                 connection.execute(
                     """
@@ -8375,7 +8625,11 @@ class BrainControl:
                     """,
                     (target_state, _utc_timestamp(state_changed_at), now_text, task_key),
                 )
-                action = "marked_for_cleanup" if target_state == "cleanup_preview" else "moved_to_trash"
+                action = {
+                    "trashed": "moved_to_trash",
+                    "sealed": "sealed_after_trash",
+                    "evidence_only": "compacted_to_evidence",
+                }[target_state]
                 self._record_task_retention_receipt(
                     connection,
                     record,
@@ -8387,8 +8641,26 @@ class BrainControl:
                     actor_receipt=actor_receipt,
                     now=now_text,
                 )
-                changes["markedForCleanup" if target_state == "cleanup_preview" else "movedToTrash"] += 1
+                if target_state == "trashed":
+                    changes["movedToTrash"] += 1
+                elif target_state == "sealed":
+                    changes["sealedAfterTrash"] += 1
+                else:
+                    if self._ensure_task_completion_evidence(
+                        connection,
+                        record,
+                        effective_completed_at=_utc_timestamp(effective_completed_at),
+                        now=now_text,
+                    ):
+                        changes["compactedToEvidence"] += 1
                 current_state = target_state
+            elif current_state == "evidence_only":
+                self._ensure_task_completion_evidence(
+                    connection,
+                    record,
+                    effective_completed_at=_utc_timestamp(effective_completed_at),
+                    now=now_text,
+                )
             state_by_task[task_key] = current_state
         return state_by_task, changes, settings
 
@@ -8400,24 +8672,39 @@ class BrainControl:
             effective_scope, _ = self._current_execution_scope_for_ui()
         records = self._task_history_records_for_ui(effective_scope)
         now = datetime.now(UTC)
+        completion_evidence_count = 0
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 state_by_task, changes, settings = self._sweep_task_retention_in_transaction(connection, records, now=now)
+                workspace_key = str(effective_scope.get("workspaceKey", "")) if isinstance(effective_scope, Mapping) else ""
+                if workspace_key:
+                    completion_evidence_count = int(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM ui_task_completion_evidence WHERE workspace_key=?",
+                            (workspace_key,),
+                        ).fetchone()[0]
+                    )
                 connection.execute("COMMIT")
             except Exception:
                 connection.execute("ROLLBACK")
                 raise
-        counts = {"visible": 0, "trashed": 0, "cleanupPreview": 0, "needsReview": 0}
+        counts = {"visible": 0, "trashed": 0, "sealed": 0, "evidenceOnly": 0, "needsReview": 0}
         items: list[dict[str, Any]] = []
-        for record in records[:limit]:
+        for record in records:
             retention_state = state_by_task.get(str(record["taskKey"]), "visible")
             if retention_state == "needs_review":
                 counts["needsReview"] += 1
-            elif retention_state == "cleanup_preview":
-                counts["cleanupPreview"] += 1
+            elif retention_state == "sealed":
+                counts["sealed"] += 1
+                continue
+            elif retention_state == "evidence_only":
+                counts["evidenceOnly"] += 1
+                continue
             else:
                 counts[retention_state] += 1
+            if len(items) >= limit:
+                continue
             status = str(record["status"])
             items.append(
                 {
@@ -8434,7 +8721,7 @@ class BrainControl:
                     "nextAction": str(record["nextAction"]),
                     "date": str(record["completedAt"] or record["updatedAt"]),
                     "sourceLabel": "当前项目",
-                    "canRestore": retention_state in {"trashed", "cleanup_preview"},
+                    "canRestore": retention_state == "trashed",
                     "retentionHint": (
                         "完成时间或验证信息不完整，暂不自动整理。"
                         if retention_state == "needs_review"
@@ -8449,6 +8736,13 @@ class BrainControl:
             "items": items,
             "counts": counts,
             "settings": settings,
+            "completionEvidence": {
+                "schema": "super-brain.task-completion-evidence-summary.v1",
+                "count": completion_evidence_count,
+                "detailedTaskCardsVisible": False,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            },
             "maintenance": changes,
         }
 
@@ -8465,13 +8759,27 @@ class BrainControl:
             raise BrainControlError("BRAIN_CONTROL_TASK_RETENTION_DAYS_INVALID", "completedDays must be between 1 and 3650")
         if isinstance(trash_days, bool) or not isinstance(trash_days, int) or not 1 <= trash_days <= TASK_RETENTION_MAX_DAYS:
             raise BrainControlError("BRAIN_CONTROL_TASK_RETENTION_DAYS_INVALID", "trashDays must be between 1 and 3650")
+        if completed_days + trash_days > TASK_RETENTION_COMPACT_EVIDENCE_DAYS:
+            raise BrainControlError(
+                "BRAIN_CONTROL_TASK_RETENTION_WINDOW_INVALID",
+                "completedDays plus trashDays must not exceed the fixed day-30 evidence cutoff",
+            )
         effective_scope = scope
         if effective_scope is None:
             effective_scope, _ = self._current_execution_scope_for_ui()
         records = self._task_history_records_for_ui(effective_scope)
-        settings = {"completedDays": completed_days, "trashDays": trash_days}
-        counts = {"visible": 0, "trashed": 0, "cleanupPreview": 0, "needsReview": 0}
-        impacts: dict[str, list[dict[str, str]]] = {"toTrash": [], "cleanupPreview": [], "needsReview": []}
+        settings = {
+            "completedDays": completed_days,
+            "trashDays": trash_days,
+            "compactEvidenceDays": TASK_RETENTION_COMPACT_EVIDENCE_DAYS,
+        }
+        counts = {"visible": 0, "trashed": 0, "sealed": 0, "evidenceOnly": 0, "needsReview": 0}
+        impacts: dict[str, list[dict[str, str]]] = {
+            "toTrash": [],
+            "sealAfterTrash": [],
+            "compactEvidence": [],
+            "needsReview": [],
+        }
         now = datetime.now(UTC)
         for record in records:
             if str(record.get("status")) != "completed":
@@ -8484,10 +8792,14 @@ class BrainControl:
                     impacts["needsReview"].append({"title": str(record.get("title") or "未命名任务")})
                 continue
             target_state, _ = self._task_retention_target_state(completed_at, now, settings)
-            if target_state == "cleanup_preview":
-                counts["cleanupPreview"] += 1
-                if len(impacts["cleanupPreview"]) < 12:
-                    impacts["cleanupPreview"].append({"title": str(record.get("title") or "未命名任务")})
+            if target_state == "evidence_only":
+                counts["evidenceOnly"] += 1
+                if len(impacts["compactEvidence"]) < 12:
+                    impacts["compactEvidence"].append({"title": str(record.get("title") or "未命名任务")})
+            elif target_state == "sealed":
+                counts["sealed"] += 1
+                if len(impacts["sealAfterTrash"]) < 12:
+                    impacts["sealAfterTrash"].append({"title": str(record.get("title") or "未命名任务")})
             elif target_state == "trashed":
                 counts["trashed"] += 1
                 if len(impacts["toTrash"]) < 12:
@@ -8501,7 +8813,7 @@ class BrainControl:
             "settings": settings,
             "counts": counts,
             "impacts": impacts,
-            "summary": "这是预览，不会移动、删除或修改任何任务卡和个人记忆。",
+            "summary": "这是预览，不会移动、删除或修改任何任务卡和个人记忆。第 30 天后，详细任务卡会退出任务中心，仅保留紧凑完成证据。",
         }
 
     def update_task_retention_settings(
@@ -8516,6 +8828,11 @@ class BrainControl:
             raise BrainControlError("BRAIN_CONTROL_TASK_RETENTION_DAYS_INVALID", "completedDays must be between 1 and 3650")
         if isinstance(trash_days, bool) or not isinstance(trash_days, int) or not 1 <= trash_days <= TASK_RETENTION_MAX_DAYS:
             raise BrainControlError("BRAIN_CONTROL_TASK_RETENTION_DAYS_INVALID", "trashDays must be between 1 and 3650")
+        if completed_days + trash_days > TASK_RETENTION_COMPACT_EVIDENCE_DAYS:
+            raise BrainControlError(
+                "BRAIN_CONTROL_TASK_RETENTION_WINDOW_INVALID",
+                "completedDays plus trashDays must not exceed the fixed day-30 evidence cutoff",
+            )
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
             raise BrainControlError("BRAIN_CONTROL_TASK_RETENTION_REVISION_INVALID", "expectedRevision must be positive")
         actor = _normalize_actor_receipt(actor_receipt)
@@ -8531,6 +8848,7 @@ class BrainControl:
                 updated = {
                     "completedDays": completed_days,
                     "trashDays": trash_days,
+                    "compactEvidenceDays": TASK_RETENTION_COMPACT_EVIDENCE_DAYS,
                     "revision": expected_revision + 1,
                     "updatedAt": now,
                 }
@@ -8585,8 +8903,8 @@ class BrainControl:
                 ).fetchone()
                 if row is None or str(row["workspace_key"]) != workspace_key:
                     raise BrainControlError("BRAIN_CONTROL_TASK_RETENTION_NOT_FOUND", "task card is not available in this workspace")
-                if str(row["retention_state"]) not in {"trashed", "cleanup_preview"}:
-                    raise BrainControlError("BRAIN_CONTROL_TASK_RETENTION_RESTORE_INVALID", "task card is not in the recycle bin or cleanup preview")
+                if str(row["retention_state"]) != "trashed":
+                    raise BrainControlError("BRAIN_CONTROL_TASK_RETENTION_RESTORE_INVALID", "task card is not in the recycle bin")
                 aggregate = connection.execute(
                     """
                     SELECT head_revision,head_state_hash,lifecycle FROM task_aggregates WHERE aggregate_id=?

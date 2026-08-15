@@ -1,9 +1,9 @@
 {
     "schema":  "super-brain.core-rule-registry.v1",
-    "registryVersion":  49,
+    "registryVersion":  51,
     "packageVersion":  "0.6.0",
     "hashAlgorithm":  "sha256(canonical-json-without-payloadHash)",
-    "payloadHash":  "0b5f9d8f73f5d7d019fb676bf94a6c61593a5c3ddb1ecd0485a6007489d5c66c",
+    "payloadHash":  "d92a01a46ba59cbf334b1c63d8aef4f45ce507721405d4095e1180c2bf61bc6b",
     "rules":  [
                   {
                       "ruleId":  "SB-PROJECT-GROUNDED-DESIGN-001",
@@ -122,7 +122,7 @@
                   },
                   {
                       "ruleId":  "SB-ABILITY-ABSORPTION-001",
-                      "revision":  5,
+                      "revision":  6,
                       "priority":  105,
                       "scope":  "global",
                       "trigger":  [
@@ -140,9 +140,9 @@
                                       "independent_skill_install",
                                       "direct_upstream_route"
                                   ],
-                      "effect":  "absorb_verified_upstream_provenance_only_as_super_brain_native_capability_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_without_independent_install_or_direct_upstream_route",
-                      "enforcement":  "host_policy",
-                      "entrypoint":  "scripts/absorbed-capability-route.ps1",
+                      "effect":  "absorb_verified_upstream_provenance_only_into_super_brain_native_procedures_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_without_independent_install_direct_upstream_execution_or_user_named_skill_dependency",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/execution_assist.py",
                       "acceptanceTests":  [
                                               "capability_source_provenance_replay",
                                               "standalone_install_absence_replay",
@@ -155,7 +155,99 @@
                                               "upstream_provenance_only_replay",
                                               "native_capability_parity_or_enhancement_replay",
                                               "capability_h7_core_rule_project_evidence_authorization_boundary_replay",
-                                              "independent_install_and_direct_upstream_route_denial_replay"
+                                              "independent_install_and_direct_upstream_route_denial_replay",
+                                              "execution_assist_native_route_replay",
+                                              "capability_route_privacy_projection_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-FOUR-QUADRANT-EXECUTION-001",
+                      "revision":  1,
+                      "priority":  111,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "design",
+                                      "evaluate",
+                                      "plan",
+                                      "repair",
+                                      "root_cause",
+                                      "optimization",
+                                      "product_design",
+                                      "governed_turn",
+                                      "four_quadrant"
+                                  ],
+                      "effect":  "enforce_four_quadrant_execution_with_confirmed_scope_material_question_budget_assumption_disclosure_risk_alternatives_tradeoffs_and_minimal_experiment_contract",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/execution_assist.py",
+                      "acceptanceTests":  [
+                                              "four_quadrant_material_question_budget_replay",
+                                              "four_quadrant_assumption_disclosure_replay",
+                                              "four_quadrant_risk_alternatives_tradeoffs_replay",
+                                              "four_quadrant_minimal_experiment_replay",
+                                              "execution_assist_privacy_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-CONCURRENT-STATE-CAS-001",
+                      "revision":  1,
+                      "priority":  112,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "memory_write",
+                                      "continuity",
+                                      "multi_agent",
+                                      "session_binding",
+                                      "checkpoint",
+                                      "phase_transition",
+                                      "hot_update",
+                                      "refresh",
+                                      "concurrency",
+                                      "cas"
+                                  ],
+                      "effect":  "enforce_scope_bound_compare_and_swap_idempotent_transition_and_conflict_withheld_reconcile_for_task_contract_hot_index_and_typed_memory_writes_without_raw_prompt_or_transcript_storage",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/brain_control.py",
+                      "acceptanceTests":  [
+                                              "concurrent_task_contract_cas_replay",
+                                              "idempotent_transition_replay",
+                                              "hot_index_atomic_rebuild_replay",
+                                              "cross_session_conflict_withheld_replay",
+                                              "typed_memory_write_scope_cas_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-TEMPORARY-TASK-CARD-LIFECYCLE-001",
+                      "revision":  1,
+                      "priority":  113,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "task_card",
+                                      "completed_task",
+                                      "task_retention",
+                                      "cleanup",
+                                      "task_history"
+                                  ],
+                      "effect":  "treat_completed_task_cards_as_temporary_scope_bound_operational_state_keep_detailed_cards_visible_for_7_days_and_restorable_in_recycle_bin_for_the_following_15_days_hide_after_the_management_window_and_at_day_30_replace_the_task_card_projection_with_one_immutable_minimal_completion_evidence_record_without_raw_task_content_or_automatic_decision_promotion_never_age_clean_planned_active_paused_or_blocked_tasks_never_restore_compacted_cards_and_keep_physical_purge_separate_under_exact_target_set_user_authorization",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/brain_control.py",
+                      "acceptanceTests":  [
+                                              "temporary_task_card_7_15_30_lifecycle_replay",
+                                              "active_task_age_retention_exclusion_replay",
+                                              "compact_completion_evidence_privacy_replay",
+                                              "compacted_task_restore_denial_replay",
+                                              "retention_window_cap_replay"
                                           ],
                       "status":  "active",
                       "supersedes":  [
@@ -507,7 +599,7 @@
                   },
                   {
                       "ruleId":  "SB-STAGE-VERIFY-001",
-                      "revision":  3,
+                      "revision":  4,
                       "priority":  90,
                       "scope":  "global",
                       "trigger":  [
@@ -517,7 +609,7 @@
                                   ],
                       "effect":  "require_current_h7_phase_closeout_live_project_proof_and_host_readback_user_stage_receipt_before_forward_formal_stage_transition",
                       "enforcement":  "host_policy",
-                      "entrypoint":  "scripts/task-verification.ps1",
+                      "entrypoint":  "scripts/execution-contract.ps1",
                       "acceptanceTests":  [
                                               "stage_gate_replay",
                                               "user_level_simulation",
@@ -526,7 +618,8 @@
                                               "phase_state_correction_replay",
                                               "verify_each_stage_before_next_stage",
                                               "host_stage_receipt_replay",
-                                              "forward_stage_live_proof_replay"
+                                              "forward_stage_live_proof_replay",
+                                              "plain_stage_closeout_required_replay"
                                           ],
                       "status":  "active",
                       "supersedes":  [
@@ -535,7 +628,7 @@
                   },
                   {
                       "ruleId":  "SB-EFFICIENT-DELIVERY-001",
-                      "revision":  3,
+                      "revision":  4,
                       "priority":  95,
                       "scope":  "global",
                       "trigger":  [
@@ -544,7 +637,7 @@
                                       "repair",
                                       "optimization"
                                   ],
-                      "effect":  "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_read_only_the_current_thread_tail_once_without_project_tree_scanning_for_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_never_claim_unverified_progress_and_emit_user_visible_updates_only_for_stage_boundaries_real_blockers_or_exceptions",
+                      "effect":  "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_use_one_bounded_current_thread_tail_observation_without_project_tree_scan_on_normal_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_avoid_extra_runtime_processes_or_duplicate_routes_and_never_claim_unverified_progress",
                       "enforcement":  "host_policy",
                       "entrypoint":  "scripts/auto-continuation.ps1",
                       "acceptanceTests":  [
@@ -557,7 +650,9 @@
                                               "concrete_fix_over_status_chatter_replay",
                                               "unverified_progress_claim_denial_replay",
                                               "fast_path_preserves_verification_replay",
-                                              "current_thread_tail_latency_replay"
+                                              "current_thread_tail_latency_replay",
+                                              "bounded_visible_tail_fast_path_replay",
+                                              "no_extra_mcp_process_on_hot_path_replay"
                                           ],
                       "status":  "active",
                       "supersedes":  [

@@ -672,18 +672,19 @@ import {
   function TaskHistory(props) {
     const history = props.history && typeof props.history === "object" ? props.history : {};
     const items = Array.isArray(history.items) ? history.items : [];
-    const settings = history.settings && typeof history.settings === "object" ? history.settings : { completedDays: 15, trashDays: 30, revision: 1 };
-    const counts = history.counts && typeof history.counts === "object" ? history.counts : { visible: 0, trashed: 0, cleanupPreview: 0, needsReview: 0 };
+    const settings = history.settings && typeof history.settings === "object" ? history.settings : { completedDays: 7, trashDays: 15, compactEvidenceDays: 30, revision: 1 };
+    const counts = history.counts && typeof history.counts === "object" ? history.counts : { visible: 0, trashed: 0, sealed: 0, evidenceOnly: 0, needsReview: 0 };
+    const completionEvidence = history.completionEvidence && typeof history.completionEvidence === "object" ? history.completionEvidence : { count: 0 };
     const [preview, setPreview] = useState(null);
     const current = items.filter((item) => item && item.retentionState === "visible" && !item.isCompleted);
     const completed = items.filter((item) => item && item.retentionState === "visible" && item.isCompleted);
     const trashed = items.filter((item) => item && item.retentionState === "trashed");
-    const review = items.filter((item) => item && (item.retentionState === "cleanup_preview" || item.retentionState === "needs_review"));
+    const review = items.filter((item) => item && item.retentionState === "needs_review");
     const sections = [
       { key: "current", title: "进行中的任务", items: current, empty: "当前没有其它进行中的任务。" },
       { key: "completed", title: "已完成任务", items: completed, empty: "当前项目还没有已完成任务。" },
       { key: "trashed", title: "任务回收站", items: trashed, empty: "回收站目前为空。" },
-      { key: "review", title: "待整理", items: review, empty: "没有需要整理的任务卡。" }
+      { key: "review", title: "待核对", items: review, empty: "没有需要核对的任务卡。" }
     ].filter((section) => section.items.length);
     const renderItem = (item, index) => {
       const date = text(item.date);
@@ -725,12 +726,13 @@ import {
     return h("section", { className: "task-history", key: "history" }, [
       h("div", { className: "task-history-intro", key: "intro" }, [
         h("h3", null, "任务记录"),
-        h("p", null, "这里按当前项目显示任务标题、内容、完成情况和可恢复的整理状态。")
+        h("p", null, "完成任务保留 7 天；随后在回收站保留 15 天；第 30 天起仅保留紧凑完成证据，详细任务卡退出此页面。")
       ]),
       h("div", { className: "task-retention-status", key: "status" }, [
         h("span", { key: "visible" }, `当前显示 ${Number(counts.visible || 0)}`),
         h("span", { key: "trashed" }, `回收站 ${Number(counts.trashed || 0)}`),
-        h("span", { key: "preview" }, `待整理 ${Number(counts.cleanupPreview || 0)}`),
+        Number(counts.sealed || 0) ? h("span", { key: "sealed" }, `等待压缩 ${Number(counts.sealed || 0)}`) : null,
+        Number(counts.evidenceOnly || completionEvidence.count || 0) ? h("span", { key: "evidence" }, `紧凑完成证据 ${Number(completionEvidence.count || counts.evidenceOnly || 0)}`) : null,
         Number(counts.needsReview || 0) ? h("span", { className: "attention", key: "review" }, `待核对 ${Number(counts.needsReview || 0)}`) : null
       ]),
       h("div", { className: "task-history-sections", key: "sections" }, sections.length ? sections.map((section) => h("section", { className: "task-history-section", key: section.key }, [
@@ -748,15 +750,15 @@ import {
       }, [
         h("div", { className: "task-retention-heading", key: "heading" }, [
           h("h4", null, "任务卡整理"),
-          h("p", null, "到期只改变本页显示，不会自动删除任务、历史或个人记忆。")
+          h("p", null, "完整任务卡最长保留到完成后第 30 天；之后只保留紧凑完成证据，已有决策卡不受影响。")
         ]),
         h("label", { key: "completed" }, [
           h("span", null, "完成后多少天移到回收站"),
-          h("input", { type: "number", name: "completedDays", min: 1, max: 3650, defaultValue: Number(settings.completedDays || 15), disabled: !!props.busy })
+          h("input", { type: "number", name: "completedDays", min: 1, max: 29, defaultValue: Number(settings.completedDays || 7), disabled: !!props.busy })
         ]),
         h("label", { key: "trash" }, [
-          h("span", null, "在回收站多少天后提醒我整理"),
-          h("input", { type: "number", name: "trashDays", min: 1, max: 3650, defaultValue: Number(settings.trashDays || 30), disabled: !!props.busy })
+          h("span", null, "在回收站保留多少天"),
+          h("input", { type: "number", name: "trashDays", min: 1, max: 29, defaultValue: Number(settings.trashDays || 15), disabled: !!props.busy })
         ]),
         h("button", { type: "button", className: "icon-text", disabled: !!props.busy, onClick: previewSettings }, "查看影响"),
         h("button", { type: "submit", className: "icon-text", disabled: !!props.busy }, "保存整理设置")
@@ -764,11 +766,12 @@ import {
       preview && preview.scopeBound !== false ? h("section", { className: "task-retention-preview", key: "preview" }, [
         h("div", { className: "task-retention-preview-heading", key: "heading" }, [
           h("h4", null, "整理影响预览"),
-          h("span", null, `回收站 ${Number(preview.counts && preview.counts.trashed || 0)} · 待整理 ${Number(preview.counts && preview.counts.cleanupPreview || 0)}`)
+          h("span", null, `回收站 ${Number(preview.counts && preview.counts.trashed || 0)} · 等待压缩 ${Number(preview.counts && preview.counts.sealed || 0)} · 紧凑证据 ${Number(preview.counts && preview.counts.evidenceOnly || 0)}`)
         ]),
         h("p", { key: "copy" }, text(preview.summary) || "这是预览，不会修改任何任务卡。"),
         renderPreviewGroup("trash", "会移入回收站", Array.isArray(preview.impacts && preview.impacts.toTrash) ? preview.impacts.toTrash : []),
-        renderPreviewGroup("cleanup", "会显示为待整理", Array.isArray(preview.impacts && preview.impacts.cleanupPreview) ? preview.impacts.cleanupPreview : []),
+        renderPreviewGroup("sealed", "会退出管理界面并等待第 30 天压缩", Array.isArray(preview.impacts && preview.impacts.sealAfterTrash) ? preview.impacts.sealAfterTrash : []),
+        renderPreviewGroup("evidence", "会压缩为完成证据", Array.isArray(preview.impacts && preview.impacts.compactEvidence) ? preview.impacts.compactEvidence : []),
         renderPreviewGroup("review", "需要先核对", Array.isArray(preview.impacts && preview.impacts.needsReview) ? preview.impacts.needsReview : [])
       ]) : null
     ]);
@@ -2480,8 +2483,8 @@ import {
     };
 
     const saveTaskRetentionSettings = async (completedDays, trashDays, expectedRevision) => {
-      if (!Number.isInteger(completedDays) || !Number.isInteger(trashDays) || completedDays < 1 || trashDays < 1 || completedDays > 3650 || trashDays > 3650) {
-        setStatus("请填写 1 到 3650 之间的天数。");
+      if (!Number.isInteger(completedDays) || !Number.isInteger(trashDays) || completedDays < 1 || trashDays < 1 || completedDays + trashDays > 30) {
+        setStatus("完成展示期与回收站保留期之和不能超过 30 天。");
         return;
       }
       setBusy(true);
@@ -2496,21 +2499,21 @@ import {
         const refreshed = await request("/api/read", { operation: "overview" });
         setOverview(refreshed);
         markMemoryChanged();
-        setStatus(`已保存：完成后 ${body.receipt.settings.completedDays} 天进入回收站，${body.receipt.settings.trashDays} 天后提醒整理。`);
+        setStatus(`已保存：完成后 ${body.receipt.settings.completedDays} 天进入回收站，保留 ${body.receipt.settings.trashDays} 天；第 ${body.receipt.settings.compactEvidenceDays} 天仅保留紧凑完成证据。`);
       } catch (error) {
         setStatus(error.message === "BRAIN_CONTROL_TASK_RETENTION_STALE" ? "设置刚刚有变化，已保留原设置；请刷新后再保存。" : `保存整理设置失败：${error.message || "未知错误"}`);
       } finally { setBusy(false); }
     };
 
     const previewTaskRetentionSettings = async (completedDays, trashDays) => {
-      if (!Number.isInteger(completedDays) || !Number.isInteger(trashDays) || completedDays < 1 || trashDays < 1 || completedDays > 3650 || trashDays > 3650) {
-        setStatus("请填写 1 到 3650 之间的天数。");
+      if (!Number.isInteger(completedDays) || !Number.isInteger(trashDays) || completedDays < 1 || trashDays < 1 || completedDays + trashDays > 30) {
+        setStatus("完成展示期与回收站保留期之和不能超过 30 天。");
         return null;
       }
       setBusy(true);
       try {
         const body = await request("/api/read", { operation: "task_retention_preview", completedDays: completedDays, trashDays: trashDays });
-        setStatus(`已生成整理影响预览：回收站 ${Number(body.counts && body.counts.trashed || 0)} 条，待整理 ${Number(body.counts && body.counts.cleanupPreview || 0)} 条。`);
+        setStatus(`已生成整理影响预览：回收站 ${Number(body.counts && body.counts.trashed || 0)} 条，等待压缩 ${Number(body.counts && body.counts.sealed || 0)} 条，紧凑证据 ${Number(body.counts && body.counts.evidenceOnly || 0)} 条。`);
         return body;
       } catch (error) {
         setStatus(`整理影响预览失败：${error.message || "未知错误"}`);

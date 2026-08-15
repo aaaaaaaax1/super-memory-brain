@@ -130,7 +130,7 @@ def main() -> int:
     assert current["code"] == "CORE_RULE_REGISTRY_CURRENT", current
     assert {rule["ruleId"] for rule in current["rules"]} == set(REQUIRED_RULE_IDS), current
     assert current["payloadHash"] == canonical_hash({key: value for key, value in source.items() if key != "payloadHash"})
-    assert current["registryVersion"] == 49, current
+    assert current["registryVersion"] == 51, current
     h7 = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-H7-ACTIVATION-001")
     assert h7["revision"] == 7, h7
     assert h7["effect"] == "run_h7_mcp_or_same_h7_cli_identity_and_proof_validation_in_background_for_ordinary_continuation_without_creating_or_requiring_task_card_require_current_h7_identity_scope_proof_and_derived_index_rebuild_before_formal_stage_high_impact_action_durable_learning_or_runtime_identity_repair_use_one_package_local_writable_activation_receipt_root_and_treat_p7_hook_and_legacy_host_receipt_junctions_as_fail_open_historical_compatibility_only_without_install_repair_authorization_or_evidence", h7
@@ -245,9 +245,10 @@ def main() -> int:
     }, shared_memory
     absorption = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-ABILITY-ABSORPTION-001")
     assert absorption["priority"] == 105, absorption
-    assert absorption["revision"] == 5, absorption
-    assert absorption["effect"] == "absorb_verified_upstream_provenance_only_as_super_brain_native_capability_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_without_independent_install_or_direct_upstream_route", absorption
-    assert absorption["entrypoint"] == "scripts/absorbed-capability-route.ps1", absorption
+    assert absorption["revision"] == 6, absorption
+    assert absorption["effect"] == "absorb_verified_upstream_provenance_only_into_super_brain_native_procedures_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_without_independent_install_direct_upstream_execution_or_user_named_skill_dependency", absorption
+    assert absorption["enforcement"] == "runtime", absorption
+    assert absorption["entrypoint"] == "runtime/execution_assist.py", absorption
     assert set(absorption["trigger"]) >= {
         "upstream_provenance",
         "native_capability",
@@ -268,7 +269,51 @@ def main() -> int:
         "native_capability_parity_or_enhancement_replay",
         "capability_h7_core_rule_project_evidence_authorization_boundary_replay",
         "independent_install_and_direct_upstream_route_denial_replay",
+        "execution_assist_native_route_replay",
+        "capability_route_privacy_projection_replay",
     }, absorption
+    four_quadrant = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-FOUR-QUADRANT-EXECUTION-001")
+    assert four_quadrant["revision"] == 1, four_quadrant
+    assert four_quadrant["priority"] == 111, four_quadrant
+    assert four_quadrant["scope"] == "runtime", four_quadrant
+    assert four_quadrant["enforcement"] == "runtime", four_quadrant
+    assert four_quadrant["entrypoint"] == "runtime/execution_assist.py", four_quadrant
+    assert four_quadrant["effect"] == "enforce_four_quadrant_execution_with_confirmed_scope_material_question_budget_assumption_disclosure_risk_alternatives_tradeoffs_and_minimal_experiment_contract", four_quadrant
+    assert set(four_quadrant["acceptanceTests"]) >= {
+        "four_quadrant_material_question_budget_replay",
+        "four_quadrant_assumption_disclosure_replay",
+        "four_quadrant_risk_alternatives_tradeoffs_replay",
+        "four_quadrant_minimal_experiment_replay",
+        "execution_assist_privacy_replay",
+    }, four_quadrant
+    concurrent_state = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-CONCURRENT-STATE-CAS-001")
+    assert concurrent_state["revision"] == 1, concurrent_state
+    assert concurrent_state["priority"] == 112, concurrent_state
+    assert concurrent_state["scope"] == "runtime", concurrent_state
+    assert concurrent_state["enforcement"] == "runtime", concurrent_state
+    assert concurrent_state["entrypoint"] == "runtime/brain_control.py", concurrent_state
+    assert concurrent_state["effect"] == "enforce_scope_bound_compare_and_swap_idempotent_transition_and_conflict_withheld_reconcile_for_task_contract_hot_index_and_typed_memory_writes_without_raw_prompt_or_transcript_storage", concurrent_state
+    assert set(concurrent_state["acceptanceTests"]) >= {
+        "concurrent_task_contract_cas_replay",
+        "idempotent_transition_replay",
+        "hot_index_atomic_rebuild_replay",
+        "cross_session_conflict_withheld_replay",
+        "typed_memory_write_scope_cas_replay",
+    }, concurrent_state
+    task_retention = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-TEMPORARY-TASK-CARD-LIFECYCLE-001")
+    assert task_retention["revision"] == 1, task_retention
+    assert task_retention["priority"] == 113, task_retention
+    assert task_retention["scope"] == "runtime", task_retention
+    assert task_retention["enforcement"] == "runtime", task_retention
+    assert task_retention["entrypoint"] == "runtime/brain_control.py", task_retention
+    assert task_retention["effect"] == "treat_completed_task_cards_as_temporary_scope_bound_operational_state_keep_detailed_cards_visible_for_7_days_and_restorable_in_recycle_bin_for_the_following_15_days_hide_after_the_management_window_and_at_day_30_replace_the_task_card_projection_with_one_immutable_minimal_completion_evidence_record_without_raw_task_content_or_automatic_decision_promotion_never_age_clean_planned_active_paused_or_blocked_tasks_never_restore_compacted_cards_and_keep_physical_purge_separate_under_exact_target_set_user_authorization", task_retention
+    assert set(task_retention["acceptanceTests"]) >= {
+        "temporary_task_card_7_15_30_lifecycle_replay",
+        "active_task_age_retention_exclusion_replay",
+        "compact_completion_evidence_privacy_replay",
+        "compacted_task_restore_denial_replay",
+        "retention_window_cap_replay",
+    }, task_retention
     defect_repair = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-DEFECT-ROOT-REPAIR-001")
     assert defect_repair["revision"] == 5, defect_repair
     assert defect_repair["scope"] == "runtime", defect_repair
@@ -480,8 +525,8 @@ def main() -> int:
     }, progress_truth
     delivery = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-EFFICIENT-DELIVERY-001")
     assert delivery["priority"] == 95, delivery
-    assert delivery["revision"] == 3, delivery
-    assert delivery["effect"] == "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_read_only_the_current_thread_tail_once_without_project_tree_scanning_for_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_never_claim_unverified_progress_and_emit_user_visible_updates_only_for_stage_boundaries_real_blockers_or_exceptions", delivery
+    assert delivery["revision"] == 4, delivery
+    assert delivery["effect"] == "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_use_one_bounded_current_thread_tail_observation_without_project_tree_scan_on_normal_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_avoid_extra_runtime_processes_or_duplicate_routes_and_never_claim_unverified_progress", delivery
     assert set(delivery["acceptanceTests"]) >= {
         "bounded_parallel_delivery_replay",
         "fast_feedback_timeout_replay",
@@ -490,6 +535,8 @@ def main() -> int:
         "concrete_fix_over_status_chatter_replay",
         "unverified_progress_claim_denial_replay",
         "fast_path_preserves_verification_replay",
+        "bounded_visible_tail_fast_path_replay",
+        "no_extra_mcp_process_on_hot_path_replay",
     }, delivery
     runtime_independence = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-RUNTIME-ADAPTER-INDEPENDENCE-001")
     assert runtime_independence["revision"] == 2, runtime_independence
@@ -537,13 +584,15 @@ def main() -> int:
         "unknown_child_identity_fail_closed_replay",
     }, child_lifecycle
     stage_verify = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-STAGE-VERIFY-001")
-    assert stage_verify["revision"] == 3, stage_verify
+    assert stage_verify["revision"] == 4, stage_verify
+    assert stage_verify["entrypoint"] == "scripts/execution-contract.ps1", stage_verify
     assert stage_verify["effect"] == "require_current_h7_phase_closeout_live_project_proof_and_host_readback_user_stage_receipt_before_forward_formal_stage_transition", stage_verify
     assert set(stage_verify["acceptanceTests"]) >= {
         "stage_gate_replay",
         "verify_each_stage_before_next_stage",
         "host_stage_receipt_replay",
         "forward_stage_live_proof_replay",
+        "plain_stage_closeout_required_replay",
     }, stage_verify
     stage_receipt = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-STAGE-USER-RECEIPT-001")
     assert stage_receipt["revision"] == 2, stage_receipt
@@ -559,6 +608,7 @@ def main() -> int:
     design = public_projection(current, signals=("design",))
     assert design["applicableRuleIds"] == [
         "SB-PROJECT-GROUNDED-DESIGN-001",
+        "SB-FOUR-QUADRANT-EXECUTION-001",
         "SB-PROGRESS-TRUTH-001",
     ], design
     continuation = public_projection(current, signals=("continue",))
@@ -577,6 +627,10 @@ def main() -> int:
     assert primary_entry_projection["applicableRuleIds"] == ["SB-PRIMARY-HOST-ENTRY-001"], primary_entry_projection
     delivery_projection = public_projection(current, signals=("optimization",))
     assert "SB-EFFICIENT-DELIVERY-001" in delivery_projection["applicableRuleIds"], delivery_projection
+    four_quadrant_projection = public_projection(current, signals=("design",))
+    assert "SB-FOUR-QUADRANT-EXECUTION-001" in four_quadrant_projection["applicableRuleIds"], four_quadrant_projection
+    concurrency_projection = public_projection(current, signals=("concurrency",))
+    assert concurrency_projection["applicableRuleIds"] == ["SB-CONCURRENT-STATE-CAS-001"], concurrency_projection
     stage_projection = public_projection(current, signals=("stage_complete",))
     assert stage_projection["applicableRuleIds"] == [
         "SB-PROGRESS-TRUTH-001",

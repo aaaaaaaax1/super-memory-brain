@@ -195,6 +195,16 @@ Describe 'H7-only phase closeout evidence' {
     $blocked.value.nextPhase | Should Be 'R5-STAGE10'
   }
 
+  It 'blocks a release-neutral Stage 0-to-Stage 1 transition when no H7 closeout receipt exists' {
+    $fixture = New-PhaseCloseoutFixture -ActivateH7 -Phase 'Stage 0 - baseline' -Step 'finish Stage 0' -NextAction 'enter Stage 1'
+    $blocked = Invoke-H7PhaseAdvance $fixture '' 'Stage 1 - rules' 'start Stage 1'
+
+    $blocked.exitCode | Should Be 1
+    $blocked.value.code | Should Be 'EXECUTION_CONTRACT_PHASE_CLOSEOUT_REQUIRED'
+    $blocked.value.phase | Should Be 'STAGE0'
+    $blocked.value.nextPhase | Should Be 'STAGE1'
+  }
+
   It 'does not let side-branch mode bypass a same-workline R5 stage closeout' {
     $fixture = New-PhaseCloseoutFixture -ActivateH7 -Phase 'R5 Stage 9' -Step 'finish Stage 9' -NextAction 'enter Stage 10'
     $blocked = Invoke-H7PhaseAdvance $fixture '' 'R5 Stage 10' 'start Stage 10' 'side_branch'

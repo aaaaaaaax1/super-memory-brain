@@ -42,8 +42,9 @@ if ($PackageOnly -and -not $Worker) {
   }
   Push-Location $Root
   try {
-    Invoke-PackageOnlyCheck 'python runtime compile' { python -m py_compile runtime\turn_runtime.py runtime\brain_mcp.py runtime\brain_cli.py runtime\host_visible_tail.py }
+    Invoke-PackageOnlyCheck 'python runtime compile' { python -m py_compile runtime\brain_core.py runtime\execution_assist.py runtime\turn_runtime.py runtime\brain_mcp.py runtime\brain_cli.py runtime\host_visible_tail.py }
     Invoke-PackageOnlyCheck 'core rule registry regression' { python tests\runtime_core_rule_registry_regression.py }
+    Invoke-PackageOnlyCheck 'execution assist regression' { python tests\runtime_execution_assist_regression.py }
     Invoke-PackageOnlyCheck 'host visible tail regression' { python tests\runtime_host_visible_tail_regression.py }
     Invoke-PackageOnlyCheck 'host continuation bridge regression' { python tests\runtime_host_continuation_bridge_regression.py }
     Invoke-PackageOnlyCheck 'turn runtime regression' { python tests\runtime_turn_runtime_regression.py }
@@ -496,7 +497,7 @@ try {
   $declaredCoreRuleRegistry = $manifest.coreRuleRegistry
   $declaredCoreRuleIds = @($declaredCoreRuleRegistry.requiredRuleIds | ForEach-Object { [string]$_ })
   $actualCoreRuleIds = @($coreRuleRegistry.rules | ForEach-Object { [string]$_.ruleId })
-  $requiredCoreRuleIds = @('SB-PROJECT-GROUNDED-DESIGN-001','SB-DEFECT-ROOT-REPAIR-001','SB-RULE-MEMORY-SPLIT-001','SB-UNIFIED-SHARED-MEMORY-001','SB-ABILITY-ABSORPTION-001','SB-LATEST-STATE-001','SB-VISIBLE-PROGRESS-ANCHOR-001','SB-PROGRESS-TRUTH-001','SB-PROPOSAL-GATE-001','SB-AUTO-RESUME-001','SB-STAGE-VERIFY-001','SB-STAGE-USER-RECEIPT-001','SB-EFFICIENT-DELIVERY-001','SB-NO-REPEAT-FAILED-ROUTE-001','SB-CHILD-LIFECYCLE-001','SB-H7-ACTIVATION-001','SB-RUNTIME-ADAPTER-INDEPENDENCE-001','SB-ADAPTER-CONCISENESS-001','SB-BOOTSTRAP-SINGLE-SOURCE-001')
+  $requiredCoreRuleIds = @('SB-PROJECT-GROUNDED-DESIGN-001','SB-DEFECT-ROOT-REPAIR-001','SB-RULE-MEMORY-SPLIT-001','SB-UNIFIED-SHARED-MEMORY-001','SB-ABILITY-ABSORPTION-001','SB-FOUR-QUADRANT-EXECUTION-001','SB-CONCURRENT-STATE-CAS-001','SB-LATEST-STATE-001','SB-VISIBLE-PROGRESS-ANCHOR-001','SB-PROGRESS-TRUTH-001','SB-PROPOSAL-GATE-001','SB-AUTO-RESUME-001','SB-STAGE-VERIFY-001','SB-STAGE-USER-RECEIPT-001','SB-EFFICIENT-DELIVERY-001','SB-NO-REPEAT-FAILED-ROUTE-001','SB-CHILD-LIFECYCLE-001','SB-H7-ACTIVATION-001','SB-RUNTIME-ADAPTER-INDEPENDENCE-001','SB-ADAPTER-CONCISENESS-001','SB-BOOTSTRAP-SINGLE-SOURCE-001')
   $registryShapeCurrent = (
     $coreRuleRegistry.schema -eq 'super-brain.core-rule-registry.v1' -and
     [int]$coreRuleRegistry.registryVersion -ge 1 -and
@@ -521,7 +522,7 @@ if ($null -eq $pythonCommand) {
   if ($coreRuleRegistryExitCode -eq 0 -and (($coreRuleRegistryOutput -join [Environment]::NewLine) -match 'CORE_RULE_REGISTRY_REGRESSION_OK')) { Mark-Ok 'core rule registry signed validator' } else { Mark-Fail ('core rule registry signed validator failed ' + (($coreRuleRegistryOutput | Select-Object -Last 3) -join ' ')) }
 }
 $turnIntentText = Read-Utf8 'runtime\turn_intent.py'
-if (Test-ContainsAll $turnIntentText @('TURN_INTENTS','projectEvidenceRequired','learningWriteAllowed','rawPromptStored','resolve_turn_intent')) { Mark-Ok 'stateless turn intent split' } else { Mark-Fail 'stateless turn intent split missing' }
+if (Test-ContainsAll $turnIntentText @('TURN_INTENTS','projectEvidenceRequired','learningWriteAllowed','executionAssistRequired','executionAssistAllowed','rawPromptStored','resolve_turn_intent')) { Mark-Ok 'stateless turn intent split' } else { Mark-Fail 'stateless turn intent split missing' }
 $selfModelRuntimeText = Read-Utf8 'runtime\brain_core.py'
 if (Test-ContainsAll $selfModelRuntimeText @('def agent_identity','independent_control_plane_agent','def authority_model','latest_user_instruction','h7_scope_bound_execution_contract','assistant_visible_reply_plus_current_project_progress_proof','live_project_evidence','versioned_core_rule_registry','entry_only_non_authorizing','bounded_collaborator_agents','withhold_reconcile')) { Mark-Ok 'independent control-plane Agent identity and role-separated authority model' } else { Mark-Fail 'independent control-plane Agent identity or authority model missing' }
 if ($selfModelRuntimeText -like '*def _self_model_candidates*' -and $selfModelRuntimeText -like '*snapshotStatus*' -and $selfModelRuntimeText -like '*verificationStatus*' -and $selfModelRuntimeText -like '*rawPromptStored*' -and $selfModelRuntimeText -like '*KNOWN_LIMITATION*' -and $selfModelRuntimeText -like '*if verification_status == "verified"*') { Mark-Ok 'native runtime self-model evidence and degradation guard' } else { Mark-Fail 'native runtime self-model evidence and degradation guard missing' }
@@ -550,6 +551,9 @@ if ((Test-ContainsAll ($compactApplyText + $tagLegacyText + $autoHygieneRewriteT
 $runtimeRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_brain_regression.py') 2>&1)
 $runtimeRegressionText = ($runtimeRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
 if ($LASTEXITCODE -eq 0 -and $runtimeRegressionText -like '*RUNTIME_BRAIN_REGRESSION_OK*') { Mark-Ok 'native runtime regression' } else { Mark-Fail "native runtime regression $runtimeRegressionText" }
+$executionAssistRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_execution_assist_regression.py') 2>&1)
+$executionAssistRegressionText = ($executionAssistRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
+if ($LASTEXITCODE -eq 0 -and $executionAssistRegressionText -like '*runtime_execution_assist_regression: PASS*') { Mark-Ok 'native four-quadrant execution-assist regression' } else { Mark-Fail "native four-quadrant execution-assist regression $executionAssistRegressionText" }
 $brainControlRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_brain_control_regression.py') 2>&1)
 $brainControlRegressionText = ($brainControlRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
 if ($LASTEXITCODE -eq 0 -and $brainControlRegressionText -like '*RUNTIME_BRAIN_CONTROL_REGRESSION_OK*') { Mark-Ok 'SQLite control-plane shadow regression' } else { Mark-Fail "SQLite control-plane shadow regression $brainControlRegressionText" }

@@ -36,6 +36,13 @@ function Get-SuperBrainFormalPhaseToken([string]$Phase) {
   if ($releaseStageMatch.Success) {
     return 'R' + [string]$releaseStageMatch.Groups['release'].Value + '-STAGE' + [string]$releaseStageMatch.Groups['stage'].Value
   }
+  # A canonical plan may use a release-neutral Stage N label.  It is still a
+  # formal phase, so it must not bypass H7 closeout merely because the plan
+  # does not include a release prefix.
+  $plainStageMatch = [regex]::Match($label, '^(?i:stage)\s*(?<stage>\d+(?:\.\d+){0,2})(?=$|\s|[/:()\-])')
+  if ($plainStageMatch.Success) {
+    return 'STAGE' + [string]$plainStageMatch.Groups['stage'].Value
+  }
   return ''
 }
 
@@ -64,6 +71,20 @@ function Get-SuperBrainFormalPhaseDirection([string]$Previous,[string]$Next) {
   if ($release.Success -and $nextRelease.Success -and [int]$release.Groups['release'].Value -eq [int]$nextRelease.Groups['release'].Value) {
     $previousParts = @($release.Groups['stage'].Value.Split('.') | ForEach-Object { [int]$_ })
     $nextParts = @($nextRelease.Groups['stage'].Value.Split('.') | ForEach-Object { [int]$_ })
+    $length = [Math]::Max($previousParts.Count,$nextParts.Count)
+    for ($index = 0; $index -lt $length; $index++) {
+      $left = if ($index -lt $previousParts.Count) { $previousParts[$index] } else { 0 }
+      $right = if ($index -lt $nextParts.Count) { $nextParts[$index] } else { 0 }
+      if ($right -gt $left) { return 'forward' }
+      if ($right -lt $left) { return 'backward' }
+    }
+    return 'unchanged'
+  }
+  $plainStage = [regex]::Match($Previous, '^STAGE(?<stage>\d+(?:\.\d+){0,2})$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  $nextPlainStage = [regex]::Match($Next, '^STAGE(?<stage>\d+(?:\.\d+){0,2})$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  if ($plainStage.Success -and $nextPlainStage.Success) {
+    $previousParts = @($plainStage.Groups['stage'].Value.Split('.') | ForEach-Object { [int]$_ })
+    $nextParts = @($nextPlainStage.Groups['stage'].Value.Split('.') | ForEach-Object { [int]$_ })
     $length = [Math]::Max($previousParts.Count,$nextParts.Count)
     for ($index = 0; $index -lt $length; $index++) {
       $left = if ($index -lt $previousParts.Count) { $previousParts[$index] } else { 0 }

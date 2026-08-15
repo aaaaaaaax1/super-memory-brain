@@ -886,6 +886,69 @@ def test_current_workspace_scope_uses_host_cwd_not_derived_status_card() -> None
         assert context["workspaceKey"] == workspace_key
 
 
+def test_execution_contract_context_ignores_non_wake_eligible_terminal_contracts() -> None:
+    """A completed terminal card must not make the runnable workline ambiguous."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-wake-eligible-context-") as directory:
+        state_root = Path(directory)
+        workspace = state_root / "workspace"
+        host_project = state_root / "host-project"
+        host_project.mkdir()
+        workspace_key = host_workspace_key(host_project)
+        thread_id = "brain-core-wake-eligible-thread"
+        updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        session_key = write_authoritative_task_contract(
+            workspace,
+            workspace_key,
+            thread_id,
+            "task-runnable-current",
+            task_name="Runnable current task",
+            current_step="bind the current H7 task",
+            next_action="continue the runnable task",
+            updated_at=updated_at,
+        )
+        index_path = workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["entries"][0]["wakeEligible"] = True
+        contract_path = workspace / "runtime-state" / "execution-contracts" / "task-runnable-current--fixture.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract["taskInstanceId"] = "ti-" + "a" * 32
+        write_json(contract_path, contract)
+        index["entries"].append(
+            {
+                "taskId": "task-terminal-history",
+                "status": "active",
+                "wakeEligible": False,
+                "packageVersion": package_version(),
+                "revision": 8,
+                "updatedAt": updated_at,
+                "contractFileName": "task-terminal-history--fixture.json",
+            }
+        )
+        write_json(index_path, index)
+
+        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_cwd = Path.cwd()
+        os.environ["CODEX_THREAD_ID"] = thread_id
+        os.chdir(host_project)
+        try:
+            core = make_core(workspace)
+            context = core._execution_contract_context()
+            routed_contract, routed_code = core._read_context_contract(workspace_key, session_key)
+        finally:
+            os.chdir(previous_cwd)
+            if previous_thread is None:
+                os.environ.pop("CODEX_THREAD_ID", None)
+            else:
+                os.environ["CODEX_THREAD_ID"] = previous_thread
+
+        assert context is not None
+        assert context["taskId"] == "task-runnable-current"
+        assert routed_code == "BRAIN_CONTEXT_READY"
+        assert routed_contract is not None
+        assert routed_contract["taskId"] == "task-runnable-current"
+
+
 def test_execution_contract_context_requires_current_native_intent_receipt() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-contract-intent-") as directory:
         state_root = Path(directory)

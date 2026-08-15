@@ -705,6 +705,27 @@ def main() -> None:
                 }
             )
             service.control.import_task(completed_task)
+            trashed_task = json.loads(json.dumps(current_task))
+            trashed_task.update(
+                {
+                    "commandId": "ui-task-history-trash-import",
+                    "taskId": "task-ui-history-trash-private-id",
+                    "taskInstanceId": "ti-" + "7" * 32,
+                    "ownerSessionKey": "sid-" + "8" * 24,
+                }
+            )
+            trashed_state = trashed_task["state"]
+            assert isinstance(trashed_state, dict)
+            trashed_state.update(
+                {
+                    "lifecycle": "completed",
+                    "focusLabel": "界面历史回收站任务",
+                    "currentStep": "任务已完成，等待恢复或过期",
+                    "nextAction": "保留任务证据",
+                    "completedAt": (datetime.now(UTC) - timedelta(days=16)).isoformat().replace("+00:00", "Z"),
+                }
+            )
+            service.control.import_task(trashed_task)
             _, scoped_overview, _ = request_json(opener, base, "/api/read", {"operation": "overview"}, origin=base)
             assert scoped_overview["taskScope"]["status"] == "bound"
             assert [task["taskId"] for task in scoped_overview["tasks"]] == ["task-ui-overview-current"]
@@ -712,19 +733,22 @@ def main() -> None:
             assert "Foreign task details must never reach the Control Center." not in json.dumps(scoped_overview)
 
             _, task_history, _ = request_json(opener, base, "/api/read", {"operation": "task_history", "limit": 20}, origin=base)
-            history_item = next(item for item in task_history["items"] if item["title"] == "界面历史完成任务")
-            assert history_item["statusLabel"] == "已完成" and history_item["retentionState"] == "cleanup_preview"
+            history_item = next(item for item in task_history["items"] if item["title"] == "界面历史回收站任务")
+            assert history_item["statusLabel"] == "已完成" and history_item["retentionState"] == "trashed"
+            assert all(item["title"] != "界面历史完成任务" for item in task_history["items"])
+            assert task_history["counts"]["evidenceOnly"] >= 1
+            assert task_history["completionEvidence"]["count"] >= 1
             assert "task-ui-history-completed-private-id" not in json.dumps(task_history)
             _, retention_preview, _ = request_json(
                 opener,
                 base,
                 "/api/read",
-                {"operation": "task_retention_preview", "completedDays": 15, "trashDays": 30},
+                {"operation": "task_retention_preview", "completedDays": 7, "trashDays": 15},
                 origin=base,
             )
-            assert retention_preview["schema"] == "super-brain.task-retention-preview.v1"
-            assert retention_preview["counts"]["cleanupPreview"] >= 1
-            assert any(item["title"] == "界面历史完成任务" for item in retention_preview["impacts"]["cleanupPreview"])
+            assert retention_preview["schema"] == "super-brain.task-retention-preview.v2"
+            assert retention_preview["counts"]["evidenceOnly"] >= 1
+            assert any(item["title"] == "界面历史完成任务" for item in retention_preview["impacts"]["compactEvidence"])
             assert "task-ui-history-completed-private-id" not in json.dumps(retention_preview)
             _, saved_retention, _ = request_json(
                 opener,
@@ -733,13 +757,14 @@ def main() -> None:
                 {
                     "action": "update_task_retention",
                     "requestId": "ui-save-task-retention",
-                    "completedDays": 15,
-                    "trashDays": 30,
+                    "completedDays": 8,
+                    "trashDays": 15,
                     "expectedRevision": task_history["settings"]["revision"],
                 },
                 origin=base,
             )
-            assert saved_retention["receipt"]["settings"]["completedDays"] == 15
+            assert saved_retention["receipt"]["settings"]["completedDays"] == 8
+            assert saved_retention["receipt"]["settings"]["compactEvidenceDays"] == 30
             assert saved_retention["delivery"]["status"] == "not_required"
             _, restored_task_card, _ = request_json(
                 opener,
@@ -750,7 +775,7 @@ def main() -> None:
             )
             assert restored_task_card["receipt"]["retentionState"] == "visible"
             _, refreshed_history, _ = request_json(opener, base, "/api/read", {"operation": "task_history", "limit": 20}, origin=base)
-            refreshed_item = next(item for item in refreshed_history["items"] if item["title"] == "界面历史完成任务")
+            refreshed_item = next(item for item in refreshed_history["items"] if item["title"] == "界面历史回收站任务")
             assert refreshed_item["retentionState"] == "visible" and refreshed_item["canRestore"] is False
 
             timeline_card = {

@@ -48,6 +48,8 @@ def _spec(
     memory_use: str = "scope_bound_recall",
     project_evidence: bool = False,
     plan_approval: str = "not_applicable",
+    execution_assist_required: bool = False,
+    execution_assist_allowed: bool = True,
 ) -> dict[str, Any]:
     return {
         "signals": signals,
@@ -58,13 +60,15 @@ def _spec(
         "memoryUse": memory_use,
         "projectEvidenceRequired": project_evidence,
         "planApproval": plan_approval,
+        "executionAssistRequired": execution_assist_required,
+        "executionAssistAllowed": execution_assist_allowed,
     }
 
 
 _SPECS: dict[str, dict[str, Any]] = {
     "direct": _spec(),
-    "greeting": _spec(governed=False, response_profile="direct", memory_use="none"),
-    "side_message": _spec(governed=False, response_profile="direct", memory_use="none"),
+    "greeting": _spec(governed=False, response_profile="direct", memory_use="none", execution_assist_allowed=False),
+    "side_message": _spec(governed=False, response_profile="direct", memory_use="none", execution_assist_allowed=False),
     "task_status": _spec(signals=("status",), response_profile="status", memory_use="current_state_only"),
     "continuity": _spec(signals=("resume", "continue", "recovery"), response_profile="continuity", memory_use="recovery_context"),
     "design_evaluate": _spec(
@@ -73,6 +77,7 @@ _SPECS: dict[str, dict[str, Any]] = {
         memory_use="project_evidence_support",
         project_evidence=True,
         plan_approval="required_before_mutation",
+        execution_assist_required=True,
     ),
     "plan_proposal": _spec(
         signals=("plan", "proposal", "evaluate"),
@@ -80,6 +85,7 @@ _SPECS: dict[str, dict[str, Any]] = {
         memory_use="project_evidence_support",
         project_evidence=True,
         plan_approval="required_before_mutation",
+        execution_assist_required=True,
     ),
     "super_brain_issue_continuity": _spec(
         signals=("super_brain_defect", "root_cause", "repair", "resume", "continue"),
@@ -88,6 +94,7 @@ _SPECS: dict[str, dict[str, Any]] = {
         learning_target="execution_rule_candidate",
         memory_use="core_rule_first",
         project_evidence=True,
+        execution_assist_required=True,
     ),
     "super_brain_issue_runtime": _spec(
         signals=("super_brain_defect", "root_cause", "repair", "governed_turn"),
@@ -96,6 +103,7 @@ _SPECS: dict[str, dict[str, Any]] = {
         learning_target="core_rule_candidate",
         memory_use="core_rule_first",
         project_evidence=True,
+        execution_assist_required=True,
     ),
     "super_brain_issue_memory": _spec(
         signals=("super_brain_defect", "root_cause", "repair", "memory_recall"),
@@ -104,6 +112,7 @@ _SPECS: dict[str, dict[str, Any]] = {
         learning_target="system_rule_candidate",
         memory_use="memory_recall_diagnosis",
         project_evidence=True,
+        execution_assist_required=True,
     ),
     "super_brain_issue_ui": _spec(
         signals=("super_brain_defect", "root_cause", "repair"),
@@ -112,6 +121,7 @@ _SPECS: dict[str, dict[str, Any]] = {
         learning_target="experience_candidate",
         memory_use="project_projection_diagnosis",
         project_evidence=True,
+        execution_assist_required=True,
     ),
     "user_correction": _spec(
         signals=("user_correction", "learning"),
@@ -179,6 +189,8 @@ def resolve_turn_intent(intent: Any = "direct", *, memory_mode: Any = "auto") ->
         "learningWriteAllowed": False,
         "projectEvidenceRequired": bool(spec["projectEvidenceRequired"]),
         "planApproval": str(spec["planApproval"]),
+        "executionAssistRequired": bool(spec["executionAssistRequired"]),
+        "executionAssistAllowed": bool(spec["executionAssistAllowed"]),
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
@@ -194,7 +206,8 @@ def public_projection(value: dict[str, Any] | None) -> dict[str, Any]:
         "schema", "kind", "governed", "memoryMode", "ruleSignals", "responseProfile",
         "problemNature", "responseOrder", "repairMode", "learningTarget", "learningWriteAllowed",
         "memoryUse",
-        "projectEvidenceRequired", "planApproval", "payloadHash", "rawPromptStored", "rawTranscriptStored",
+        "projectEvidenceRequired", "planApproval", "executionAssistRequired", "executionAssistAllowed",
+        "payloadHash", "rawPromptStored", "rawTranscriptStored",
     )
     return {
         "ok": bool(value.get("ok")),

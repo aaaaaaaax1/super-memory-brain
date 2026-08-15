@@ -424,9 +424,9 @@ class BrainCore:
         self._mcp_runtime_identity_startup = _mcp_runtime_identity(self.package_root)
         self._graph_cache_key: tuple[int, int] | None = None
         self._graph_cache: list[GraphEdge] = []
-        # An MCP stdio worker can serve more than one Desktop task over its
-        # lifetime.  Request-scoped Host metadata therefore lives on the core
-        # instance only inside ``bind_mcp_host_scope`` and is always restored.
+        # A transport can serve more than one Desktop task over its lifetime.
+        # Request-scoped Host metadata therefore lives on the core only inside
+        # ``bind_host_scope`` and is always restored.
         # It must never be copied into os.environ or durable state.
         self._mcp_host_scope: tuple[str, str] | None = None
         self._mcp_host_workspace_root: Path | None = None
@@ -982,13 +982,13 @@ class BrainCore:
         return "sid-" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
 
     @contextmanager
-    def bind_mcp_host_scope(self, scope: tuple[str, str] | None, *, workspace_root: str | Path | None = None):
-        """Bind one verified MCP Host scope without mutating process globals.
+    def bind_host_scope(self, scope: tuple[str, str] | None, *, workspace_root: str | Path | None = None):
+        """Bind one verified transport Host scope without process-global state.
 
-        A missing or malformed MCP scope deliberately suppresses inherited cwd
+        A missing or malformed scope deliberately suppresses inherited cwd
         and environment fallbacks for the duration of that request.  This is
-        the fail-closed boundary that prevents a long-lived worker from
-        attributing a later request to an earlier Desktop task.
+        the fail-closed boundary that prevents a long-lived worker or CLI
+        helper from attributing work to the wrong Desktop task.
         """
 
         normalized: tuple[str, str] | None = None
@@ -1022,6 +1022,13 @@ class BrainCore:
             self._mcp_host_scope = previous_scope
             self._mcp_host_workspace_root = previous_root
             self._mcp_host_scope_bound = previous_bound
+
+    @contextmanager
+    def bind_mcp_host_scope(self, scope: tuple[str, str] | None, *, workspace_root: str | Path | None = None):
+        """Compatibility alias for callers not yet migrated to ``bind_host_scope``."""
+
+        with self.bind_host_scope(scope, workspace_root=workspace_root):
+            yield
 
     def _workspace_context_pointer_path(self, workspace_key: str) -> Path | None:
         normalized = str(workspace_key or "").strip()
@@ -1105,6 +1112,13 @@ class BrainCore:
             for entry in index.get("entries", []) or []
             if isinstance(entry, dict)
             and str(entry.get("status", "")) == "active"
+            # A terminal contract remains durable for history and exact
+            # recovery proof, but it must not compete with the one runnable
+            # workline.  Runtime-wake already projects this distinction as
+            # ``wakeEligible=false``; honour it here before the unique-entry
+            # guard.  Missing legacy values remain eligible for backwards
+            # compatibility, while a literal false is authoritative.
+            and entry.get("wakeEligible", True) is not False
             and str(entry.get("packageVersion", "")) == package_version
         ]
         if len(entries) != 1:
@@ -1337,6 +1351,12 @@ class BrainCore:
             for entry in index.get("entries", []) or []
             if isinstance(entry, dict)
             and str(entry.get("status", "")) == "active"
+            # Terminal cards intentionally remain in the index for bounded
+            # history, but runtime context must choose only a runnable
+            # workline.  A stale context pointer is merely an ambiguity hint;
+            # it must never revive an explicitly non-wake-eligible entry.
+            # Missing legacy values remain eligible for compatibility.
+            and entry.get("wakeEligible", True) is not False
             and str(entry.get("packageVersion", "")) == package_version
         ]
         if not entries:
