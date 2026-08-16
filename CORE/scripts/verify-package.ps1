@@ -42,9 +42,15 @@ if ($PackageOnly -and -not $Worker) {
   }
   Push-Location $Root
   try {
-    Invoke-PackageOnlyCheck 'python runtime compile' { python -m py_compile runtime\brain_core.py runtime\execution_assist.py runtime\turn_runtime.py runtime\brain_mcp.py runtime\brain_cli.py runtime\host_visible_tail.py }
+    Invoke-PackageOnlyCheck 'python runtime compile' { python -m py_compile runtime\brain_core.py runtime\execution_assist.py runtime\capability_source_registry.py runtime\capability_shadow_eval.py runtime\agent_asset_loadout.py runtime\work_dag.py runtime\project_knowledge.py runtime\run_observability.py runtime\turn_runtime.py runtime\brain_mcp.py runtime\brain_cli.py runtime\host_visible_tail.py }
     Invoke-PackageOnlyCheck 'core rule registry regression' { python tests\runtime_core_rule_registry_regression.py }
     Invoke-PackageOnlyCheck 'execution assist regression' { python tests\runtime_execution_assist_regression.py }
+    Invoke-PackageOnlyCheck 'capability source registry regression' { python tests\runtime_capability_source_registry_regression.py }
+    Invoke-PackageOnlyCheck 'capability shadow evaluation regression' { python tests\runtime_capability_shadow_eval_regression.py }
+    Invoke-PackageOnlyCheck 'agent asset loadout regression' { python tests\runtime_agent_asset_loadout_regression.py }
+    Invoke-PackageOnlyCheck 'work DAG regression' { python tests\runtime_work_dag_regression.py }
+    Invoke-PackageOnlyCheck 'project knowledge regression' { python tests\runtime_project_knowledge_regression.py }
+    Invoke-PackageOnlyCheck 'run observability regression' { python tests\runtime_run_observability_regression.py }
     Invoke-PackageOnlyCheck 'host visible tail regression' { python tests\runtime_host_visible_tail_regression.py }
     Invoke-PackageOnlyCheck 'host continuation bridge regression' { python tests\runtime_host_continuation_bridge_regression.py }
     Invoke-PackageOnlyCheck 'turn runtime regression' { python tests\runtime_turn_runtime_regression.py }
@@ -278,16 +284,16 @@ function Test-ContainsAll([string]$Text, [string[]]$Markers) {
 }
 
 $required = @(
-  'README.md','QUICK_START.md','COMMANDS.md','START_HERE.md','install.bat','manifest.json','super-brain-rules.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','maintenance-policy.json','intelligence-policy.json','objective-benchmark-policy.json','route-map.json','capabilities.json','runtime-layout.example.json','references\index.md','references\runtime-control-plane.md','references\engineering-judgment.md','references\technology-decision.md','references\technology-catalog.json','references\objective-evaluation.md','references\phase6-memory-evaluation.md','references\four-layer-runtime-layout.md','references\skill-capability-map.seed.json',
+  'README.md','QUICK_START.md','COMMANDS.md','START_HERE.md','install.bat','manifest.json','super-brain-rules.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','maintenance-policy.json','intelligence-policy.json','objective-benchmark-policy.json','route-map.json','capabilities.json','capability-shadow-fixtures.json','capability-shadow-evaluation.json','runtime-layout.example.json','references\index.md','references\runtime-control-plane.md','references\engineering-judgment.md','references\technology-decision.md','references\technology-catalog.json','references\objective-evaluation.md','references\phase6-memory-evaluation.md','references\four-layer-runtime-layout.md','references\skill-capability-map.seed.json',
   'super-memory-brain\SKILL.md',
   'modules\skill-orchestrator\SKILL.md',
   'modules\plusunm-g1\SKILL.md',
   'modules\nexsandglass-dedicated-memory\SKILL.md',
-  'runtime\brain_core.py','runtime\core_rule_registry.py','runtime\turn_intent.py','runtime\brain_context.py','runtime\brain_control.py','runtime\brain_cli.py','runtime\brain_mcp.py','runtime\brain_eval.py','runtime\phase6_memory_eval.py','runtime\continuation_policy.py','runtime\turn_close_dispatcher.py','runtime\codex_prompt_hook.py','runtime\codex_prompt_hook_launcher.py','runtime\codex_prompt_hook_dispatcher.py','runtime\codex_stop_hook.py','runtime\codex_stop_hook_dispatcher.py','runtime\instruction_anchor_store.py','runtime\memory_consolidation.py',
+  'runtime\brain_core.py','runtime\core_rule_registry.py','runtime\turn_intent.py','runtime\brain_context.py','runtime\brain_control.py','runtime\brain_cli.py','runtime\brain_mcp.py','runtime\brain_eval.py','runtime\phase6_memory_eval.py','runtime\continuation_policy.py','runtime\turn_close_dispatcher.py','runtime\capability_shadow_eval.py','runtime\work_dag.py','runtime\project_knowledge.py','runtime\run_observability.py','runtime\codex_prompt_hook.py','runtime\codex_prompt_hook_launcher.py','runtime\codex_prompt_hook_dispatcher.py','runtime\codex_stop_hook.py','runtime\codex_stop_hook_dispatcher.py','runtime\instruction_anchor_store.py','runtime\memory_consolidation.py',
   'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_log.py',
   'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_lock.py',
   'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_sqlite.py',
-  'tests\memory-recall-tests.json','tests\memory-eval-tests.json','tests\runtime_core_rule_registry_regression.py','tests\runtime_turn_intent_regression.py','tests\runtime_brain_regression.py','tests\runtime_brain_control_regression.py','tests\runtime_native_memory_prompt_hook_regression.py','tests\runtime_brain_ui_server_regression.py','tests\runtime_migration_launcher_regression.py','tests\runtime_index_regression.py','tests\runtime_index_cache_regression.py','tests\runtime_sqlite_resource_regression.py','tests\runtime_verify_package_layers_regression.py','tests\recall_quality_diagnostic.py','tests\phase6_memory_eval_regression.py','tests\powershell\TurnCloseContinuation.Tests.ps1','tests\powershell\NoHookTurnCloseDispatcher.Tests.ps1','tests\powershell\RecoveryCheckpointFreshness.Tests.ps1','tests\powershell\CrossSessionRecoveryMatrix.Tests.ps1','tests\powershell\Phase6AnswerArtifactGenerator.Tests.ps1','tests\powershell\ObjectiveAnswerArtifactGenerator.Tests.ps1','tests\powershell\ObjectiveBenchmarkRunner.Tests.ps1','tests\powershell\SelfImprovementQueue.Tests.ps1','tests\powershell\SkillEvolution.Tests.ps1','tests\powershell\BootstrapTransaction.Tests.ps1','tests\powershell\IntentContract.Tests.ps1','tests\powershell\ColdStartCapabilityMap.Tests.ps1',
+  'tests\memory-recall-tests.json','tests\memory-eval-tests.json','tests\runtime_core_rule_registry_regression.py','tests\runtime_turn_intent_regression.py','tests\runtime_brain_regression.py','tests\runtime_brain_control_regression.py','tests\runtime_native_memory_prompt_hook_regression.py','tests\runtime_brain_ui_server_regression.py','tests\runtime_migration_launcher_regression.py','tests\runtime_index_regression.py','tests\runtime_index_cache_regression.py','tests\runtime_sqlite_resource_regression.py','tests\runtime_capability_shadow_eval_regression.py','tests\runtime_work_dag_regression.py','tests\runtime_project_knowledge_regression.py','tests\runtime_run_observability_regression.py','tests\runtime_verify_package_layers_regression.py','tests\recall_quality_diagnostic.py','tests\phase6_memory_eval_regression.py','tests\powershell\TurnCloseContinuation.Tests.ps1','tests\powershell\NoHookTurnCloseDispatcher.Tests.ps1','tests\powershell\RecoveryCheckpointFreshness.Tests.ps1','tests\powershell\CrossSessionRecoveryMatrix.Tests.ps1','tests\powershell\Phase6AnswerArtifactGenerator.Tests.ps1','tests\powershell\ObjectiveAnswerArtifactGenerator.Tests.ps1','tests\powershell\ObjectiveBenchmarkRunner.Tests.ps1','tests\powershell\SelfImprovementQueue.Tests.ps1','tests\powershell\SkillEvolution.Tests.ps1','tests\powershell\BootstrapTransaction.Tests.ps1','tests\powershell\IntentContract.Tests.ps1','tests\powershell\ColdStartCapabilityMap.Tests.ps1',
   'tests\powershell\AbsorbedCapabilityRouting.Tests.ps1','tests\powershell\H7RuntimeWakeControlPlane.Tests.ps1',
   'scripts\workspace-lifecycle-manager.ps1','scripts\auto-hygiene-runner.ps1','scripts\post-task-maintenance.ps1','scripts\self-model.ps1','scripts\self-improvement-queue.ps1',
   'scripts\install.ps1','scripts\install.bat','scripts\install-ui.ps1','scripts\install-ui.vbs','scripts\brain.bat','scripts\brain-ui.vbs','scripts\check-install-ui-paths.ps1','scripts\status.ps1','scripts\doctor.ps1','scripts\maintain.ps1','scripts\summary.ps1','scripts\script-tiers.ps1','scripts\memory-health.ps1','scripts\write-memory.ps1','scripts\write-experience.ps1','scripts\audit-memory.ps1',
@@ -296,7 +302,7 @@ $required = @(
   'scripts\optimize-advisor.ps1','scripts\tool-health.ps1','scripts\skill-capability-map.ps1','scripts\absorbed-capability-route.ps1',
   'scripts\accepted-constraints-preflight.ps1',
   'scripts\goal-route-lock.ps1','scripts\route-checkpoint.ps1','scripts\verified-module-snapshot.ps1','scripts\integration-parity-check.ps1','scripts\causal-change-plan.ps1','scripts\engineering-decision-gate.ps1','scripts\technology-decision.ps1','scripts\decision-binding.ps1',
-  'scripts\checkpoint-writer.ps1','scripts\execution-contract.ps1','scripts\task-register.ps1','scripts\task-link-store.ps1','scripts\task-state-store.ps1','scripts\task-lifecycle-audit.ps1','scripts\routing-kernel.ps1',
+  'scripts\checkpoint-writer.ps1','scripts\execution-contract.ps1','scripts\work-dag.ps1','scripts\task-register.ps1','scripts\task-link-store.ps1','scripts\task-state-store.ps1','scripts\task-lifecycle-audit.ps1','scripts\routing-kernel.ps1',
   'modules\skill-pool-router\scripts\skill-catalog.ps1',
   'scripts\test-recall.ps1','scripts\route-regression.ps1','scripts\memory-eval.ps1','scripts\intelligence-eval.ps1','scripts\autonomy-evidence-ledger.ps1','scripts\objective-benchmark.ps1','scripts\objective-benchmark-runner.ps1','scripts\objective-answer-artifact-generator.ps1','scripts\memory-eval-report.ps1','scripts\tag-legacy-memory.ps1','scripts\ci.ps1','scripts\lint.ps1','scripts\test-pester.ps1','scripts\concurrency-smoke-test.ps1','scripts\task-verification.ps1','scripts\team-dispatch-check.ps1','scripts\team-template-list.ps1','scripts\team-task-new.ps1','scripts\team-task-add-delegation.ps1','scripts\team-task-authorize.ps1','scripts\team-task-review.ps1','scripts\team-task-audit.ps1','scripts\team-task-decision.ps1','scripts\team-task-status.ps1','scripts\team-task-index.ps1','scripts\smoke-test.ps1','scripts\common.ps1','scripts\session-compact.ps1'
 )
@@ -490,6 +496,76 @@ foreach ($nativeRuntimeFile in $actualNativeRuntimeFiles) {
   if ($nativeRuntimeFiles -contains $nativeRuntimeFile) { Mark-Ok "native runtime inventory listed $nativeRuntimeFile" } elseif ($legacyCompatibilityFiles -contains $nativeRuntimeFile) { Mark-Ok "retired native runtime compatibility listed $nativeRuntimeFile" } else { Mark-Fail "native runtime inventory missing $nativeRuntimeFile" }
 }
 if ($manifest.runtimeMode -eq 'hookless_h7' -and $legacyCompatibilityFiles.Count -gt 0) { Mark-Ok 'manifest H7 runtime mode and retired compatibility boundary' } else { Mark-Fail 'manifest H7 runtime mode or retired compatibility boundary missing' }
+$capabilitySourceRegistryPath = Join-Path $Root 'capability-source-registry.json'
+try {
+  $capabilitySourceRegistry = Get-Content -LiteralPath $capabilitySourceRegistryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $declaredCapabilitySourceRegistry = $manifest.capabilitySourceRegistry
+  $capabilitySources = @($capabilitySourceRegistry.sources)
+  $capabilityRegistryEntriesCurrent = $capabilitySources.Count -gt 0
+  foreach ($capabilitySource in $capabilitySources) {
+    $sourceManifestPath = [string]$capabilitySource.manifestPath
+    $sourceManifestFullPath = Join-Path $Root ($sourceManifestPath -replace '/', '\')
+    if (
+      [string]$capabilitySource.sourceId -notmatch '^[a-z][a-z0-9-]{1,79}$' -or
+      [string]$capabilitySource.capabilityNamespace -notmatch '^[a-z][a-z0-9-]{1,63}$' -or
+      $sourceManifestPath -notmatch '^extensions/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/extension\.json$' -or
+      $capabilitySource.required -isnot [bool] -or
+      -not (Test-Path -LiteralPath $sourceManifestFullPath)
+    ) {
+      $capabilityRegistryEntriesCurrent = $false
+    }
+  }
+  $capabilityRegistryCurrent = (
+    $capabilitySourceRegistry.schema -eq 'super-brain.capability-source-registry.v1' -and
+    [int]$capabilitySourceRegistry.registryVersion -eq 1 -and
+    $declaredCapabilitySourceRegistry.path -eq 'capability-source-registry.json' -and
+    $declaredCapabilitySourceRegistry.schema -eq $capabilitySourceRegistry.schema -and
+    [int]$declaredCapabilitySourceRegistry.registryVersion -eq [int]$capabilitySourceRegistry.registryVersion -and
+    $capabilityRegistryEntriesCurrent
+  )
+  if ($capabilityRegistryCurrent) { Mark-Ok 'capability source registry manifest declaration' } else { Mark-Fail 'capability source registry manifest declaration invalid' }
+} catch {
+  Mark-Fail "capability source registry parse $($_.Exception.Message)"
+}
+$declaredCapabilityShadow = $manifest.capabilityShadowEvaluation
+$capabilityShadowDeclarationCurrent = (
+  $declaredCapabilityShadow.fixturePath -eq 'capability-shadow-fixtures.json' -and
+  $declaredCapabilityShadow.fixtureSchema -eq 'super-brain.capability-shadow-fixtures.v1' -and
+  $declaredCapabilityShadow.receiptPath -eq 'capability-shadow-evaluation.json' -and
+  $declaredCapabilityShadow.receiptSchema -eq 'super-brain.capability-shadow-evaluation.v1' -and
+  [int]$declaredCapabilityShadow.evaluationVersion -eq 1
+)
+if ($capabilityShadowDeclarationCurrent) { Mark-Ok 'capability shadow evaluation manifest declaration' } else { Mark-Fail 'capability shadow evaluation manifest declaration invalid' }
+$capabilityShadowVerifyOutput = @(& python (Join-Path $Root 'runtime\capability_shadow_eval.py') --package-root $Root 2>&1)
+$capabilityShadowVerifyText = ($capabilityShadowVerifyOutput | ForEach-Object { [string]$_ }) -join "`n"
+if ($LASTEXITCODE -eq 0 -and $capabilityShadowVerifyText -like '*H7_CAPABILITY_SHADOW_EVALUATION_CURRENT*') { Mark-Ok 'capability shadow evaluation current binding' } else { Mark-Fail "capability shadow evaluation current binding $capabilityShadowVerifyText" }
+$agentAssetRegistryPath = Join-Path $Root 'agent-asset-registry.json'
+try {
+  $agentAssetRegistry = Get-Content -LiteralPath $agentAssetRegistryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $declaredAgentAssetRegistry = $manifest.agentAssetRegistry
+  $assetPolicy = $agentAssetRegistry.policy
+  $agentAssets = @($agentAssetRegistry.assets)
+  $assetIds = @($agentAssets | ForEach-Object { [string]$_.assetId })
+  $requiredAssetIds = @('h7-controller','native-capability-router','focused-evidence-verifier','bounded-delegation-packet')
+  $agentAssetRegistryCurrent = (
+    $agentAssetRegistry.schema -eq 'super-brain.agent-asset-registry.v1' -and
+    [int]$agentAssetRegistry.registryVersion -eq 1 -and
+    $declaredAgentAssetRegistry.path -eq 'agent-asset-registry.json' -and
+    $declaredAgentAssetRegistry.schema -eq $agentAssetRegistry.schema -and
+    [int]$declaredAgentAssetRegistry.registryVersion -eq [int]$agentAssetRegistry.registryVersion -and
+    $assetPolicy.defaultDispatch -eq 'direct' -and
+    $assetPolicy.stateAuthority -eq 'h7_only' -and
+    $assetPolicy.hostSkillExecution -eq 'forbidden' -and
+    $assetPolicy.upstreamExecution -eq 'forbidden' -and
+    $assetPolicy.backgroundWorkers -eq 'forbidden' -and
+    $assetPolicy.rawPromptStored -eq $false -and
+    $assetPolicy.rawTranscriptStored -eq $false -and
+    @($requiredAssetIds | Where-Object { $assetIds -notcontains $_ }).Count -eq 0
+  )
+  if ($agentAssetRegistryCurrent) { Mark-Ok 'agent asset loadout registry manifest declaration' } else { Mark-Fail 'agent asset loadout registry manifest declaration invalid' }
+} catch {
+  Mark-Fail "agent asset loadout registry parse $($_.Exception.Message)"
+}
 $coreRuleRegistryPath = Join-Path $Root 'super-brain-rules.json'
 $coreRuleRegistryTest = Join-Path $Root 'tests\runtime_core_rule_registry_regression.py'
 try {
@@ -554,6 +630,21 @@ if ($LASTEXITCODE -eq 0 -and $runtimeRegressionText -like '*RUNTIME_BRAIN_REGRES
 $executionAssistRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_execution_assist_regression.py') 2>&1)
 $executionAssistRegressionText = ($executionAssistRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
 if ($LASTEXITCODE -eq 0 -and $executionAssistRegressionText -like '*runtime_execution_assist_regression: PASS*') { Mark-Ok 'native four-quadrant execution-assist regression' } else { Mark-Fail "native four-quadrant execution-assist regression $executionAssistRegressionText" }
+$capabilitySourceRegistryRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_capability_source_registry_regression.py') 2>&1)
+$capabilitySourceRegistryRegressionText = ($capabilitySourceRegistryRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
+if ($LASTEXITCODE -eq 0 -and $capabilitySourceRegistryRegressionText -like '*runtime_capability_source_registry_regression: PASS*') { Mark-Ok 'native capability source registry regression' } else { Mark-Fail "native capability source registry regression $capabilitySourceRegistryRegressionText" }
+$capabilityShadowRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_capability_shadow_eval_regression.py') 2>&1)
+$capabilityShadowRegressionText = ($capabilityShadowRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
+if ($LASTEXITCODE -eq 0 -and $capabilityShadowRegressionText -like '*runtime_capability_shadow_eval_regression: PASS*') { Mark-Ok 'native capability shadow evaluation gate regression' } else { Mark-Fail "native capability shadow evaluation gate regression $capabilityShadowRegressionText" }
+$agentAssetLoadoutRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_agent_asset_loadout_regression.py') 2>&1)
+$agentAssetLoadoutRegressionText = ($agentAssetLoadoutRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
+if ($LASTEXITCODE -eq 0 -and $agentAssetLoadoutRegressionText -like '*runtime_agent_asset_loadout_regression: PASS*') { Mark-Ok 'native agent asset loadout regression' } else { Mark-Fail "native agent asset loadout regression $agentAssetLoadoutRegressionText" }
+$workDagRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_work_dag_regression.py') 2>&1)
+$workDagRegressionText = ($workDagRegressionOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+if ($LASTEXITCODE -eq 0 -and $workDagRegressionText -like '*runtime_work_dag_regression: PASS*') { Mark-Ok 'native H7 work-DAG regression' } else { Mark-Fail "native H7 work-DAG regression $workDagRegressionText" }
+$projectKnowledgeRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_project_knowledge_regression.py') 2>&1)
+$projectKnowledgeRegressionText = ($projectKnowledgeRegressionOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+if ($LASTEXITCODE -eq 0 -and $projectKnowledgeRegressionText -like '*runtime_project_knowledge_regression: PASS*') { Mark-Ok 'native H7 proof-bound project knowledge regression' } else { Mark-Fail "native H7 proof-bound project knowledge regression $projectKnowledgeRegressionText" }
 $brainControlRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_brain_control_regression.py') 2>&1)
 $brainControlRegressionText = ($brainControlRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
 if ($LASTEXITCODE -eq 0 -and $brainControlRegressionText -like '*RUNTIME_BRAIN_CONTROL_REGRESSION_OK*') { Mark-Ok 'SQLite control-plane shadow regression' } else { Mark-Fail "SQLite control-plane shadow regression $brainControlRegressionText" }
@@ -893,9 +984,9 @@ try {
 } catch { Mark-Fail "codegraph index json command $($_.Exception.Message)" }
 
 $impactAdvisorText = Read-Utf8 'scripts\impact-advisor.ps1'
-if ($impactAdvisorText -like '*last-impact-advisor.json*' -and $impactAdvisorText -like '*riskLevel*' -and $impactAdvisorText -like '*recommendedChecks*' -and $impactAdvisorText -like '*directCallers*' -and $impactAdvisorText -like '*directCallees*' -and $impactAdvisorText -like '*affectedWorkspaceFiles*') { Mark-Ok 'impact advisor static support' } else { Mark-Fail 'impact advisor static support missing' }
+if ($impactAdvisorText -like '*last-impact-advisor.json*' -and $impactAdvisorText -like '*riskLevel*' -and $impactAdvisorText -like '*recommendedChecks*' -and $impactAdvisorText -like '*directCallers*' -and $impactAdvisorText -like '*affectedWorkspaceFiles*' -and $impactAdvisorText -like '*[switch]$NoWrite*' -and $impactAdvisorText -notlike '*last-project-continuity.json*') { Mark-Ok 'impact advisor static support' } else { Mark-Fail 'impact advisor static support missing' }
 try {
-  $impactJsonText = & (Join-Path $PSScriptRoot 'impact-advisor.ps1') -ChangedFiles 'scripts/codegraph-index.ps1' -Json
+  $impactJsonText = & (Join-Path $PSScriptRoot 'impact-advisor.ps1') -ChangedFiles 'scripts/codegraph-index.ps1' -NoWrite -Json
   $impactJson = $impactJsonText | ConvertFrom-Json
   if ($impactJson.schema -eq 'super-brain.impact-advisor.v1' -and -not [string]::IsNullOrWhiteSpace([string]$impactJson.riskLevel)) { Mark-Ok 'impact advisor json command' } else { Mark-Fail 'impact advisor json command missing riskLevel' }
 } catch { Mark-Fail "impact advisor json command $($_.Exception.Message)" }

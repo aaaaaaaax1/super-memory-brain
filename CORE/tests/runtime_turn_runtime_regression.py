@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from brain_context import canonical_hash, project_progress_root_hash, scope_ref, visible_progress_scope_binding_hash
 from brain_core import BrainCore
 from host_visible_tail import observe_visible_context_message, select_latest_assistant, select_latest_durable_assistant
+from run_observability import receipt_is_valid as run_observability_receipt_is_valid
 from turn_runtime import MODE, RECEIPT_SCHEMA, TELEMETRY_SCHEMA, run_turn
 import turn_close_dispatcher as turn_close_dispatcher
 import turn_runtime as turn_runtime
@@ -116,34 +117,52 @@ def visible_progress_receipt(
 def native_capability_route_receipt(*, state: str = "ready") -> dict[str, object]:
     """Create the compact router-to-H7 proof; no upstream path/body is present."""
 
-    selected = ["sb.native.engineering.diagnosing-bugs.v1"] if state == "ready" else []
-    contracts = ["sb.native.engineering.diagnosing-bugs.contract.v1"] if state == "ready" else []
-    provenance: list[dict[str, str]] = (
-        [{"capabilityId": selected[0], "provenanceHash": "a" * 64}] if selected else []
+    selected_count = 1 if state == "ready" else 0
+    shadow_state = "withheld" if selected_count else "not_applicable"
+    shadow_body = {
+        "schema": "super-brain.capability-shadow-gate.v1",
+        "state": shadow_state,
+        "code": (
+            "H7_CAPABILITY_ACTIVATION_SHADOW_WITHHELD"
+            if selected_count
+            else "H7_CAPABILITY_SHADOW_NOT_APPLICABLE"
+        ),
+        "evaluationPayloadHash": "",
+        "selectedContractCount": selected_count,
+        "activationAllowed": False,
+        "nonAuthorizing": True,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    shadow_gate = {**shadow_body, "payloadHash": canonical_hash(shadow_body)}
+    external_state = "withheld" if selected_count else "not_applicable"
+    code = (
+        "CAPABILITY_ROUTE_EVALUATION_WITHHELD"
+        if selected_count
+        else "CAPABILITY_ROUTE_NOT_APPLICABLE"
     )
-    parity: list[dict[str, str]] = (
-        [{"capabilityId": selected[0], "contractId": contracts[0], "parityHash": "b" * 64}] if selected else []
-    )
-    code = {
-        "ready": "CAPABILITY_ROUTE_READY",
-        "not_applicable": "CAPABILITY_ROUTE_NOT_APPLICABLE",
-        "withheld": "CAPABILITY_ROUTE_WITHHELD",
-    }[state]
     route_input = {
         "schema": "super-brain.capability-route-receipt.v1",
-        "state": state,
+        "state": external_state,
         "code": code,
-        "selectedNativeCapabilityIds": selected,
-        "nativeContractIds": contracts,
-        "provenanceHashes": provenance,
-        "parityHashes": parity,
-        # The router owns the exact routeHash recipe. H7 treats this as an
-        # opaque, 64-hex identity and binds it to its own selection hash.
-        "routeHash": canonical_hash({"routerFixture": "native-capability-route", "state": state}),
+        # External routes cannot claim a native shadow evaluation. H7 derives
+        # the actual selected native procedure and current gate itself.
+        "selectedNativeCapabilityIds": [],
+        "nativeContractIds": [],
+        "provenanceHashes": [],
+        "parityHashes": [],
+        "routeHash": canonical_hash(
+            {
+                "routerFixture": "native-capability-route",
+                "state": external_state,
+                "shadowGate": shadow_gate,
+            }
+        ),
         "nonAuthorizing": True,
         "rawPromptStored": False,
         "rawTranscriptStored": False,
         "sourcePathsOmitted": True,
+        "shadowGate": shadow_gate,
     }
     return route_input
 
@@ -411,9 +430,15 @@ def test_open_is_idempotent_and_binds_typed_memory() -> None:
             "SB-PROGRESS-TRUTH-001",
             "SB-PROPOSAL-GATE-001",
             "SB-INDEPENDENT-CONTROL-PLANE-AGENT-001",
+            "SB-ON-DEMAND-PROJECT-KNOWLEDGE-001",
         ]
         assert first["runtimeReceipt"]["memory"]["snapshotPayloadHash"]
         assert first["runtimeReceipt"]["activation"]["receiptHash"]
+        assert first["context"]["projectKnowledge"]["state"] == "ready", first
+        assert first["context"]["projectKnowledge"]["coverage"] == "proof_bound_slice", first
+        assert first["context"]["projectKnowledge"]["fullTreeScan"] is False, first
+        assert first["runtimeReceipt"]["projectKnowledge"]["payloadHash"] == first["context"]["projectKnowledge"]["payloadHash"], first
+        assert evidence["projectKnowledge"]["payloadHash"] == first["context"]["projectKnowledge"]["payloadHash"], evidence
         assert first["context"]["agentIdentity"]["kind"] == "independent_control_plane_agent"
         assert first["context"]["authorityModel"]["objectiveAuthority"] == "latest_user_instruction"
         assert first["context"]["authorityModel"]["executionAuthority"] == "h7_scope_bound_execution_contract"
@@ -458,6 +483,12 @@ def test_open_is_idempotent_and_binds_typed_memory() -> None:
         assert receipt["schema"] == RECEIPT_SCHEMA
         assert telemetry["schema"] == TELEMETRY_SCHEMA
         assert len(telemetry["events"]) == 1
+        run_observability = telemetry["runObservability"]
+        assert run_observability_receipt_is_valid(run_observability, expected_scope_ref=scope_ref_value), run_observability
+        assert run_observability["measuredSampleCount"] == 1, run_observability
+        assert run_observability["budget"]["state"] == "within_budget", run_observability
+        assert first["runObservability"] == run_observability, first
+        assert evidence["runObservability"] == run_observability, evidence
         serialized = json.dumps({"receipt": receipt, "telemetry": telemetry}, ensure_ascii=False)
         assert "rawPromptStored\":true" not in serialized
         assert "rawTranscriptStored\":true" not in serialized
@@ -634,12 +665,17 @@ def test_h7_accepts_the_actual_compact_router_receipt() -> None:
         assert set(route_receipt) == {
             "schema", "state", "code", "selectedNativeCapabilityIds", "nativeContractIds",
             "provenanceHashes", "parityHashes", "routeHash", "nonAuthorizing", "rawPromptStored",
-            "rawTranscriptStored", "sourcePathsOmitted",
+            "rawTranscriptStored", "sourcePathsOmitted", "shadowGate",
         }, route_receipt
-        assert route_receipt["state"] == "ready", route_receipt
-        assert route_receipt["selectedNativeCapabilityIds"], route_receipt
-        assert len(route_receipt["provenanceHashes"]) == len(route_receipt["selectedNativeCapabilityIds"]), route_receipt
-        assert len(route_receipt["parityHashes"]) == len(route_receipt["selectedNativeCapabilityIds"]), route_receipt
+        assert route_receipt["state"] == "withheld", route_receipt
+        assert route_receipt["code"] == "CAPABILITY_ROUTE_EVALUATION_WITHHELD", route_receipt
+        assert route_receipt["selectedNativeCapabilityIds"] == [], route_receipt
+        assert route_receipt["nativeContractIds"] == [], route_receipt
+        assert route_receipt["shadowGate"]["state"] == "withheld", route_receipt
+        assert route_receipt["shadowGate"]["activationAllowed"] is False, route_receipt
+        assert route_receipt["shadowGate"]["payloadHash"] == canonical_hash(
+            {key: value for key, value in route_receipt["shadowGate"].items() if key != "payloadHash"}
+        ), route_receipt
 
         session_key = "sid-" + "f" * 24
         write_native_memory_snapshot(state_root / "workspace")
@@ -820,6 +856,40 @@ def test_capability_route_hash_mismatch_withholds_h7_evidence() -> None:
             receipt_mismatch = run_turn(core, phase="evidence")
         assert receipt_mismatch["code"] == "H7_EVIDENCE_INCOMPLETE", receipt_mismatch
         assert receipt_mismatch["entry"]["current"] is False, receipt_mismatch
+
+
+def test_run_observability_tamper_withholds_h7_evidence() -> None:
+    """The compact runtime summary is evidence-bound, not display-only telemetry."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-run-observability-tamper-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        host_root = Path(directory) / "host"
+        memory_root.mkdir(parents=True)
+        host_root.mkdir()
+        (memory_root / "sandglass.txt").write_text("", encoding="utf-8")
+        session_key = "sid-" + "f" * 24
+        write_native_memory_snapshot(state_root / "workspace")
+        write_context_contract(state_root, host_root, session_key, task_id="task-run-observability-tamper")
+        core = BrainCore(ROOT, memory_root)
+
+        with with_host_scope(host_root, session_key):
+            opened = run_turn(core, phase="open", turn_intent="design_evaluate")
+            assert opened["available"] is True, opened
+            scope_ref_value = opened["context"]["scope"]["scopeRef"]
+            telemetry_path = state_root / "workspace" / "runtime-state" / "turn-runtime" / "telemetry" / f"{scope_ref_value}.json"
+            telemetry = json.loads(telemetry_path.read_text(encoding="utf-8"))
+            telemetry["runObservability"]["runtimeLatency"]["p95Ms"] = 999.0
+            telemetry["runObservability"]["payloadHash"] = canonical_hash(
+                {key: item for key, item in telemetry["runObservability"].items() if key != "payloadHash"}
+            )
+            telemetry["payloadHash"] = canonical_hash({key: item for key, item in telemetry.items() if key != "payloadHash"})
+            write_json(telemetry_path, telemetry)
+            evidence = run_turn(core, phase="evidence")
+
+    assert evidence["code"] == "H7_EVIDENCE_INCOMPLETE", evidence
+    assert evidence["telemetry"]["current"] is False, evidence
+    assert evidence["runObservability"]["payloadHash"] == telemetry["runObservability"]["payloadHash"], evidence
 
 
 def test_project_progress_proof_fails_closed_on_missing_or_drift() -> None:
@@ -2988,12 +3058,25 @@ def test_registry_change_stales_h7_evidence_until_reopened() -> None:
         memory_root.mkdir(parents=True)
         host_root.mkdir()
         package_root.mkdir()
-        for name in ("manifest.json", "route-map.json", "capabilities.json", "super-brain-rules.json"):
+        for name in (
+            "manifest.json",
+            "route-map.json",
+            "capabilities.json",
+            "super-brain-rules.json",
+            "capability-source-registry.json",
+            "capability-shadow-fixtures.json",
+            "capability-shadow-evaluation.json",
+        ):
             (package_root / name).write_bytes((ROOT / name).read_bytes())
         for relative_path in (
             "runtime/brain_mcp.py",
             "runtime/brain_core.py",
             "runtime/turn_runtime.py",
+            "runtime/project_knowledge.py",
+            "runtime/execution_assist.py",
+            "runtime/capability_source_registry.py",
+            "runtime/capability_shadow_eval.py",
+            "runtime/run_observability.py",
             "runtime/core_rule_registry.py",
         ):
             destination = package_root / relative_path
@@ -3974,6 +4057,7 @@ def main() -> int:
     test_direct_execution_assist_is_h7_native_and_private()
     test_execution_assist_request_rejects_raw_fields_without_runtime_write()
     test_capability_route_hash_mismatch_withholds_h7_evidence()
+    test_run_observability_tamper_withholds_h7_evidence()
     test_h7_accepts_the_actual_compact_router_receipt()
     test_project_progress_proof_fails_closed_on_missing_or_drift()
     test_checkpoint_refreshes_only_a_stale_project_progress_proof_through_h7()
@@ -4011,7 +4095,7 @@ def main() -> int:
     test_checkpoint_retries_one_unacknowledged_transport_with_same_transition_id_and_timeout_floor()
     test_checkpoint_does_not_retry_a_rejected_cas_transaction()
     test_checkpoint_set_replay_is_never_misreported_as_a_parent_return()
-    print("runtime turn-runtime regression: passed (38/38)")
+    print("runtime turn-runtime regression: passed (39/39)")
     return 0
 
 

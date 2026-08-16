@@ -102,6 +102,45 @@ def _requires_user_input(next_action: Any) -> bool:
     return any(marker in compact for marker in _USER_INPUT_MARKERS)
 
 
+def _canonical_plan_counts(value: Any) -> tuple[int, int, int, int] | None:
+    """Return trusted canonical-plan counts without relying on prose."""
+
+    if not isinstance(value, dict):
+        return None
+    expected = ("itemCount", "completedCount", "pendingCount", "cancelledCount")
+    if all(name in value for name in expected):
+        counts = tuple(value[name] for name in expected)
+        if all(isinstance(count, int) and not isinstance(count, bool) and count >= 0 for count in counts):
+            return counts  # type: ignore[return-value]
+        return None
+    items = value.get("items")
+    if not isinstance(items, list) or not items:
+        return None
+    statuses = [str(item.get("status", "")) for item in items if isinstance(item, dict)]
+    if len(statuses) != len(items) or any(status not in {"pending", "in_progress", "completed", "cancelled"} for status in statuses):
+        return None
+    return (
+        len(items),
+        sum(status == "completed" for status in statuses),
+        sum(status in {"pending", "in_progress"} for status in statuses),
+        sum(status == "cancelled" for status in statuses),
+    )
+
+
+def _has_verified_terminal_completion(resolution: dict[str, Any]) -> bool:
+    """Allow a root workline to finish only on explicit structural evidence."""
+
+    if str(resolution.get("currentPhase", "")).strip().casefold() not in {"complete", "completed", "done"}:
+        return False
+    if resolution.get("canResumeParent") is True:
+        return False
+    counts = _canonical_plan_counts(resolution.get("canonicalPlan"))
+    if counts is None:
+        return False
+    item_count, completed_count, pending_count, cancelled_count = counts
+    return item_count > 0 and pending_count == 0 and completed_count + cancelled_count == item_count
+
+
 def decide_turn_close(
     resolution: dict[str, Any] | None,
     *,
@@ -139,6 +178,10 @@ def decide_turn_close(
         return _withhold("CONTINUATION_POLICY_TURN_OUTCOME_REQUIRED")
     if turn_outcome == "blocked":
         return _result("pause_with_blocker", "CONTINUATION_POLICY_TURN_BLOCKED")
+    if turn_outcome in {"ephemeral_insertion", "active_work_progressed"} and _has_verified_terminal_completion(resolution):
+        if not completion_evidence_present:
+            return _withhold("CONTINUATION_POLICY_COMPLETION_EVIDENCE_REQUIRED")
+        return _result("pause_with_blocker", "CONTINUATION_POLICY_VERIFIED_TASK_COMPLETE")
     if turn_outcome in {"ephemeral_insertion", "active_work_progressed"}:
         return _result("continue_current_turn", "CONTINUATION_POLICY_CONTINUE_CURRENT_TURN")
     if not completion_evidence_present:

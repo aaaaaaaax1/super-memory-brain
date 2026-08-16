@@ -68,15 +68,44 @@ function New-CapabilityRouteReceipt([object]$CapabilityRoute) {
       parityHash = $parityHash
     })
   }
+  # This PowerShell router is an external compatibility producer, not the
+  # package-owned shadow evaluator.  It must never claim that an upstream-ish
+  # route has passed the native activation experiment.  H7 recalculates the
+  # actual native route and its hash-bound gate from the package registry.
+  $hasExternalSelection = @($contractIds).Count -gt 0
+  $shadowGateBody = [ordered]@{
+    activationAllowed = $false
+    code = if ($hasExternalSelection) { 'H7_CAPABILITY_ACTIVATION_SHADOW_WITHHELD' } else { 'H7_CAPABILITY_SHADOW_NOT_APPLICABLE' }
+    evaluationPayloadHash = ''
+    nonAuthorizing = $true
+    rawPromptStored = $false
+    rawTranscriptStored = $false
+    schema = 'super-brain.capability-shadow-gate.v1'
+    selectedContractCount = if ($hasExternalSelection) { @($contractIds | Select-Object -Unique).Count } else { 0 }
+    state = if ($hasExternalSelection) { 'withheld' } else { 'not_applicable' }
+  }
+  $shadowGate = [pscustomobject]@{
+    schema = [string]$shadowGateBody.schema
+    state = [string]$shadowGateBody.state
+    code = [string]$shadowGateBody.code
+    evaluationPayloadHash = [string]$shadowGateBody.evaluationPayloadHash
+    selectedContractCount = [int]$shadowGateBody.selectedContractCount
+    activationAllowed = $false
+    nonAuthorizing = $true
+    rawPromptStored = $false
+    rawTranscriptStored = $false
+    payloadHash = Get-SuperBrainStableHash (($shadowGateBody | ConvertTo-Json -Depth 6 -Compress)) 64
+  }
   $routePayload = [ordered]@{
     schema = 'super-brain.capability-route-receipt.v1'
-    state = if ($CapabilityRoute) { [string]$CapabilityRoute.state } else { 'withheld' }
-    code = if ($CapabilityRoute) { [string]$CapabilityRoute.code } else { 'CAPABILITY_ROUTE_UNAVAILABLE' }
+    state = if ($hasExternalSelection) { 'withheld' } else { 'not_applicable' }
+    code = if ($hasExternalSelection) { 'CAPABILITY_ROUTE_EVALUATION_WITHHELD' } else { 'CAPABILITY_ROUTE_NOT_APPLICABLE' }
     selectionPolicy = if ($CapabilityRoute) { [string]$CapabilityRoute.selectionPolicy } else { '' }
-    selectedNativeCapabilityIds = @($nativeIds | Select-Object -Unique)
-    nativeContractIds = @($contractIds | Select-Object -Unique)
-    provenanceHashes = @($provenanceHashes)
-    parityHashes = @($parityHashes)
+    selectedNativeCapabilityIds = @()
+    nativeContractIds = @()
+    provenanceHashes = @()
+    parityHashes = @()
+    shadowGate = $shadowGate
     nonAuthorizing = $true
     rawPromptStored = $false
     rawTranscriptStored = $false
@@ -95,6 +124,7 @@ function New-CapabilityRouteReceipt([object]$CapabilityRoute) {
     rawPromptStored = $false
     rawTranscriptStored = $false
     sourcePathsOmitted = $true
+    shadowGate = $shadowGate
   }
 }
 

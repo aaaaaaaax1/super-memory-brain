@@ -20,6 +20,7 @@ from continuation_policy import decide_turn_close
 from layout_paths import resolve_layout_path, state_root
 from turn_close_dispatcher import _normalize_progress_checkpoint
 from turn_intent import resolve_turn_intent
+from turn_runtime import _contract_binding
 
 
 def write_json(path: Path, value: object) -> None:
@@ -949,6 +950,119 @@ def test_execution_contract_context_ignores_non_wake_eligible_terminal_contracts
         assert routed_contract["taskId"] == "task-runnable-current"
 
 
+def test_terminal_finalization_context_is_opt_in_unique_and_never_auto_wakes() -> None:
+    """One verified terminal task may re-enter H7 only to publish its final close."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-terminal-finalization-") as directory:
+        state_root = Path(directory)
+        workspace = state_root / "workspace"
+        host_project = state_root / "host-project"
+        host_project.mkdir()
+        workspace_key = host_workspace_key(host_project)
+        thread_id = "brain-core-terminal-finalization-thread"
+        updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        task_id = "task-terminal-finalization"
+        session_key = write_authoritative_task_contract(
+            workspace,
+            workspace_key,
+            thread_id,
+            task_id,
+            task_name="Terminal finalization task",
+            current_step="Prepare the final H7 close.",
+            next_action="No automatic action: terminal close is pending.",
+            updated_at=updated_at,
+        )
+        index_path = workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json"
+        contract_path = workspace / "runtime-state" / "execution-contracts" / f"{task_id}--fixture.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract.update(
+            {
+                "taskInstanceId": "ti-" + "c" * 32,
+                "currentPhase": "Complete",
+                "currentStep": "Prepare the final H7 close.",
+                "nextAction": "No automatic action: terminal close is pending.",
+                "returnStack": [],
+                # The final H7 checkpoint is responsible for refreshing this
+                # proof atomically.  A withheld proof must still be selectable
+                # only through the explicit terminal-finalization path.
+                "projectProgressProof": {"state": "withheld"},
+                "canonicalPlan": {
+                    "items": [
+                        {"itemId": "item-terminal", "ordinal": 1, "label": "terminal work", "status": "completed"}
+                    ]
+                },
+            }
+        )
+        contract.pop("visibleProgressReceipt", None)
+        index["entries"][0]["wakeEligible"] = False
+        write_json(contract_path, contract)
+        write_json(index_path, index)
+
+        core = make_core(workspace)
+        ordinary, ordinary_code = core._read_context_contract(workspace_key, session_key)
+        terminal, terminal_code = core._read_context_contract(
+            workspace_key,
+            session_key,
+            allow_terminal_finalization=True,
+        )
+
+        assert ordinary is None
+        assert ordinary_code == "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT"
+        assert terminal is not None
+        assert terminal_code == "BRAIN_CONTEXT_TERMINAL_FINALIZATION_READY"
+        assert terminal["taskId"] == task_id
+        terminal_bound, terminal_binding_code = _contract_binding(
+            core,
+            {
+                "code": "BRAIN_CONTEXT_TERMINAL_FINALIZATION_READY",
+                "scope": {"workspaceKey": workspace_key, "ownerSessionKey": session_key},
+                "task": {"contractHash": canonical_hash(terminal)},
+            },
+        )
+        assert terminal_binding_code == "TURN_RUNTIME_CONTRACT_CURRENT"
+        assert terminal_bound is not None
+        assert terminal_bound["taskId"] == task_id
+
+        second_task = "task-terminal-finalization-second"
+        second_name = f"{second_task}--fixture.json"
+        second = json.loads(json.dumps(contract))
+        second.update(
+            {
+                "taskId": second_task,
+                "taskInstanceId": "ti-" + "d" * 32,
+                "focusId": f"{second_task}-focus",
+                "focusLabel": "Second terminal finalization task",
+                "planReceipt": {
+                    "focusId": f"{second_task}-focus",
+                    "contractRevision": 1,
+                    "planFingerprint": "fixture-terminal-second",
+                },
+            }
+        )
+        index["entries"].append(
+            {
+                "taskId": second_task,
+                "status": "active",
+                "wakeEligible": False,
+                "packageVersion": package_version(),
+                "revision": 1,
+                "updatedAt": updated_at,
+                "contractFileName": second_name,
+            }
+        )
+        write_json(workspace / "runtime-state" / "execution-contracts" / second_name, second)
+        write_json(index_path, index)
+
+        ambiguous, ambiguous_code = core._read_context_contract(
+            workspace_key,
+            session_key,
+            allow_terminal_finalization=True,
+        )
+        assert ambiguous is None
+        assert ambiguous_code == "BRAIN_CONTEXT_TERMINAL_FINALIZATION_AMBIGUOUS"
+
+
 def test_execution_contract_context_requires_current_native_intent_receipt() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-contract-intent-") as directory:
         state_root = Path(directory)
@@ -1496,7 +1610,37 @@ def test_turn_close_policy_requires_current_turn_attestation_and_never_echoes_in
         user_control="none",
     )
     assert blocked["decision"] == "pause_with_blocker"
-    serialized = json.dumps([unknown, completed, missing_evidence, partial, paused, blocked], ensure_ascii=False)
+
+    terminal = decide_turn_close(
+        {
+            **resolution,
+            "nextAction": "No further work; the verified task is complete.",
+            "currentPhase": "Complete",
+            "canonicalPlan": {"itemCount": 8, "completedCount": 8, "pendingCount": 0, "cancelledCount": 0},
+            "canResumeParent": False,
+        },
+        turn_outcome="active_work_progressed",
+        user_control="none",
+        completion_evidence_present=True,
+    )
+    assert terminal["decision"] == "pause_with_blocker"
+    assert terminal["code"] == "CONTINUATION_POLICY_VERIFIED_TASK_COMPLETE"
+    assert terminal["terminalReplyAllowed"] is True
+
+    incomplete = decide_turn_close(
+        {
+            **resolution,
+            "currentPhase": "Complete",
+            "canonicalPlan": {"itemCount": 8, "completedCount": 7, "pendingCount": 1, "cancelledCount": 0},
+            "canResumeParent": False,
+        },
+        turn_outcome="active_work_progressed",
+        user_control="none",
+        completion_evidence_present=True,
+    )
+    assert incomplete["decision"] == "continue_current_turn"
+
+    serialized = json.dumps([unknown, completed, missing_evidence, partial, paused, blocked, terminal, incomplete], ensure_ascii=False)
     assert "CONTINUATION_SECRET_SENTINEL" not in serialized
 
 
@@ -2609,6 +2753,7 @@ if __name__ == "__main__":
     test_runtime_layout_beats_a_stale_nexsandbase_environment_root()
     test_current_task_recall_rejects_stale_global_checkpoint()
     test_current_workspace_scope_uses_host_cwd_not_derived_status_card()
+    test_terminal_finalization_context_is_opt_in_unique_and_never_auto_wakes()
     test_execution_contract_context_requires_current_native_intent_receipt()
     test_no_hook_context_uses_real_host_scope_and_stays_read_only()
     test_context_recovers_from_a_lagging_hot_index_after_a_committed_transition()

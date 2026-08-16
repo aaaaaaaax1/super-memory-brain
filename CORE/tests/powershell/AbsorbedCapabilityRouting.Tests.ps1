@@ -224,7 +224,7 @@ Describe 'Absorbed capability automatic routing' {
     (@($result.value.capabilities.name) -contains 'grilling') | Should Be $false
   }
 
-  It 'injects compact non-authorizing cards and exposes authorization-bearing policy in intent routing' {
+  It 'keeps the compatibility receipt withheld while exposing compact non-authorizing cards and policy' {
     $stateRoot = Join-Path $TestDrive ('absorbed-route-intent-' + [guid]::NewGuid().ToString('n'))
     $result = Invoke-IntentRoute $stateRoot 'turn this into a PRD requirements specification'
 
@@ -239,10 +239,17 @@ Describe 'Absorbed capability automatic routing' {
     @($result.value.absorbedCapabilities | Where-Object { $_.executionOwner -ne 'super-memory-brain' -or $_.standaloneInstall -ne $false }).Count | Should Be 0
     $receipt = $result.value.capabilityRouteReceipt
     $receipt.schema | Should Be 'super-brain.capability-route-receipt.v1'
-    (@($receipt.selectedNativeCapabilityIds).Count -gt 0) | Should Be $true
-    (@($receipt.nativeContractIds) -contains 'sb.native.product-planning.proposal-loop.v1') | Should Be $true
-    @($receipt.provenanceHashes | Where-Object { [string]$_.provenanceHash -notmatch '^[a-f0-9]{64}$' }).Count | Should Be 0
-    @($receipt.parityHashes | Where-Object { [string]$_.parityHash -notmatch '^[a-f0-9]{64}$' }).Count | Should Be 0
+    $receipt.state | Should Be 'withheld'
+    $receipt.code | Should Be 'CAPABILITY_ROUTE_EVALUATION_WITHHELD'
+    (@($receipt.selectedNativeCapabilityIds).Count) | Should Be 0
+    (@($receipt.nativeContractIds).Count) | Should Be 0
+    (@($receipt.provenanceHashes).Count) | Should Be 0
+    (@($receipt.parityHashes).Count) | Should Be 0
+    $receipt.shadowGate.schema | Should Be 'super-brain.capability-shadow-gate.v1'
+    $receipt.shadowGate.state | Should Be 'withheld'
+    $receipt.shadowGate.code | Should Be 'H7_CAPABILITY_ACTIVATION_SHADOW_WITHHELD'
+    $receipt.shadowGate.activationAllowed | Should Be $false
+    ($receipt.shadowGate.selectedContractCount -gt 0) | Should Be $true
     $receipt.routeHash | Should Match '^[a-f0-9]{64}$'
     $receipt.nonAuthorizing | Should Be $true
     $receipt.rawPromptStored | Should Be $false

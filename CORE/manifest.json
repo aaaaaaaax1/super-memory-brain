@@ -70,6 +70,13 @@
                                "runtime\\host_visible_tail.py",
                                "runtime\\host_continuation_bridge.py",
                                "runtime\\turn_runtime.py",
+                               "runtime\\execution_assist.py",
+                               "runtime\\capability_source_registry.py",
+                               "runtime\\capability_shadow_eval.py",
+                               "runtime\\agent_asset_loadout.py",
+                               "runtime\\work_dag.py",
+                               "runtime\\project_knowledge.py",
+                               "runtime\\run_observability.py",
                                "runtime\\responses_api_client.py",
                                "runtime\\instruction_anchor_store.py",
                                "runtime\\layout_paths.py",
@@ -122,13 +129,38 @@
                                                      "SB-ADAPTER-CONCISENESS-001",
                                                      "SB-BOOTSTRAP-SINGLE-SOURCE-001",
                                                      "SB-CONTROL-PLANE-MAINTAINABILITY-001",
-                                                     "SB-DIRECT-GIT-SOURCE-001"
+                                                     "SB-DIRECT-GIT-SOURCE-001",
+                                                     "SB-ON-DEMAND-PROJECT-KNOWLEDGE-001"
                                                  ]
                          },
+    "capabilitySourceRegistry":  {
+                                     "path":  "capability-source-registry.json",
+                                     "schema":  "super-brain.capability-source-registry.v1",
+                                     "registryVersion":  1
+                                 },
+    "capabilityShadowEvaluation":  {
+                                        "fixturePath":  "capability-shadow-fixtures.json",
+                                        "fixtureSchema":  "super-brain.capability-shadow-fixtures.v1",
+                                        "receiptPath":  "capability-shadow-evaluation.json",
+                                        "receiptSchema":  "super-brain.capability-shadow-evaluation.v1",
+                                        "evaluationVersion":  1
+                                    },
+    "agentAssetRegistry":  {
+                               "path":  "agent-asset-registry.json",
+                               "schema":  "super-brain.agent-asset-registry.v1",
+                               "registryVersion":  1
+                           },
     "intelligenceBehaviorFiles":  [
                                       "scripts\\routing-kernel.ps1",
                                       "scripts\\internal\\runtime-wake-core.ps1",
                                       "runtime\\turn_runtime.py",
+                                      "runtime\\execution_assist.py",
+                                      "runtime\\capability_source_registry.py",
+                                      "runtime\\capability_shadow_eval.py",
+                                      "runtime\\agent_asset_loadout.py",
+                                      "runtime\\work_dag.py",
+                                      "runtime\\project_knowledge.py",
+                                      "runtime\\run_observability.py",
                                       "runtime\\turn_close_dispatcher.py",
                                       "runtime\\core_rule_registry.py",
                                       "runtime\\turn_intent.py",
@@ -137,6 +169,7 @@
                                       "scripts\\why-plan.ps1",
                                       "scripts\\retire-codex-super-brain-hooks.ps1",
                                       "scripts\\execution-contract.ps1",
+                                      "scripts\\work-dag.ps1",
                                       "scripts\\self-model.ps1",
                                       "scripts\\intelligence-eval.ps1",
                                       "scripts\\autonomy-evidence-ledger.ps1",
@@ -144,7 +177,11 @@
                                       "scripts\\autonomous-executor.ps1",
                                       "scripts\\reflection-promotion.ps1",
                                       "super-memory-brain\\SKILL.md",
-                                      "intelligence-policy.json"
+                                      "intelligence-policy.json",
+                                      "capability-source-registry.json",
+                                      "capability-shadow-fixtures.json",
+                                      "capability-shadow-evaluation.json",
+                                      "agent-asset-registry.json"
                                   ],
     "memoryRoot":  "../private-state/shared",
     "structuredMemory":  [
@@ -279,6 +316,7 @@
                     "checkpoint-writer.ps1",
                     "super-brain-dashboard.ps1",
                     "execution-contract.ps1",
+                    "work-dag.ps1",
                     "auto-continuation.ps1",
                     "status-snapshot-writer.ps1",
                     "privacy-hit-locator.ps1",
@@ -361,6 +399,7 @@
                                       "task-index.ps1",
                                       "task-register.ps1",
                                       "task-state-store.ps1",
+                                      "work-dag.ps1",
                                       "memory-scout.ps1",
                                       "why-plan.ps1",
                                       "skill-capability-map.ps1",
@@ -1658,8 +1697,17 @@
                                "manualOnly":  false,
                                "dangerousSwitches":  [
 
-                                                     ],
+                               ],
                                "notes":  "Maintains one compact task-scoped latest execution contract. Visible conversation wins; after compression it restores the latest reconciled user instruction and assistant commitment, and blocks superseded or unreconciled work."
+                           },
+                           {
+                               "path":  "work-dag.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Projects a declarative dependency graph from one H7 canonical plan. Seed and refresh are task/workspace/session CAS-bound, node status stays contract-derived, and it never creates a second task store, worker, raw prompt, or transcript."
                            },
                            {
                                "path":  "auto-continuation.ps1",

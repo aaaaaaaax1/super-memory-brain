@@ -3,7 +3,8 @@ param(
   [string]$TaskId = '',
   [string]$WorkspaceKey = '',
   [switch]$Json,
-  [switch]$RefreshCodegraph
+  [switch]$RefreshCodegraph,
+  [switch]$NoWrite
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -13,13 +14,12 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $PSScriptRoot
 $workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
-if (-not (Test-Path $workspace)) { New-Item -ItemType Directory -Force -Path $workspace | Out-Null }
+if (-not $NoWrite -and -not (Test-Path $workspace)) { New-Item -ItemType Directory -Force -Path $workspace | Out-Null }
 
 $manifest = Get-SuperBrainManifest $Root
 $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
 $outPath = Join-Path $workspace 'last-impact-advisor.json'
 $codegraphPath = Join-Path $workspace 'last-codegraph-index.json'
-$projectContinuityPath = Join-Path $workspace 'last-project-continuity.json'
 $structureBaselinePath = Join-Path $workspace 'structure-baseline.json'
 $workspaceKeyValue = Get-SuperBrainWorkspaceKey $WorkspaceKey
 
@@ -35,14 +35,18 @@ function Normalize-ChangedFile([string]$Path) {
 function Add-Unique([object[]]$Items) { @($Items | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique) }
 function Add-Check([string[]]$Checks, [string]$Check) { if ($Checks -notcontains $Check) { $Checks += $Check }; return $Checks }
 
+$codegraph = $null
 if ($RefreshCodegraph -or -not (Test-Path -LiteralPath $codegraphPath)) {
-  & (Join-Path $PSScriptRoot 'codegraph-index.ps1') -Json | Out-Null
+  $codegraphArgs = @('-Json')
+  if ($NoWrite) { $codegraphArgs += '-NoWrite' }
+  $codegraphRaw = @(& (Join-Path $PSScriptRoot 'codegraph-index.ps1') @codegraphArgs 2>&1)
+  if ($LASTEXITCODE -eq 0) {
+    try { $codegraph = (($codegraphRaw -join "`n") | ConvertFrom-Json -ErrorAction Stop) } catch { $codegraph = $null }
+  }
+} else {
+  $codegraph = Read-JsonOrNull $codegraphPath
 }
-$codegraph = Read-JsonOrNull $codegraphPath
-$continuity = Read-JsonOrNull $projectContinuityPath
 $baseline = Read-JsonOrNull $structureBaselinePath
-$ledgerSelection = if (-not [string]::IsNullOrWhiteSpace($TaskId)) { Get-SuperBrainRelevantStepLedger $workspace $TaskId $workspaceKeyValue -AllowLegacyRead } else { $null }
-$ledger = if ($ledgerSelection) { $ledgerSelection.ledger } else { $null }
 
 $normalizedChanged = Add-Unique @($ChangedFiles | ForEach-Object { Normalize-ChangedFile $_ })
 $normalizedScripts = Add-Unique @($normalizedChanged | Where-Object { $_ -like 'scripts/*.ps1' } | ForEach-Object { $_.Substring(8) })
@@ -81,27 +85,24 @@ foreach ($wf in Add-Unique $affectedWorkspaceFiles) {
 $affectedScripts = Add-Unique @($affectedScripts + $normalizedScripts)
 $affectedWorkspaceFiles = Add-Unique $affectedWorkspaceFiles
 
-$critical = @('scripts/project-continuity.ps1','scripts/codegraph-index.ps1','scripts/impact-advisor.ps1','scripts/verify-package.ps1','scripts/ci.ps1','memory-policy.json','manifest.json','CURRENT_BASELINE.md')
+$critical = @('scripts/codegraph-index.ps1','scripts/impact-advisor.ps1','scripts/verify-package.ps1','scripts/ci.ps1','memory-policy.json','manifest.json','CURRENT_BASELINE.md')
 foreach ($f in @($normalizedChanged)) { if ($critical -contains $f) { $whyRisky += "critical_file_changed:$f" } }
 foreach ($r in @($scriptRisks)) { if (($r.tier -in @('T2','T3')) -and $r.hasMutation) { $whyRisky += "mutating_high_tier_script:$($r.script):$($r.tier)" } elseif ($r.tier -eq 'T1') { $whyRisky += "t1_script_changed:$($r.script)" } }
 if (@($directCallers).Count -gt 0) { $whyRisky += "direct_callers:$(@($directCallers).Count)" }
 if (@($directCallees).Count -gt 0) { $whyRisky += "direct_callees:$(@($directCallees).Count)" }
 if (@($affectedWorkspaceFiles).Count -gt 0) { $whyRisky += "workspace_dataflow:$(@($affectedWorkspaceFiles).Count)" }
 if (@($dynamicUnknown).Count -gt 0) { $whyRisky += "dynamic_unknown_calls:$(@($dynamicUnknown).Count)" }
-$openSteps = @($ledger.openSteps)
-if (@($openSteps).Count -gt 0) { $whyRisky += "open_steps:$(@($openSteps).Count)" }
-$candidateFindings = if ($continuity -and $continuity.findingCounts) { [int]$continuity.findingCounts.candidate } else { 0 }
-if ($candidateFindings -gt 0) { $whyRisky += "candidate_findings:$candidateFindings" }
+$openSteps = @()
+$candidateFindings = 0
 
 $riskLevel = 'low'
 if (@($whyRisky | Where-Object { $_ -like 'critical_file_changed:*' -or $_ -like 'mutating_high_tier_script:*' -or $_ -like 'open_steps:*' -or $_ -like 'candidate_findings:*' }).Count -gt 0) { $riskLevel = 'high' }
 elseif (@($whyRisky).Count -gt 0) { $riskLevel = 'medium' }
 
-$recommendedChecks = Add-Check $recommendedChecks 'scripts/codegraph-index.ps1 -Json'
-$recommendedChecks = Add-Check $recommendedChecks 'scripts/project-continuity.ps1 -Action Status -Json'
+$recommendedChecks = Add-Check $recommendedChecks 'scripts/codegraph-index.ps1 -Json -NoWrite'
 if ($riskLevel -in @('medium','high')) { $recommendedChecks = Add-Check $recommendedChecks 'scripts/verify-package.ps1' }
 if (@($normalizedChanged | Where-Object { $_ -match 'recall|memory|session|intent|trigger|super-memory-brain/SKILL.md|memory-policy.json' }).Count -gt 0) { $recommendedChecks = Add-Check $recommendedChecks 'scripts/memory-eval.ps1 -Json'; $recommendedChecks = Add-Check $recommendedChecks 'scripts/trigger-simulation.ps1 -Json' }
-if (@($normalizedChanged | Where-Object { $_ -in @('manifest.json','CURRENT_BASELINE.md') -or $_ -like 'scripts/project-continuity.ps1' -or $_ -like 'scripts/codegraph-index.ps1' -or $_ -like 'scripts/impact-advisor.ps1' -or $_ -like 'scripts/verify-package.ps1' -or $_ -like 'scripts/ci.ps1' }).Count -gt 0) { $recommendedChecks = Add-Check $recommendedChecks 'scripts/accepted-constraints-preflight.ps1 -Json'; $recommendedChecks = Add-Check $recommendedChecks 'scripts/test-pester.ps1'; $recommendedChecks = Add-Check $recommendedChecks 'scripts/ci.ps1' }
+if (@($normalizedChanged | Where-Object { $_ -in @('manifest.json','CURRENT_BASELINE.md') -or $_ -like 'scripts/codegraph-index.ps1' -or $_ -like 'scripts/impact-advisor.ps1' -or $_ -like 'scripts/verify-package.ps1' -or $_ -like 'scripts/ci.ps1' }).Count -gt 0) { $recommendedChecks = Add-Check $recommendedChecks 'scripts/accepted-constraints-preflight.ps1 -Json'; $recommendedChecks = Add-Check $recommendedChecks 'scripts/test-pester.ps1'; $recommendedChecks = Add-Check $recommendedChecks 'scripts/ci.ps1' }
 if ($riskLevel -eq 'high') { $recommendedChecks = Add-Check $recommendedChecks 'scripts/ci.ps1' }
 
 $structureConstraints = if ($baseline) { @($baseline.mustPreserve | Select-Object -First 12) } else { @() }
@@ -112,9 +113,9 @@ $result = [pscustomobject]@{
   schema='super-brain.impact-advisor.v1'; ok=$ok; checkedAt=$now; version=[string]$manifest.version; packageRoot=$Root; taskId=$TaskId; workspaceKey=$workspaceKeyValue
   changedFiles=@($normalizedChanged); normalizedChangedScripts=@($normalizedScripts)
   directCallers=@($directCallers); directCallees=@($directCallees); workspaceReads=@($workspaceReads); workspaceWrites=@($workspaceWrites); affectedWorkspaceFiles=@($affectedWorkspaceFiles); affectedScripts=@($affectedScripts)
-  riskLevel=$riskLevel; whyRisky=Add-Unique $whyRisky; recommendedChecks=@($recommendedChecks); structureConstraints=@($structureConstraints); openSteps=@($openSteps); openStepsSource=if($ledgerSelection){[string]$ledgerSelection.source}else{'not_requested'}; candidateFindings=$candidateFindings; dynamicUnknownCalls=@($dynamicUnknown)
+  riskLevel=$riskLevel; whyRisky=Add-Unique $whyRisky; recommendedChecks=@($recommendedChecks); structureConstraints=@($structureConstraints); openSteps=@($openSteps); openStepsSource='not_applicable_retired_ledger'; candidateFindings=$candidateFindings; dynamicUnknownCalls=@($dynamicUnknown)
   nextAction=$nextAction
 }
-Write-JsonUtf8NoBom $outPath $result 12
-if ($Json) { Get-Content -LiteralPath $outPath -Raw -Encoding UTF8 } else { Write-Host "IMPACT_ADVISOR_OK risk=$riskLevel changed=$(@($normalizedChanged).Count) affected=$(@($affectedScripts).Count) checks=$(@($recommendedChecks).Count) status=$outPath" }
+if (-not $NoWrite) { Write-JsonUtf8NoBom $outPath $result 12 }
+if ($Json) { if ($NoWrite) { $result | ConvertTo-Json -Depth 12 } else { Get-Content -LiteralPath $outPath -Raw -Encoding UTF8 } } else { Write-Host "IMPACT_ADVISOR_OK risk=$riskLevel changed=$(@($normalizedChanged).Count) affected=$(@($affectedScripts).Count) checks=$(@($recommendedChecks).Count) status=$(if($NoWrite){'not_written'}else{$outPath})" }
 exit 0

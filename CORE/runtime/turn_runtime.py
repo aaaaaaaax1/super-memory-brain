@@ -14,6 +14,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,10 +22,17 @@ from typing import Any
 from activation_receipt import canonical_hash, ensure_current
 from brain_context import canonical_hash as context_hash
 from brain_core import BrainCore, agent_identity
+from capability_shadow_eval import shadow_gate_is_valid
 from execution_assist import capability_route_receipt as execution_assist_capability_route_receipt
 from execution_assist import public_projection as public_execution_assist
+from execution_assist import project_knowledge_route_is_valid
 from execution_assist import receipt_is_valid as execution_assist_receipt_is_valid
 from execution_assist import resolve_execution_assist
+from project_knowledge import public_projection as public_project_knowledge
+from project_knowledge import receipt_is_valid as project_knowledge_receipt_is_valid
+from project_knowledge import resolve_project_knowledge
+from run_observability import receipt_is_valid as run_observability_receipt_is_valid
+from run_observability import summarize_telemetry as summarize_run_observability
 from turn_close_dispatcher import _invoke_contract, dispatch_turn_close, record_progress_checkpoint
 from turn_intent import public_projection as public_turn_intent
 from turn_intent import resolve_turn_intent
@@ -50,6 +58,7 @@ CAPABILITY_ROUTE_RECEIPT_FIELDS = {
     "rawPromptStored",
     "rawTranscriptStored",
     "sourcePathsOmitted",
+    "shadowGate",
 }
 CAPABILITY_ROUTE_STATES = {"ready", "not_applicable", "withheld"}
 CAPABILITY_ROUTE_CODE_RE = re.compile(r"^CAPABILITY_ROUTE_[A-Z0-9_]{3,96}$")
@@ -813,6 +822,7 @@ def _normalize_capability_route_receipt(value: Any) -> tuple[dict[str, Any] | No
     state = str(value.get("state", ""))
     code = _strict_text(value.get("code"), maximum=112, pattern=CAPABILITY_ROUTE_CODE_RE)
     route_hash = _strict_hash(value.get("routeHash"))
+    shadow_gate = value.get("shadowGate")
     if (
         state not in CAPABILITY_ROUTE_STATES
         or code is None
@@ -821,6 +831,7 @@ def _normalize_capability_route_receipt(value: Any) -> tuple[dict[str, Any] | No
         or value.get("rawPromptStored") is not False
         or value.get("rawTranscriptStored") is not False
         or value.get("sourcePathsOmitted") is not True
+        or not shadow_gate_is_valid(shadow_gate)
     ):
         return None, "H7_CAPABILITY_ROUTE_RECEIPT_INVALID"
     selected_raw = value.get("selectedNativeCapabilityIds")
@@ -854,6 +865,10 @@ def _normalize_capability_route_receipt(value: Any) -> tuple[dict[str, Any] | No
         return None, "H7_CAPABILITY_ROUTE_RECEIPT_INVALID"
     if state != "ready" and (selected or contracts or provenance or parity):
         return None, "H7_CAPABILITY_ROUTE_RECEIPT_INVALID"
+    if code == "CAPABILITY_ROUTE_EVALUATION_WITHHELD" and shadow_gate.get("state") != "withheld":
+        return None, "H7_CAPABILITY_ROUTE_RECEIPT_INVALID"
+    if state == "ready" and shadow_gate.get("state") not in {"ready", "not_applicable"}:
+        return None, "H7_CAPABILITY_ROUTE_RECEIPT_INVALID"
     normalized: dict[str, Any] = {
         "schema": CAPABILITY_ROUTE_RECEIPT_SCHEMA,
         "state": state,
@@ -867,6 +882,7 @@ def _normalize_capability_route_receipt(value: Any) -> tuple[dict[str, Any] | No
         "rawPromptStored": False,
         "rawTranscriptStored": False,
         "sourcePathsOmitted": True,
+        "shadowGate": dict(shadow_gate),
     }
     normalized["selectionHash"] = canonical_hash(normalized)
     return normalized, "H7_CAPABILITY_ROUTE_RECEIPT_CURRENT"
@@ -970,6 +986,45 @@ def _resolve_execution_assist_for_turn(
     if external_capability_route_receipt is not None and compatibility is None:
         return None, None, None, compatibility_code or "H7_CAPABILITY_ROUTE_RECEIPT_INVALID"
     return execution_assist, route_receipt, compatibility, "H7_EXECUTION_ASSIST_CURRENT"
+
+
+def _resolve_project_knowledge_for_turn(
+    core: BrainCore,
+    contract: dict[str, Any],
+    progress_status: dict[str, Any],
+    execution_assist: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    """Run the H7-native proof slice only after scope and proof are current.
+
+    The execution-assist receipt contains no project path.  This bridge takes
+    the root exclusively from the already-bound Host scope and the focus files
+    exclusively from the current H7 proof, so an ordinary continuation never
+    turns into a tree scan or a user-controlled filesystem query.
+    """
+
+    route = execution_assist.get("projectKnowledgeRoute")
+    if not project_knowledge_route_is_valid(route):
+        return None, "H7_PROJECT_KNOWLEDGE_ROUTE_INVALID"
+    result, code = resolve_project_knowledge(
+        core._context_project_root(),
+        project_progress_proof=(
+            contract.get("projectProgressProof") if isinstance(contract.get("projectProgressProof"), dict) else None
+        ),
+        project_progress_status=progress_status,
+        route=route,
+        expected_phase=str(contract.get("currentPhase", "")),
+        expected_current_step=str(contract.get("currentStep", "")),
+        expected_next_action=str(contract.get("nextAction", "")),
+        expected_completed_steps=list(contract.get("completedSteps", []) or []),
+    )
+    if result is None:
+        return None, code or "H7_PROJECT_KNOWLEDGE_UNAVAILABLE"
+    public = public_project_knowledge(result)
+    if not project_knowledge_receipt_is_valid(public):
+        return None, "H7_PROJECT_KNOWLEDGE_RECEIPT_INVALID"
+    if str(public.get("state", "")) == "withheld":
+        return None, code or str(public.get("code", "H7_PROJECT_KNOWLEDGE_WITHHELD"))
+    return result, code
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -1151,7 +1206,16 @@ def _contract_binding(core: BrainCore, context: dict[str, Any]) -> tuple[dict[st
     scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
     workspace = str(scope.get("workspaceKey", ""))
     session = str(scope.get("ownerSessionKey", ""))
-    contract, code = core._read_context_contract(workspace, session)
+    # A final checkpoint receives a deliberately non-wake-eligible terminal
+    # context.  Preserve that narrow selection when re-reading the contract
+    # for binding; otherwise this second read discards the exact candidate
+    # that ``open_turn`` already validated and strands terminal finalization.
+    terminal_finalization = str(context.get("code", "")) == "BRAIN_CONTEXT_TERMINAL_FINALIZATION_READY"
+    contract, code = core._read_context_contract(
+        workspace,
+        session,
+        allow_terminal_finalization=terminal_finalization,
+    )
     if not isinstance(contract, dict):
         return None, code or "TURN_RUNTIME_CONTRACT_UNAVAILABLE"
     task = context.get("task") if isinstance(context.get("task"), dict) else {}
@@ -1492,6 +1556,7 @@ def _receipt_body(
     turn_intent: dict[str, Any] | None = None,
     progress_status: dict[str, Any] | None = None,
     execution_assist: dict[str, Any] | None = None,
+    project_knowledge: dict[str, Any] | None = None,
     capability_route_receipt: dict[str, Any] | None = None,
     capability_route_compatibility: dict[str, Any] | None = None,
     visible_tail_assertion: dict[str, Any] | None = None,
@@ -1579,6 +1644,8 @@ def _receipt_body(
         body["recoveryPresentation"] = _public_recovery_presentation(recovery_presentation)
     if isinstance(execution_assist, dict):
         body["executionAssist"] = execution_assist
+    if isinstance(project_knowledge, dict):
+        body["projectKnowledge"] = project_knowledge
     if isinstance(capability_route_receipt, dict):
         body["capabilityRouteReceipt"] = capability_route_receipt
     if isinstance(capability_route_compatibility, dict):
@@ -1619,7 +1686,13 @@ def _write_receipt(memory_base: Path, scope_ref: str, phase: str, body: dict[str
     return value, False
 
 
-def _record_telemetry(memory_base: Path, scope_ref: str, receipt: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+def _record_telemetry(
+    memory_base: Path,
+    scope_ref: str,
+    receipt: dict[str, Any],
+    *,
+    runtime_duration_ms: int | None = None,
+) -> tuple[dict[str, Any], bool]:
     path = _telemetry_path(memory_base, scope_ref)
     prior = _read_json(path) or {}
     events = prior.get("events") if isinstance(prior.get("events"), list) else []
@@ -1647,6 +1720,8 @@ def _record_telemetry(memory_base: Path, scope_ref: str, receipt: dict[str, Any]
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
+    if runtime_duration_ms is not None:
+        event["runtimeDurationMs"] = max(0, min(60_000, int(runtime_duration_ms)))
     capability_route_receipt = receipt.get("capabilityRouteReceipt")
     if isinstance(capability_route_receipt, dict):
         event.update(
@@ -1665,6 +1740,16 @@ def _record_telemetry(memory_base: Path, scope_ref: str, receipt: dict[str, Any]
                 "executionAssistHash": str(execution_assist.get("payloadHash", "")),
                 "executionAssistAutomatic": execution_assist.get("automatic") is True,
                 "executionAssistNonAuthorizing": execution_assist.get("nonAuthorizing") is True,
+            }
+        )
+    project_knowledge = receipt.get("projectKnowledge")
+    if project_knowledge_receipt_is_valid(project_knowledge):
+        event.update(
+            {
+                "projectKnowledgeState": str(project_knowledge.get("state", "")),
+                "projectKnowledgeHash": str(project_knowledge.get("payloadHash", "")),
+                "projectKnowledgeCoverage": str(project_knowledge.get("coverage", "")),
+                "projectKnowledgeNonAuthorizing": project_knowledge.get("nonAuthorizing") is True,
             }
         )
     compatibility = receipt.get("capabilityRouteCompatibility")
@@ -1687,6 +1772,10 @@ def _record_telemetry(memory_base: Path, scope_ref: str, receipt: dict[str, Any]
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
+    # This is a deterministic projection of the same already-bounded H7
+    # telemetry. It does not read a project tree, create a cache, or gain any
+    # authority over continuation and execution.
+    value["runObservability"] = summarize_run_observability(value, expected_scope_ref=scope_ref)
     value["payloadHash"] = canonical_hash({key: item for key, item in value.items() if key != "payloadHash"})
     _atomic_json(path, value)
     return value, False
@@ -1715,6 +1804,8 @@ def _public_receipt(value: dict[str, Any]) -> dict[str, Any]:
         result["capabilityRouteReceipt"] = value["capabilityRouteReceipt"]
     if execution_assist_receipt_is_valid(value.get("executionAssist")):
         result["executionAssist"] = public_execution_assist(value["executionAssist"])
+    if project_knowledge_receipt_is_valid(value.get("projectKnowledge")):
+        result["projectKnowledge"] = value["projectKnowledge"]
     if _external_capability_route_compatibility_valid(value.get("capabilityRouteCompatibility")):
         result["capabilityRouteCompatibility"] = value["capabilityRouteCompatibility"]
     return result
@@ -1729,6 +1820,7 @@ def _receipt_valid(
     core_rules: dict[str, Any],
     project_progress: dict[str, Any] | None = None,
     visible_progress: dict[str, Any] | None = None,
+    project_knowledge: dict[str, Any] | None = None,
 ) -> bool:
     if not isinstance(value, dict):
         return False
@@ -1761,6 +1853,13 @@ def _receipt_valid(
     execution_assist = value.get("executionAssist")
     if not execution_assist_receipt_is_valid(execution_assist):
         return False
+    expected_knowledge = public_project_knowledge(project_knowledge) if isinstance(project_knowledge, dict) else None
+    receipt_knowledge = value.get("projectKnowledge")
+    if expected_knowledge is not None:
+        if not project_knowledge_receipt_is_valid(receipt_knowledge):
+            return False
+        if str(receipt_knowledge.get("payloadHash", "")) != str(expected_knowledge.get("payloadHash", "")):
+            return False
     compatibility = value.get("capabilityRouteCompatibility")
     if compatibility is not None and not _external_capability_route_compatibility_valid(compatibility):
         return False
@@ -1791,6 +1890,7 @@ def _telemetry_valid(
     project_progress: dict[str, Any] | None = None,
     visible_progress: dict[str, Any] | None = None,
     execution_assist: dict[str, Any] | None = None,
+    project_knowledge: dict[str, Any] | None = None,
     capability_route_receipt: dict[str, Any] | None = None,
 ) -> bool:
     if not isinstance(value, dict):
@@ -1836,6 +1936,29 @@ def _telemetry_valid(
             and latest.get("executionAssistNonAuthorizing") is True
         )
     )
+    expected_knowledge = public_project_knowledge(project_knowledge) if isinstance(project_knowledge, dict) else None
+    knowledge_current = (
+        expected_knowledge is None
+        or (
+            project_knowledge_receipt_is_valid(expected_knowledge)
+            and str(latest.get("projectKnowledgeState", "")) == str(expected_knowledge.get("state", ""))
+            and str(latest.get("projectKnowledgeHash", "")) == str(expected_knowledge.get("payloadHash", ""))
+            and latest.get("projectKnowledgeNonAuthorizing") is True
+        )
+    )
+    observability = value.get("runObservability")
+    observability_current = True
+    if observability is not None:
+        expected_observability = summarize_run_observability(value, expected_scope_ref=scope_ref)
+        observability_current = (
+            run_observability_receipt_is_valid(observability, expected_scope_ref=scope_ref)
+            and str(observability.get("payloadHash", ""))
+            == str(expected_observability.get("payloadHash", ""))
+        )
+    elif any(isinstance(item, dict) and "runtimeDurationMs" in item for item in events):
+        # New measured events must carry the matching compact summary. Old
+        # telemetry remains readable as historical compatibility evidence.
+        observability_current = False
     return (
         str(value.get("payloadHash", "")) == expected
         and core_rules.get("status") == "current"
@@ -1845,7 +1968,9 @@ def _telemetry_valid(
         and progress_current
         and visible_current
         and execution_assist_current
+        and knowledge_current
         and capability_route_current
+        and observability_current
     )
 
 
@@ -2115,6 +2240,7 @@ def open_turn(
     require_visible_tail_assertion: bool = True,
     user_control: str = "unknown",
     execution_apply_phase: str = "planning",
+    allow_terminal_finalization: bool = False,
     timeout: float = 8.0,
 ) -> dict[str, Any]:
     """Build one scope-bound memory/continuity packet and receipt.
@@ -2123,6 +2249,7 @@ def open_turn(
     binds that projection to a governed activation and a bounded receipt.
     """
 
+    started_at = time.perf_counter()
     intent = resolve_turn_intent(turn_intent, memory_mode=memory_mode)
     if intent.get("ok") is not True:
         return _withheld("open", {"turnIntent": public_turn_intent(intent)}, str(intent.get("code", "TURN_INTENT_INVALID")))
@@ -2257,6 +2384,7 @@ def open_turn(
         "unknown",
         False,
         governed_rule_signals,
+        terminal_finalization=allow_terminal_finalization,
     )
     session_rebind: dict[str, Any] | None = None
     if (
@@ -2613,6 +2741,15 @@ def open_turn(
         context["task"] = task_context
         if contract_authorization.get("state") != "allowed":
             return _withheld("open", context, str(contract_authorization.get("code", "H7_ACTION_AUTHORIZATION_WITHHELD")))
+    project_knowledge, project_knowledge_code = _resolve_project_knowledge_for_turn(
+        core,
+        contract,
+        progress_status,
+        execution_assist,
+    )
+    if project_knowledge is None:
+        return _withheld("open", context, project_knowledge_code or "H7_PROJECT_KNOWLEDGE_WITHHELD")
+    context["projectKnowledge"] = public_project_knowledge(project_knowledge)
     activation, activation_code, refs = _activation(
         core,
         context,
@@ -2634,6 +2771,8 @@ def open_turn(
         "coreRuleApplicableHash": str((context.get("coreRules") or {}).get("applicableEffectsHash", "")),
         "turnIntentHash": str(intent.get("payloadHash", "")),
         "executionAssistHash": str(execution_assist.get("payloadHash", "")),
+        "projectKnowledgeHash": str(project_knowledge.get("payloadHash", "")),
+        "projectKnowledgeState": str(project_knowledge.get("state", "withheld")),
         "projectProgressState": str(progress_status.get("state", "withheld")),
         "projectProgressHash": str(progress_status.get("payloadHash", "")),
         "visibleProgressState": str(visible_progress_status.get("state", "withheld")),
@@ -2663,6 +2802,7 @@ def open_turn(
         turn_intent=intent,
         progress_status=progress_status,
         execution_assist=execution_assist,
+        project_knowledge=public_project_knowledge(project_knowledge),
         capability_route_receipt=normalized_capability_route_receipt,
         capability_route_compatibility=capability_route_compatibility,
         visible_tail_assertion=public_visible_tail_assertion,
@@ -2673,7 +2813,12 @@ def open_turn(
     telemetry: dict[str, Any] | None = None
     telemetry_reused = True
     if record_telemetry:
-        telemetry, telemetry_reused = _record_telemetry(core.memory_base, scope_ref, receipt)
+        telemetry, telemetry_reused = _record_telemetry(
+            core.memory_base,
+            scope_ref,
+            receipt,
+            runtime_duration_ms=round((time.perf_counter() - started_at) * 1000),
+        )
     return {
         "ok": True,
         "schema": SCHEMA,
@@ -2689,12 +2834,14 @@ def open_turn(
         "autoVisibleTailFinalization": {},
         "sessionRebind": session_rebind or {},
         "recoveryPresentation": recovery_presentation,
+        "projectKnowledge": public_project_knowledge(project_knowledge),
         "receiptReused": reused,
         "telemetry": {
             "path": str(_telemetry_path(core.memory_base, scope_ref)),
             "payloadHash": str((telemetry or {}).get("payloadHash", "")),
             "reused": telemetry_reused,
         },
+        "runObservability": (telemetry or {}).get("runObservability", {}),
         "terminalReplyAllowed": False,
         "mustContinue": True,
         "rawPromptStored": False,
@@ -2734,6 +2881,12 @@ def checkpoint_turn(
         )
         if normalized_checkpoint_tail is None:
             return _withheld("checkpoint", {"turnIntent": public_turn_intent(requested_intent)}, visible_tail_assertion_code)
+    terminal_finalization_checkpoint = (
+        isinstance(progress_checkpoint, dict)
+        and str(progress_checkpoint.get("source", "")) == "assistant_visible_reply"
+        and str(progress_checkpoint.get("current_phase", "")).strip().casefold()
+        in {"complete", "completed", "done"}
+    )
     opened = open_turn(
         core,
         memory_mode=memory_mode,
@@ -2743,6 +2896,7 @@ def checkpoint_turn(
         capability_route_receipt=capability_route_receipt,
         execution_apply_phase="execution",
         require_visible_tail_assertion=False,
+        allow_terminal_finalization=terminal_finalization_checkpoint,
     )
     checkpoint_reconcile = False
     checkpoint_reconcile_code = ""
@@ -2942,6 +3096,7 @@ def close_turn(
 ) -> dict[str, Any]:
     """Close a governed turn and execute a safe parent-resume transition."""
 
+    started_at = time.perf_counter()
     close_intent = resolve_turn_intent(turn_intent, memory_mode=memory_mode)
     checkpoint_intent_code = _progress_checkpoint_intent_guard(progress_checkpoint, close_intent)
     if checkpoint_intent_code:
@@ -3086,6 +3241,15 @@ def close_turn(
     post_progress_status = core._project_progress_status(post_contract)
     if close_intent.get("projectEvidenceRequired") is True and post_progress_status.get("current") is not True:
         return _withheld("close", post_context, "H7_PROJECT_PROGRESS_WITHHELD")
+    post_project_knowledge, post_project_knowledge_code = _resolve_project_knowledge_for_turn(
+        core,
+        post_contract,
+        post_progress_status,
+        execution_assist,
+    )
+    if post_project_knowledge is None:
+        return _withheld("close", post_context, post_project_knowledge_code or "H7_PROJECT_KNOWLEDGE_WITHHELD")
+    post_context["projectKnowledge"] = public_project_knowledge(post_project_knowledge)
     post_activation, activation_code, refs = _activation(core, post_context, post_contract, memory_mode)
     policy = dispatched.get("policy") if isinstance(dispatched.get("policy"), dict) else {}
     transition = dispatched.get("transition") if isinstance(dispatched.get("transition"), dict) else None
@@ -3104,6 +3268,8 @@ def close_turn(
         "coreRuleApplicableHash": str((post_context.get("coreRules") or {}).get("applicableEffectsHash", "")),
         "turnIntentHash": str((post_context.get("turnIntent") or {}).get("payloadHash", "")),
         "executionAssistHash": str(execution_assist.get("payloadHash", "")),
+        "projectKnowledgeHash": str(post_project_knowledge.get("payloadHash", "")),
+        "projectKnowledgeState": str(post_project_knowledge.get("state", "withheld")),
         "projectProgressState": str(post_progress_status.get("state", "withheld")),
         "projectProgressHash": str(post_progress_status.get("payloadHash", "")),
         "visibleProgressState": str(((post_context.get("task") or {}).get("visibleProgress") or {}).get("state", "withheld")),
@@ -3129,13 +3295,19 @@ def close_turn(
         turn_intent=(post_context.get("turnIntent") if isinstance(post_context.get("turnIntent"), dict) else {}),
         progress_status=post_progress_status,
         execution_assist=execution_assist,
+        project_knowledge=public_project_knowledge(post_project_knowledge),
         capability_route_receipt=normalized_capability_route_receipt,
         capability_route_compatibility=capability_route_compatibility,
         visible_tail_assertion=entry_visible_tail_assertion,
     )
     scope_ref = str(post_context["scope"].get("scopeRef", ""))
     receipt, reused = _write_receipt(core.memory_base, scope_ref, "close", body)
-    telemetry, telemetry_reused = _record_telemetry(core.memory_base, scope_ref, receipt)
+    telemetry, telemetry_reused = _record_telemetry(
+        core.memory_base,
+        scope_ref,
+        receipt,
+        runtime_duration_ms=round((time.perf_counter() - started_at) * 1000),
+    )
     terminal_allowed = bool(policy.get("terminalReplyAllowed", True))
     return {
         "ok": True,
@@ -3155,12 +3327,14 @@ def close_turn(
             "contractReason": str(dispatched.get("contractReason", "")),
         },
         "runtimeReceipt": _public_receipt(receipt),
+        "projectKnowledge": public_project_knowledge(post_project_knowledge),
         "receiptReused": reused,
         "telemetry": {
             "path": str(_telemetry_path(core.memory_base, scope_ref)),
             "payloadHash": str(telemetry.get("payloadHash", "")),
             "reused": telemetry_reused,
         },
+        "runObservability": telemetry.get("runObservability", {}),
         "terminalReplyAllowed": terminal_allowed,
         "mustContinue": not terminal_allowed,
         "rawPromptStored": False,
@@ -3216,6 +3390,30 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
     open_receipt = _read_json(_scope_path(core.memory_base, scope_ref, "open"))
     close_receipt = _read_json(_scope_path(core.memory_base, scope_ref, "close"))
     telemetry = _read_json(_telemetry_path(core.memory_base, scope_ref))
+    open_intent = (open_receipt or {}).get("turnIntent") if isinstance((open_receipt or {}).get("turnIntent"), dict) else {}
+    execution_assist_raw = (open_receipt or {}).get("executionAssist")
+    execution_assist = execution_assist_raw if execution_assist_receipt_is_valid(execution_assist_raw) else None
+    project_knowledge: dict[str, Any] | None = None
+    project_knowledge_code = "H7_PROJECT_KNOWLEDGE_RECEIPT_MISSING"
+    if execution_assist is not None:
+        project_knowledge, project_knowledge_code = _resolve_project_knowledge_for_turn(
+            core,
+            contract,
+            progress_status,
+            execution_assist,
+        )
+    close_execution_assist_raw = (close_receipt or {}).get("executionAssist")
+    close_execution_assist = (
+        close_execution_assist_raw if execution_assist_receipt_is_valid(close_execution_assist_raw) else None
+    )
+    close_project_knowledge: dict[str, Any] | None = None
+    if close_execution_assist is not None:
+        close_project_knowledge, _ = _resolve_project_knowledge_for_turn(
+            core,
+            contract,
+            progress_status,
+            close_execution_assist,
+        )
     entry_current = _receipt_valid(
         open_receipt,
         phase="open",
@@ -3224,6 +3422,7 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
         core_rules=core_rules,
         project_progress=progress_status,
         visible_progress=visible_progress_status,
+        project_knowledge=project_knowledge,
     )
     close_current = _receipt_valid(
         close_receipt,
@@ -3233,30 +3432,44 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
         core_rules=core_rules,
         project_progress=progress_status,
         visible_progress=visible_progress_status,
+        project_knowledge=close_project_knowledge,
     )
-    open_intent = (open_receipt or {}).get("turnIntent") if isinstance((open_receipt or {}).get("turnIntent"), dict) else {}
-    execution_assist_raw = (open_receipt or {}).get("executionAssist")
-    execution_assist = execution_assist_raw if execution_assist_receipt_is_valid(execution_assist_raw) else None
     route_receipt_raw = (open_receipt or {}).get("capabilityRouteReceipt")
     capability_route_receipt = route_receipt_raw if _capability_route_receipt_valid(route_receipt_raw) else None
     project_evidence_required = open_intent.get("projectEvidenceRequired") is True
+    telemetry_events = (telemetry or {}).get("events", []) if isinstance((telemetry or {}).get("events", []), list) else []
+    latest_telemetry = telemetry_events[-1] if telemetry_events and isinstance(telemetry_events[-1], dict) else {}
+    telemetry_is_close = str(latest_telemetry.get("phase", "")) == "close"
+    telemetry_execution_assist = close_execution_assist if telemetry_is_close else execution_assist
+    telemetry_project_knowledge = close_project_knowledge if telemetry_is_close else project_knowledge
+    telemetry_intent = (close_receipt or {}).get("turnIntent") if telemetry_is_close and isinstance((close_receipt or {}).get("turnIntent"), dict) else open_intent
+    telemetry_route_raw = (close_receipt or {}).get("capabilityRouteReceipt") if telemetry_is_close else route_receipt_raw
+    telemetry_capability_route = telemetry_route_raw if _capability_route_receipt_valid(telemetry_route_raw) else None
     telemetry_current = _telemetry_valid(
         telemetry,
         scope_ref=scope_ref,
         core_rules=core_rules,
-        intent_hash=str(open_intent.get("payloadHash", "")),
+        intent_hash=str((telemetry_intent or {}).get("payloadHash", "")),
         project_progress=progress_status,
         visible_progress=visible_progress_status,
-        execution_assist=execution_assist,
-        capability_route_receipt=capability_route_receipt,
+        execution_assist=telemetry_execution_assist,
+        project_knowledge=telemetry_project_knowledge,
+        capability_route_receipt=telemetry_capability_route,
     )
+    observed_run_observability = (
+        (telemetry or {}).get("runObservability")
+        if isinstance((telemetry or {}).get("runObservability"), dict)
+        else summarize_run_observability(telemetry, expected_scope_ref=scope_ref)
+    )
+    if not run_observability_receipt_is_valid(observed_run_observability, expected_scope_ref=scope_ref):
+        observed_run_observability = summarize_run_observability(telemetry, expected_scope_ref=scope_ref)
     memory = (open_receipt or {}).get("memory") if isinstance((open_receipt or {}).get("memory"), dict) else {}
     return {
         "ok": True,
         "schema": SCHEMA,
         "mode": MODE,
         "phase": "evidence",
-        "available": entry_current and telemetry_current and visible_progress_status.get("current") is True and visible_progress_status.get("continuationEligible") is True and (not project_evidence_required or progress_status.get("current") is True),
+        "available": entry_current and telemetry_current and project_knowledge is not None and visible_progress_status.get("current") is True and visible_progress_status.get("continuationEligible") is True and (not project_evidence_required or progress_status.get("current") is True),
         "code": (
             "H7_EVIDENCE_CORE_RULES_WITHHELD"
             if core_rules.get("status") != "current"
@@ -3266,6 +3479,8 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
             if visible_progress_status.get("current") is not True
             else "H7_VISIBLE_PROGRESS_ASSISTANT_REPLY_REQUIRED"
             if visible_progress_status.get("continuationEligible") is not True
+            else project_knowledge_code
+            if project_knowledge is None
             else "H7_EVIDENCE_CURRENT" if entry_current and telemetry_current else "H7_EVIDENCE_INCOMPLETE"
         ),
         "scope": {
@@ -3283,6 +3498,7 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
             "payloadHash": str((telemetry or {}).get("payloadHash", "")),
             "eventCount": len((telemetry or {}).get("events", []) or []),
         },
+        "runObservability": observed_run_observability,
         "coreRules": core_rules,
         "projectProgress": {
             "state": str(progress_status.get("state", "withheld")),
@@ -3296,6 +3512,7 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
         "visibleProgress": _visible_progress_truth(visible_progress_status),
         "turnIntent": _public_receipt(open_receipt).get("turnIntent", {}) if isinstance(open_receipt, dict) else {},
         "executionAssist": public_execution_assist(execution_assist),
+        "projectKnowledge": public_project_knowledge(project_knowledge),
         "capabilityRouteReceipt": capability_route_receipt,
         "memoryInjection": {
             "snapshotPayloadHash": str(memory.get("snapshotPayloadHash", "")),

@@ -1,0 +1,93 @@
+{
+  "schema": "super-brain.agent-asset-registry.v1",
+  "registryVersion": 1,
+  "policy": {
+    "defaultDispatch": "direct",
+    "stateAuthority": "h7_only",
+    "hostSkillExecution": "forbidden",
+    "upstreamExecution": "forbidden",
+    "backgroundWorkers": "forbidden",
+    "rawPromptStored": false,
+    "rawTranscriptStored": false
+  },
+  "assets": [
+    {
+      "assetId": "h7-controller",
+      "role": "controller",
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "activateWhen": "always",
+      "taskClasses": [
+        "engineering",
+        "product",
+        "productivity",
+        "learning",
+        "general"
+      ],
+      "semanticSignals": [],
+      "dispatchMode": "direct",
+      "stateAccess": "h7_only",
+      "resultOnly": false
+    },
+    {
+      "assetId": "native-capability-router",
+      "role": "router",
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "activateWhen": "nontrivial",
+      "taskClasses": [
+        "engineering",
+        "product",
+        "productivity",
+        "learning"
+      ],
+      "semanticSignals": [],
+      "dispatchMode": "direct",
+      "stateAccess": "none",
+      "resultOnly": true
+    },
+    {
+      "assetId": "focused-evidence-verifier",
+      "role": "verifier",
+      "applyAt": [
+        "verification"
+      ],
+      "activateWhen": "verification",
+      "taskClasses": [
+        "engineering",
+        "product",
+        "productivity",
+        "learning"
+      ],
+      "semanticSignals": [],
+      "dispatchMode": "direct",
+      "stateAccess": "none",
+      "resultOnly": true
+    },
+    {
+      "assetId": "bounded-delegation-packet",
+      "role": "delegation_packet",
+      "applyAt": [
+        "execution",
+        "verification"
+      ],
+      "activateWhen": "explicit_multi_agent",
+      "taskClasses": [
+        "engineering",
+        "product",
+        "productivity",
+        "learning"
+      ],
+      "semanticSignals": [],
+      "dispatchMode": "explicit_only",
+      "stateAccess": "isolated_only",
+      "resultOnly": true
+    }
+  ]
+}

@@ -12,15 +12,22 @@ conversation transcript, source path, or host identity.
 import hashlib
 import json
 import re
-from functools import lru_cache
-from pathlib import Path
 from typing import Any, Mapping
+
+from agent_asset_loadout import (
+    loadout_is_valid as asset_loadout_is_valid,
+    public_projection as public_asset_loadout,
+    resolve_agent_asset_loadout,
+)
+from capability_source_registry import route_capabilities
+from capability_shadow_eval import shadow_gate_is_valid
 
 
 REQUEST_SCHEMA = "super-brain.execution-assist-request.v1"
 RECEIPT_SCHEMA = "super-brain.execution-assist-receipt.v1"
 CAPABILITY_ROUTE_SCHEMA = "super-brain.capability-route-receipt.v1"
 CAPABILITY_APPLY_PRESENTATION_SCHEMA = "super-brain.capability-apply-presentation.v1"
+PROJECT_KNOWLEDGE_ROUTE_SCHEMA = "super-brain.project-knowledge-route.v1"
 
 CAPABILITY_ROUTE_FIELDS = {
     "schema",
@@ -35,6 +42,7 @@ CAPABILITY_ROUTE_FIELDS = {
     "rawPromptStored",
     "rawTranscriptStored",
     "sourcePathsOmitted",
+    "shadowGate",
 }
 RECEIPT_FIELDS = {
     "schema",
@@ -50,7 +58,25 @@ RECEIPT_FIELDS = {
     "quadrants",
     "capabilityRouteReceipt",
     "capabilityApplyPresentation",
+    "projectKnowledgeRoute",
+    "assetLoadout",
     "automatic",
+    "nonAuthorizing",
+    "rawPromptStored",
+    "rawTranscriptStored",
+    "sourcePathsOmitted",
+    "payloadHash",
+}
+
+PROJECT_KNOWLEDGE_ROUTE_FIELDS = {
+    "schema",
+    "state",
+    "code",
+    "mode",
+    "coverage",
+    "fullTreeScan",
+    "persistentIndex",
+    "backgroundWorkers",
     "nonAuthorizing",
     "rawPromptStored",
     "rawTranscriptStored",
@@ -100,7 +126,6 @@ SEMANTIC_SIGNALS = {
 _CAPABILITY_ID = re.compile(r"^[A-Za-z][A-Za-z0-9._:-]{1,159}$")
 _CONTRACT_ID = re.compile(r"^sb\.native\.[a-z0-9][a-z0-9._-]{1,159}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
-_SLUG = re.compile(r"[^a-z0-9]+")
 
 _INTENT_DEFAULTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "design_evaluate": ("engineering", ("engineering_design",)),
@@ -112,34 +137,10 @@ _INTENT_DEFAULTS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 _INTENT_ASSIST_REQUIRED = frozenset(_INTENT_DEFAULTS)
-_NAME_PRIORITY = {
-    "grill-me": 1000,
-    "diagnosing-bugs": 900,
-    "tdd": 850,
-    "to-prd": 800,
-    "to-issues": 750,
-    "codebase-design": 700,
-    "improve-codebase-architecture": 650,
-    "domain-modeling": 600,
-    "prototype": 550,
-    "handoff": 500,
-    "teach": 450,
-    "writing-great-skills": 400,
-}
-
-
 def canonical_hash(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     ).hexdigest()
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _safe_text(value: Any, maximum: int = 80) -> str | None:
@@ -147,11 +148,6 @@ def _safe_text(value: Any, maximum: int = 80) -> str | None:
         return None
     normalized = " ".join(value.strip().split())
     return normalized if normalized and len(normalized) <= maximum else None
-
-
-def _slug(value: str) -> str:
-    return _SLUG.sub("-", value.lower()).strip("-") or "capability"
-
 
 def _default_request(intent: Mapping[str, Any] | None) -> dict[str, Any]:
     kind = str((intent or {}).get("kind", "direct"))
@@ -210,191 +206,39 @@ def normalize_request(value: Any, *, turn_intent: Mapping[str, Any] | None = Non
     }, "H7_EXECUTION_ASSIST_REQUEST_CURRENT"
 
 
-@lru_cache(maxsize=8)
-def _load_extension(extension_path: str, modified_ns: int, size: int) -> dict[str, Any] | None:
-    """Read one immutable package-owned capability source once per identity."""
-
-    del modified_ns, size
-    path = Path(extension_path)
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(value, dict) or value.get("type") != "absorbed-capability-source":
-        return None
-    return value
-
-
-def _extension_source(package_root: str | Path) -> tuple[dict[str, Any] | None, str]:
-    path = Path(package_root).expanduser().resolve() / "extensions" / "mattpocock-skills" / "extension.json"
-    try:
-        stat = path.stat()
-    except OSError:
-        return None, "H7_EXECUTION_ASSIST_CAPABILITY_SOURCE_UNAVAILABLE"
-    source = _load_extension(str(path), int(stat.st_mtime_ns), int(stat.st_size))
-    if source is None:
-        return None, "H7_EXECUTION_ASSIST_CAPABILITY_SOURCE_INVALID"
-    if not all(_safe_text(source.get(key), 240) for key in ("id", "sourceRepo", "sourceCommit", "license")):
-        return None, "H7_EXECUTION_ASSIST_PROVENANCE_INVALID"
-    return source, "H7_EXECUTION_ASSIST_CAPABILITY_SOURCE_CURRENT"
-
-
-def _native_contracts(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    contracts: dict[str, dict[str, Any]] = {}
-    for item in source.get("nativeBehaviorContracts", []) or []:
-        if not isinstance(item, Mapping):
-            continue
-        contract_id = _safe_text(item.get("id"), 160)
-        if (
-            contract_id is None
-            or not _CONTRACT_ID.fullmatch(contract_id)
-            or item.get("schema") != "super-brain.native-capability-contract.v1"
-            or item.get("executionOwner") != "super-memory-brain"
-            or item.get("sourceUse") != "provenance_cold_reference_only"
-        ):
-            continue
-        contracts[contract_id] = dict(item)
-    return contracts
-
-
-def _candidate_records(source: Mapping[str, Any], signals: set[str]) -> list[dict[str, Any]]:
-    contracts = _native_contracts(source)
-    category_contracts = source.get("nativeBehaviorContractByCategory")
-    category_contracts = category_contracts if isinstance(category_contracts, Mapping) else {}
-    parity_by_skill = source.get("nativeParityBySkill")
-    parity_by_skill = parity_by_skill if isinstance(parity_by_skill, Mapping) else {}
-    extension_digest = _file_sha256(
-        Path(source.get("_path"))
-    ) if isinstance(source.get("_path"), str) else ""
-    selected: list[dict[str, Any]] = []
-    for skill in source.get("skills", []) or []:
-        if not isinstance(skill, Mapping):
-            continue
-        name = _safe_text(skill.get("name"), 120)
-        if not name:
-            continue
-        eligibility = str(skill.get("routeEligibility", "auto"))
-        if eligibility in {"reference_only", "adapter_only"}:
-            continue
-        # ``explicit_only`` remains a cold/manual route.  The normal auto
-        # route deliberately selects only skills declared safe for semantic
-        # activation; this avoids expanding a user request into setup work.
-        if eligibility == "explicit_only":
-            continue
-        tags = {
-            tag for tag in skill.get("semanticTags", []) or []
-            if isinstance(tag, str) and tag in SEMANTIC_SIGNALS
-        }
-        matches = tags.intersection(signals)
-        if not matches:
-            continue
-        raw_apply_at = skill.get("applyAt")
-        if not isinstance(raw_apply_at, list) or not raw_apply_at or len(raw_apply_at) > 3:
-            continue
-        apply_at: list[str] = []
-        for value in raw_apply_at:
-            phase = _safe_text(value, 24)
-            if phase not in APPLY_PHASES or phase in apply_at:
-                apply_at = []
-                break
-            apply_at.append(phase)
-        if not apply_at:
-            continue
-        native_contract_id = _safe_text(skill.get("nativeBehaviorContractId"), 160)
-        if not native_contract_id:
-            native_contract_id = _safe_text(category_contracts.get(str(skill.get("category", ""))), 160)
-        contract = contracts.get(native_contract_id or "")
-        parity = parity_by_skill.get(name)
-        if contract is None or not isinstance(parity, Mapping):
-            continue
-        procedure = _safe_text(parity.get("procedureId"), 160)
-        if not procedure:
-            continue
-        capability_id = "sb.native.mattpocock." + _slug(name) + ".v1"
-        if not _CAPABILITY_ID.fullmatch(capability_id):
-            continue
-        provenance_hash = canonical_hash(
-            {
-                "extensionSha256": extension_digest,
-                "extensionId": str(source.get("id", "")),
-                "sourceRepo": str(source.get("sourceRepo", "")),
-                "sourceCommit": str(source.get("sourceCommit", "")),
-                "license": str(source.get("license", "")),
-                "capabilityId": capability_id,
-                "contractId": native_contract_id,
-            }
-        )
-        parity_hash = canonical_hash(
-            {
-                "capabilityId": capability_id,
-                "contractId": native_contract_id,
-                "parity": parity,
-            }
-        )
-        score = len(matches) * 100 + _NAME_PRIORITY.get(name, 0)
-        if "challenge_assumptions" in signals and name == "grill-me":
-            score += 10_000
-        selected.append(
-            {
-                "capabilityId": capability_id,
-                "contractId": native_contract_id,
-                "provenanceHash": provenance_hash,
-                "parityHash": parity_hash,
-                "score": score,
-                "mutualExclusionGroup": _safe_text(skill.get("mutualExclusionGroup"), 80) or "",
-                "applyAt": apply_at,
-            }
-        )
-    return selected
-
-
-def _route(source: Mapping[str, Any], signals: set[str]) -> dict[str, Any]:
-    candidates = sorted(
-        _candidate_records(source, signals),
-        key=lambda item: (-int(item["score"]), str(item["capabilityId"])),
-    )
-    used_groups: set[str] = set()
-    result: list[dict[str, Any]] = []
-    for candidate in candidates:
-        group = str(candidate["mutualExclusionGroup"])
-        if group and group in used_groups:
-            continue
-        result.append(candidate)
-        if group:
-            used_groups.add(group)
-        if len(result) == 4:
-            break
-    selected_ids = [str(item["capabilityId"]) for item in result]
-    contract_ids = list(dict.fromkeys(str(item["contractId"]) for item in result))
-    return {
-        "selectedNativeCapabilityIds": selected_ids,
-        "nativeContractIds": contract_ids,
-        "provenanceHashes": [
-            {"capabilityId": str(item["capabilityId"]), "provenanceHash": str(item["provenanceHash"])}
-            for item in result
-        ],
-        "parityHashes": [
-            {
-                "capabilityId": str(item["capabilityId"]),
-                "contractId": str(item["contractId"]),
-                "parityHash": str(item["parityHash"]),
-            }
-            for item in result
-        ],
-        "routeCards": result,
-    }
-
-
 def _capability_route(route: Mapping[str, Any], *, withheld: bool = False) -> dict[str, Any]:
-    selected = list(route.get("selectedNativeCapabilityIds", []) or []) if not withheld else []
-    contracts = list(route.get("nativeContractIds", []) or []) if not withheld else []
-    provenance = list(route.get("provenanceHashes", []) or []) if not withheld else []
-    parity = list(route.get("parityHashes", []) or []) if not withheld else []
-    state = "withheld" if withheld else ("ready" if selected else "not_applicable")
+    shadow_gate = route.get("shadowGate") if shadow_gate_is_valid(route.get("shadowGate")) else {
+        "schema": "super-brain.capability-shadow-gate.v1",
+        "state": "not_applicable",
+        "code": "H7_CAPABILITY_SHADOW_NOT_APPLICABLE",
+        "evaluationPayloadHash": "",
+        "selectedContractCount": 0,
+        "activationAllowed": False,
+        "nonAuthorizing": True,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+        "payloadHash": canonical_hash({
+            "schema": "super-brain.capability-shadow-gate.v1",
+            "state": "not_applicable",
+            "code": "H7_CAPABILITY_SHADOW_NOT_APPLICABLE",
+            "evaluationPayloadHash": "",
+            "selectedContractCount": 0,
+            "activationAllowed": False,
+            "nonAuthorizing": True,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }),
+    }
+    shadow_withheld = str(shadow_gate.get("state", "")) == "withheld"
+    selected = list(route.get("selectedNativeCapabilityIds", []) or []) if not (withheld or shadow_withheld) else []
+    contracts = list(route.get("nativeContractIds", []) or []) if not (withheld or shadow_withheld) else []
+    provenance = list(route.get("provenanceHashes", []) or []) if not (withheld or shadow_withheld) else []
+    parity = list(route.get("parityHashes", []) or []) if not (withheld or shadow_withheld) else []
+    state = "withheld" if (withheld or shadow_withheld) else ("ready" if selected else "not_applicable")
     code = {
         "ready": "CAPABILITY_ROUTE_READY",
         "not_applicable": "CAPABILITY_ROUTE_NOT_APPLICABLE",
-        "withheld": "CAPABILITY_ROUTE_CLARIFICATION_REQUIRED",
+        "withheld": "CAPABILITY_ROUTE_CLARIFICATION_REQUIRED" if withheld else "CAPABILITY_ROUTE_EVALUATION_WITHHELD",
     }[state]
     body = {
         "schema": CAPABILITY_ROUTE_SCHEMA,
@@ -408,6 +252,7 @@ def _capability_route(route: Mapping[str, Any], *, withheld: bool = False) -> di
         "rawPromptStored": False,
         "rawTranscriptStored": False,
         "sourcePathsOmitted": True,
+        "shadowGate": shadow_gate,
     }
     return {**body, "routeHash": canonical_hash(body)}
 
@@ -450,6 +295,75 @@ def _capability_apply_presentation(
         "sourcePathsOmitted": True,
     }
     return {**body, "payloadHash": canonical_hash(body)}
+
+
+def _project_knowledge_route(
+    *,
+    project_evidence_required: bool,
+    applicable: bool,
+    apply_phase: str,
+    withheld: bool,
+) -> dict[str, Any]:
+    """Describe the H7-native project-evidence query without accepting paths.
+
+    The route is intentionally declarative: only ``turn_runtime`` may invoke
+    the query after it has rebound the current contract and proof.  This keeps
+    a source path out of the execution-assist hot path while still making the
+    capability automatic for evidence-bearing engineering work.
+    """
+
+    active = project_evidence_required and applicable
+    state = "withheld" if active and withheld else ("ready" if active else "not_applicable")
+    code = {
+        "ready": "H7_PROJECT_KNOWLEDGE_ROUTE_READY",
+        "not_applicable": "H7_PROJECT_KNOWLEDGE_ROUTE_NOT_APPLICABLE",
+        "withheld": "H7_PROJECT_KNOWLEDGE_ROUTE_WITHHELD",
+    }[state]
+    body = {
+        "schema": PROJECT_KNOWLEDGE_ROUTE_SCHEMA,
+        "state": state,
+        "code": code,
+        "mode": "focused" if apply_phase == "planning" else "impact",
+        "coverage": "proof_bound_slice",
+        "fullTreeScan": False,
+        "persistentIndex": False,
+        "backgroundWorkers": False,
+        "nonAuthorizing": True,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+        "sourcePathsOmitted": True,
+    }
+    return {**body, "payloadHash": canonical_hash(body)}
+
+
+def project_knowledge_route_is_valid(value: Any) -> bool:
+    if not isinstance(value, Mapping) or set(value) != PROJECT_KNOWLEDGE_ROUTE_FIELDS:
+        return False
+    state = value.get("state")
+    expected_code = {
+        "ready": "H7_PROJECT_KNOWLEDGE_ROUTE_READY",
+        "not_applicable": "H7_PROJECT_KNOWLEDGE_ROUTE_NOT_APPLICABLE",
+        "withheld": "H7_PROJECT_KNOWLEDGE_ROUTE_WITHHELD",
+    }.get(state)
+    if (
+        value.get("schema") != PROJECT_KNOWLEDGE_ROUTE_SCHEMA
+        or value.get("code") != expected_code
+        or value.get("mode") not in {"focused", "impact"}
+        or value.get("coverage") != "proof_bound_slice"
+        or value.get("fullTreeScan") is not False
+        or value.get("persistentIndex") is not False
+        or value.get("backgroundWorkers") is not False
+        or value.get("nonAuthorizing") is not True
+        or value.get("rawPromptStored") is not False
+        or value.get("rawTranscriptStored") is not False
+        or value.get("sourcePathsOmitted") is not True
+        or not isinstance(value.get("payloadHash"), str)
+        or not _SHA256.fullmatch(str(value.get("payloadHash")))
+    ):
+        return False
+    return str(value.get("payloadHash")) == canonical_hash(
+        {key: item for key, item in value.items() if key != "payloadHash"}
+    )
 
 
 def _capability_apply_presentation_is_valid(value: Any, route: Mapping[str, Any]) -> bool:
@@ -500,17 +414,19 @@ def _capability_route_is_valid(value: Any) -> bool:
     expected_code = {
         "ready": "CAPABILITY_ROUTE_READY",
         "not_applicable": "CAPABILITY_ROUTE_NOT_APPLICABLE",
-        "withheld": "CAPABILITY_ROUTE_CLARIFICATION_REQUIRED",
+        "withheld": None,
     }.get(state)
     if (
         value.get("schema") != CAPABILITY_ROUTE_SCHEMA
-        or value.get("code") != expected_code
+        or (state in {"ready", "not_applicable"} and value.get("code") != expected_code)
+        or (state == "withheld" and value.get("code") not in {"CAPABILITY_ROUTE_CLARIFICATION_REQUIRED", "CAPABILITY_ROUTE_EVALUATION_WITHHELD"})
         or value.get("nonAuthorizing") is not True
         or value.get("rawPromptStored") is not False
         or value.get("rawTranscriptStored") is not False
         or value.get("sourcePathsOmitted") is not True
         or not isinstance(value.get("routeHash"), str)
         or not _SHA256.fullmatch(str(value.get("routeHash")))
+        or not shadow_gate_is_valid(value.get("shadowGate"))
     ):
         return False
     selected = value.get("selectedNativeCapabilityIds")
@@ -531,6 +447,10 @@ def _capability_route_is_valid(value: Any) -> bool:
     if (state == "ready") != bool(selected_ids) or (state == "ready" and not contract_ids):
         return False
     if state != "ready" and (selected_ids or contract_ids or provenance or parity):
+        return False
+    if value.get("code") == "CAPABILITY_ROUTE_EVALUATION_WITHHELD" and value["shadowGate"].get("state") != "withheld":
+        return False
+    if state == "ready" and value["shadowGate"].get("state") not in {"ready", "not_applicable"}:
         return False
     expected_selected = set(selected_ids)
     seen_provenance: set[str] = set()
@@ -615,6 +535,8 @@ def receipt_is_valid(value: Any) -> bool:
         or not _capability_apply_presentation_is_valid(
             value.get("capabilityApplyPresentation"), value.get("capabilityRouteReceipt")
         )
+        or not project_knowledge_route_is_valid(value.get("projectKnowledgeRoute"))
+        or not asset_loadout_is_valid(value.get("assetLoadout"))
     ):
         return False
     clarification = value.get("clarificationRequired") is True
@@ -659,19 +581,9 @@ def resolve_execution_assist(
         or bool(normalized["sharedUnknown"])
     )
     if nontrivial:
-        source, source_code = _extension_source(package_root)
-        if source is None:
-            return None, source_code
-        source = {
-            **source,
-            "_path": str(
-                Path(package_root).expanduser().resolve()
-                / "extensions"
-                / "mattpocock-skills"
-                / "extension.json"
-            ),
-        }
-        route = _route(source, signals)
+        route, route_code = route_capabilities(package_root, signals)
+        if route is None:
+            return None, route_code
     else:
         route = {
             "selectedNativeCapabilityIds": [],
@@ -680,10 +592,30 @@ def resolve_execution_assist(
             "parityHashes": [],
         }
     clarification_required = bool(normalized["clarificationRequired"])
+    shadow_withheld = (
+        isinstance(route.get("shadowGate"), Mapping)
+        and str(route["shadowGate"].get("state", "")) == "withheld"
+    )
     route_receipt = _capability_route(route, withheld=clarification_required)
     apply_presentation = _capability_apply_presentation(
-        route, apply_phase=apply_phase, withheld=clarification_required
+        route, apply_phase=apply_phase, withheld=clarification_required or shadow_withheld
     )
+    project_knowledge_route = _project_knowledge_route(
+        project_evidence_required=bool(intent.get("projectEvidenceRequired")),
+        applicable=nontrivial,
+        apply_phase=apply_phase,
+        withheld=clarification_required,
+    )
+    asset_loadout, asset_loadout_code = resolve_agent_asset_loadout(
+        package_root,
+        task_class=normalized["taskClass"],
+        semantic_signals=signals,
+        apply_phase=apply_phase,
+        applicable=nontrivial,
+        withheld=clarification_required,
+    )
+    if asset_loadout is None:
+        return None, asset_loadout_code
     state = "clarification_required" if clarification_required else ("ready" if nontrivial else "not_applicable")
     code = {
         "ready": "H7_EXECUTION_ASSIST_READY",
@@ -716,6 +648,8 @@ def resolve_execution_assist(
         "quadrants": quadrants,
         "capabilityRouteReceipt": route_receipt,
         "capabilityApplyPresentation": apply_presentation,
+        "projectKnowledgeRoute": project_knowledge_route,
+        "assetLoadout": asset_loadout,
         "automatic": True,
         "nonAuthorizing": True,
         "rawPromptStored": False,
@@ -736,6 +670,12 @@ def public_projection(value: Mapping[str, Any] | None) -> dict[str, Any]:
         if isinstance(receipt.get("capabilityApplyPresentation"), Mapping)
         else {}
     )
+    project_knowledge_route = (
+        receipt.get("projectKnowledgeRoute")
+        if isinstance(receipt.get("projectKnowledgeRoute"), Mapping)
+        else {}
+    )
+    shadow_gate = route.get("shadowGate") if isinstance(route.get("shadowGate"), Mapping) else {}
     return {
         "state": str(receipt.get("state", "withheld")),
         "code": str(receipt.get("code", "H7_EXECUTION_ASSIST_UNAVAILABLE")),
@@ -750,10 +690,16 @@ def public_projection(value: Mapping[str, Any] | None) -> dict[str, Any]:
         "selectedNativeCapabilityIds": list(route.get("selectedNativeCapabilityIds", []) or [])[:4],
         "nativeContractIds": list(route.get("nativeContractIds", []) or [])[:4],
         "routeHash": str(route.get("routeHash", "")),
+        "capabilityShadowState": str(shadow_gate.get("state", "")),
+        "capabilityShadowCode": str(shadow_gate.get("code", "")),
+        "capabilityShadowEvaluationHash": str(shadow_gate.get("evaluationPayloadHash", "")),
+        "capabilityShadowGateHash": str(shadow_gate.get("payloadHash", "")),
         "capabilityApplyPhase": str(presentation.get("applyPhase", "")),
         "activeNativeCapabilityIds": list(presentation.get("activeNativeCapabilityIds", []) or [])[:4],
         "deferredNativeCapabilityIds": list(presentation.get("deferredNativeCapabilityIds", []) or [])[:4],
         "capabilityApplyPresentationHash": str(presentation.get("payloadHash", "")),
+        "projectKnowledgeRoute": dict(project_knowledge_route),
+        "assetLoadout": public_asset_loadout(receipt.get("assetLoadout")),
         "payloadHash": str(receipt.get("payloadHash", "")),
         "automatic": receipt.get("automatic") is True,
         "nonAuthorizing": receipt.get("nonAuthorizing") is True,
@@ -773,10 +719,12 @@ __all__ = [
     "CAPABILITY_ROUTE_SCHEMA",
     "CAPABILITY_APPLY_PRESENTATION_SCHEMA",
     "RECEIPT_SCHEMA",
+    "PROJECT_KNOWLEDGE_ROUTE_SCHEMA",
     "REQUEST_SCHEMA",
     "canonical_hash",
     "capability_route_receipt",
     "normalize_request",
+    "project_knowledge_route_is_valid",
     "public_projection",
     "receipt_is_valid",
     "resolve_execution_assist",

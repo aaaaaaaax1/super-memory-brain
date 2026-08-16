@@ -97,6 +97,26 @@ Describe 'Canonical plan continuity authority' {
     @($updated.value.canonicalPlan.items | ForEach-Object { $_.label }) | Should Be @('A','B')
   }
 
+  It 'does not replay a historical canonical replacement as every later progress mutation' {
+    $fixture = New-CanonicalRoot (Join-Path $TestDrive 'historical-replacement-does-not-repeat') 'task-canonical-historical-replacement' @('A','B')
+    $replaceInstruction = 'replace the complete canonical main plan with K and L'
+    $replaceEnvelope = New-CanonicalMutationEnvelope $fixture.contract 'replace_canonical' 'replace-historical-plan-once' 'user_confirmation' $replaceInstruction @(
+      [pscustomobject]@{label='K';status='pending'},
+      [pscustomobject]@{label='L';status='pending'}
+    )
+    $replaced = Invoke-CanonicalMutation $fixture $fixture.contract $replaceEnvelope $replaceInstruction 'continue K'
+    $replaced.exitCode | Should Be 0
+
+    $progress = Invoke-CanonicalContract @{
+      Action='Set';TaskId=$fixture.taskId;WorkspaceKey=$fixture.workspaceKey;SessionKey=$fixture.sessionKey
+      FocusId='main-line';InstructionMode='continue';NextAction='continue K with current evidence'
+      ExpectedRevision=[int]$replaced.value.revision;ExpectedPlanFingerprint=[string]$replaced.value.planReceipt.planFingerprint
+      TransitionId='post-replacement-progress-once';StateRoot=$fixture.stateRoot;Source='CanonicalPlanContinuity.Tests.ps1'
+    }
+    $progress.exitCode | Should Be 0
+    @($progress.value.canonicalPlan.items | ForEach-Object { $_.label }) | Should Be @('K','L')
+  }
+
   It 'requires a CAS-bound transition before an unreconciled canonical plan can be cleared' {
     $fixture = New-CanonicalRoot (Join-Path $TestDrive 'reconciliation-cas') 'task-canonical-reconciliation-cas' @('A','B','C')
     $observed = Invoke-CanonicalContract @{

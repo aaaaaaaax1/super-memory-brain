@@ -1,0 +1,12 @@
+{
+  "schema": "super-brain.capability-source-registry.v1",
+  "registryVersion": 1,
+  "sources": [
+    {
+      "sourceId": "mattpocock-skills",
+      "manifestPath": "extensions/mattpocock-skills/extension.json",
+      "capabilityNamespace": "mattpocock",
+      "required": true
+    }
+  ]
+}

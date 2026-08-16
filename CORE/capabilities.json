@@ -54,6 +54,8 @@
                               "scripts":  [
                                              "scripts/internal/runtime-wake-core.ps1",
                                              "scripts/execution-contract.ps1",
+                                             "runtime/work_dag.py",
+                                             "scripts/work-dag.ps1",
                                              "scripts/task-state-store.ps1",
                                              "scripts/current-task-context.ps1",
                                              "scripts/checkpoint-writer.ps1",
@@ -61,7 +63,7 @@
                                              "scripts/super-brain-dashboard.ps1",
                                              "scripts/auto-continuation.ps1"
                                          ],
-                             "defaultPolicy":  "Commit through prepared/committed WAL and atomic materialization; preserve owner/session/workspace metadata; use workspace fingerprints for automatic continuation; keep legacy or foreign checkpoints available for explicit recovery but never let them drive the current workspace; reject stale CAS and never merge different task IDs."
+                             "defaultPolicy":  "Commit through prepared/committed WAL and atomic materialization; preserve owner/session/workspace metadata; use workspace fingerprints for automatic continuation; keep legacy or foreign checkpoints available for explicit recovery but never let them drive the current workspace; reject stale CAS and never merge different task IDs. Work DAG is a non-authorizing H7 canonical-plan dependency projection: stale bindings require explicit CAS refresh, statuses remain contract-derived, and it never dispatches workers or creates a second task store."
                          },
                          {
                              "id":  "agent_bridge",
@@ -74,6 +76,20 @@
                                              "scripts/agent-bridge-channel.ps1"
                                          ],
                              "defaultPolicy":  "legacy/manual-only compatibility for explicit channel open/connect/send/read/close; not default subagent execution workflow"
+                         },
+                         {
+                             "id":  "native_agent_asset_loadout",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "none",
+                             "coldReferences":  [
+                                                    "references/single-agent-subagent-workflow.md"
+                                                ],
+                             "scripts":  [
+                                             "runtime/agent_asset_loadout.py",
+                                             "agent-asset-registry.json",
+                                             "runtime/execution_assist.py"
+                                         ],
+                             "defaultPolicy":  "For non-trivial work, select bounded package-owned controller/router/verifier role cards automatically. Selection never starts a worker, host skill, upstream procedure, daemon, or second memory store; H7 remains the only state authority and a real delegate still requires explicit authority."
                          },
                          {
                              "id":  "orc_routing",
@@ -102,6 +118,34 @@
                                              "scripts/completion-guard.ps1"
                                          ],
                              "defaultPolicy":  "Cross-cutting ORC capability, not a new top-level route: activate for repair, optimization, architecture, root-cause, performance, migration, or best-option decisions; keep greetings and tiny direct tasks concise. FACT requires evidence, root-cause confidence is explicit, critical unknowns require discriminating tests, and optimality requires objective, constraints, alternatives, tradeoffs, criteria, and resolution evidence."
+                         },
+                         {
+                             "id":  "on_demand_project_knowledge",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "none",
+                             "coldReferences":  [
+                                                    "runtime/project_knowledge.py",
+                                                    "references/engineering-judgment.md"
+                                                ],
+                             "scripts":  [
+                                             "runtime/project_knowledge.py",
+                                             "runtime/execution_assist.py",
+                                             "runtime/turn_runtime.py"
+                                         ],
+                             "defaultPolicy":  "For non-trivial evidence-bearing engineering, design, repair, optimization, implementation, and verification turns, query only the current H7 proof-bound project slice with bounded one-hop relations. Never scan the full tree, persist an index, start workers, trust retired impact state, or treat the result as authorization; dynamic and out-of-slice dependencies remain UNKNOWN."
+                         },
+                         {
+                             "id":  "h7_run_observability",
+                             "owner":  "super-memory-brain",
+                             "hotEntry":  "none",
+                             "coldReferences":  [
+                                                    "runtime/run_observability.py"
+                                                ],
+                             "scripts":  [
+                                             "runtime/run_observability.py",
+                                             "runtime/turn_runtime.py"
+                                         ],
+                             "defaultPolicy":  "Derive a compact per-scope summary from bounded H7 telemetry only. Record only measured H7 runtime durations; expose p50/p95/max and explicit budget state without prompts, transcripts, paths, a persistent index, workers, or execution authority. A budget breach is a repair signal, never invented performance data or a hidden fallback."
                          },
                          {
                              "id":  "technology_decision",

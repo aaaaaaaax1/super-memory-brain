@@ -13,7 +13,18 @@ from execution_assist import REQUEST_SCHEMA, resolve_execution_assist
 
 
 def _intent(kind: str) -> dict[str, object]:
-    return {"kind": kind, "governed": True}
+    return {
+        "kind": kind,
+        "governed": True,
+        "projectEvidenceRequired": kind in {
+            "design_evaluate",
+            "plan_proposal",
+            "super_brain_issue_continuity",
+            "super_brain_issue_runtime",
+            "super_brain_issue_memory",
+            "super_brain_issue_ui",
+        },
+    }
 
 
 def test_default_engineering_route_is_native_and_private() -> None:
@@ -28,6 +39,9 @@ def test_default_engineering_route_is_native_and_private() -> None:
     assert route["rawPromptStored"] is False and route["rawTranscriptStored"] is False
     assert receipt["capabilityApplyPresentation"]["applyPhase"] == "planning"
     assert "sb.native.mattpocock.codebase-design.v1" in receipt["capabilityApplyPresentation"]["activeNativeCapabilityIds"]
+    project_route = receipt["projectKnowledgeRoute"]
+    assert project_route["state"] == "ready" and project_route["mode"] == "focused"
+    assert project_route["fullTreeScan"] is False and project_route["persistentIndex"] is False
     serialized = json.dumps(receipt, ensure_ascii=False)
     assert '"sourcePath"' not in serialized and "extensions/mattpocock-skills" not in serialized
     assert "query" not in serialized and "input" not in serialized
@@ -89,6 +103,8 @@ def test_apply_phase_defers_and_reactivates_native_capabilities() -> None:
     assert capability_id in verification["capabilityApplyPresentation"]["activeNativeCapabilityIds"]
     assert execution["capabilityRouteReceipt"] == planning["capabilityRouteReceipt"]
     assert execution["capabilityApplyPresentation"]["nonAuthorizing"] is True
+    assert execution["projectKnowledgeRoute"]["mode"] == "impact"
+    assert execution["projectKnowledgeRoute"]["state"] == "ready"
 
 
 def test_invalid_apply_phase_fails_closed() -> None:

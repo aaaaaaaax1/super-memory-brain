@@ -1,9 +1,9 @@
 {
     "schema":  "super-brain.core-rule-registry.v1",
-    "registryVersion":  51,
+    "registryVersion":  57,
     "packageVersion":  "0.6.0",
     "hashAlgorithm":  "sha256(canonical-json-without-payloadHash)",
-    "payloadHash":  "d92a01a46ba59cbf334b1c63d8aef4f45ce507721405d4095e1180c2bf61bc6b",
+    "payloadHash":  "00a9ba443976bbf335c2245a5a86ed2909e68e3846523810bddd1caee297f241",
     "rules":  [
                   {
                       "ruleId":  "SB-PROJECT-GROUNDED-DESIGN-001",
@@ -33,7 +33,7 @@
                   },
                   {
                       "ruleId":  "SB-DEFECT-ROOT-REPAIR-001",
-                      "revision":  5,
+                      "revision":  6,
                       "priority":  100,
                       "scope":  "runtime",
                       "trigger":  [
@@ -122,7 +122,7 @@
                   },
                   {
                       "ruleId":  "SB-ABILITY-ABSORPTION-001",
-                      "revision":  6,
+                      "revision":  7,
                       "priority":  105,
                       "scope":  "global",
                       "trigger":  [
@@ -137,10 +137,13 @@
                                       "upstream_provenance",
                                       "native_capability",
                                       "capability_parity",
+                                      "shadow_evaluation",
+                                      "retrieval_experiment",
+                                      "activation_gate",
                                       "independent_skill_install",
                                       "direct_upstream_route"
                                   ],
-                      "effect":  "absorb_verified_upstream_provenance_only_into_super_brain_native_procedures_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_without_independent_install_direct_upstream_execution_or_user_named_skill_dependency",
+                      "effect":  "absorb_verified_upstream_provenance_only_into_super_brain_native_procedures_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_require_a_current_hash_bound_offline_shadow_evaluation_and_retrieval_experiment_before_native_activation_withhold_unverified_capabilities_without_blocking_h7_or_project_knowledge_and_without_independent_install_direct_upstream_execution_or_user_named_skill_dependency",
                       "enforcement":  "runtime",
                       "entrypoint":  "runtime/execution_assist.py",
                       "acceptanceTests":  [
@@ -157,7 +160,11 @@
                                               "capability_h7_core_rule_project_evidence_authorization_boundary_replay",
                                               "independent_install_and_direct_upstream_route_denial_replay",
                                               "execution_assist_native_route_replay",
-                                              "capability_route_privacy_projection_replay"
+                                              "capability_route_privacy_projection_replay",
+                                              "capability_shadow_evaluation_current_binding_replay",
+                                              "capability_shadow_missing_stale_tampered_withheld_replay",
+                                              "capability_shadow_no_unsupported_activation_replay",
+                                              "capability_shadow_retrieval_experiment_replay"
                                           ],
                       "status":  "active",
                       "supersedes":  [
@@ -549,7 +556,7 @@
                   },
                   {
                       "ruleId":  "SB-PROPOSAL-GATE-001",
-                      "revision":  3,
+                      "revision":  4,
                       "priority":  100,
                       "scope":  "global",
                       "trigger":  [
@@ -575,21 +582,29 @@
                   },
                   {
                       "ruleId":  "SB-AUTO-RESUME-001",
-                      "revision":  3,
+                      "revision":  6,
                       "priority":  100,
                       "scope":  "global",
                       "trigger":  [
                                       "side_branch",
                                       "status_insertion",
                                       "continue",
-                                      "child_return"
+                                      "child_return",
+                                      "task_complete",
+                                      "final_closeout"
                                   ],
-                      "effect":  "resume_latest_approved_parent_after_insertion",
-                      "enforcement":  "host_policy",
-                      "entrypoint":  "scripts/execution-contract.ps1",
+                      "effect":  "resume_latest_approved_parent_after_insertion_only_when_a_concrete_authorized_parent_action_remains_and_treat_a_verified_zero_pending_canonical_plan_in_complete_phase_without_parent_as_terminal_not_continue_keep_one_unique_non_wake_eligible_structurally_verified_terminal_contract_available_only_for_the_h7_finalization_checkpoint_that_rebinds_that_exact_terminal_candidate_and_may_refresh_a_withheld_project_proof_only_when_that_same_checkpoint_supplies_fresh_hash_verified_live_project_proof_never_for_normal_auto_wake_or_ordinary_continuation",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/continuation_policy.py",
                       "acceptanceTests":  [
                                               "parent_resume_replay",
-                                              "cross_session_resume_replay"
+                                              "cross_session_resume_replay",
+                                              "verified_completed_plan_terminal_replay",
+                                              "incomplete_plan_not_terminal_replay",
+                                              "terminal_finalization_no_auto_wake_replay",
+                                              "terminal_finalization_unique_scope_replay",
+                                              "terminal_finalization_proof_refresh_replay",
+                                              "terminal_finalization_contract_binding_replay"
                                           ],
                       "status":  "active",
                       "supersedes":  [
@@ -628,7 +643,7 @@
                   },
                   {
                       "ruleId":  "SB-EFFICIENT-DELIVERY-001",
-                      "revision":  4,
+                      "revision":  5,
                       "priority":  95,
                       "scope":  "global",
                       "trigger":  [
@@ -637,9 +652,9 @@
                                       "repair",
                                       "optimization"
                                   ],
-                      "effect":  "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_use_one_bounded_current_thread_tail_observation_without_project_tree_scan_on_normal_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_avoid_extra_runtime_processes_or_duplicate_routes_and_never_claim_unverified_progress",
-                      "enforcement":  "host_policy",
-                      "entrypoint":  "scripts/auto-continuation.ps1",
+                      "effect":  "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_measure_only_bounded_actual_h7_runtime_latency_and_report_explicit_budget_state_use_one_bounded_current_thread_tail_observation_without_project_tree_scan_on_normal_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_avoid_extra_runtime_processes_or_duplicate_routes_and_never_claim_unverified_progress",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/turn_runtime.py",
                       "acceptanceTests":  [
                                               "bounded_parallel_delivery_replay",
                                               "fast_feedback_timeout_replay",
@@ -652,7 +667,10 @@
                                               "fast_path_preserves_verification_replay",
                                               "current_thread_tail_latency_replay",
                                               "bounded_visible_tail_fast_path_replay",
-                                              "no_extra_mcp_process_on_hot_path_replay"
+                                              "no_extra_mcp_process_on_hot_path_replay",
+                                              "run_observability_measured_only_replay",
+                                              "run_observability_budget_and_privacy_replay",
+                                              "run_observability_telemetry_evidence_consistency_replay"
                                           ],
                       "status":  "active",
                       "supersedes":  [
@@ -961,6 +979,39 @@
                                               "private_memory_git_exclusion_replay",
                                               "no_share_export_route_replay",
                                               "direct_git_privacy_scan_replay"
+                                          ],
+                      "status":  "active",
+                      "supersedes":  [
+
+                                     ]
+                  },
+                  {
+                      "ruleId":  "SB-ON-DEMAND-PROJECT-KNOWLEDGE-001",
+                      "revision":  1,
+                      "priority":  118,
+                      "scope":  "runtime",
+                      "trigger":  [
+                                      "design_evaluate",
+                                      "design",
+                                      "evaluate",
+                                      "plan",
+                                      "engineering_design",
+                                      "bug_diagnosis",
+                                      "repair",
+                                      "root_cause",
+                                      "optimization",
+                                      "implementation",
+                                      "project_evidence"
+                                  ],
+                      "effect":  "derive_project_knowledge_only_from_the_current_h7_bound_project_root_and_current_proof_files_use_a_bounded_one_hop_query_mark_dynamic_or_out_of_slice_relations_unknown_and_never_use_full_tree_scans_persistent_indexes_workers_or_legacy_impact_state_as_runtime_truth",
+                      "enforcement":  "runtime",
+                      "entrypoint":  "runtime/project_knowledge.py",
+                      "acceptanceTests":  [
+                                              "project_knowledge_proof_bound_slice_replay",
+                                              "project_knowledge_path_hash_and_symlink_fail_closed_replay",
+                                              "project_knowledge_no_full_tree_scan_replay",
+                                              "project_knowledge_receipt_telemetry_evidence_consistency_replay",
+                                              "ordinary_continuation_no_project_scan_replay"
                                           ],
                       "status":  "active",
                       "supersedes":  [

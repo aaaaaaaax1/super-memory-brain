@@ -4426,7 +4426,12 @@ function Set-Contract([switch]$ObserveOnly,[object]$PackageVersionRebindPayload=
         }
       }
     }
-    $scopeReplacementRequested = (-not $ObserveOnly -and $explicitScopeReplacement)
+    # An already-applied replacement instruction remains historical task
+    # context.  It must not force every later progress checkpoint through a
+    # new canonical mutation just because the stored instruction contains
+    # words such as "replace" or "替换".  Only the explicit instruction
+    # reconciliation currently being applied may request a scope replacement.
+    $scopeReplacementRequested = (-not $ObserveOnly -and $instructionWasExplicitForBinding -and $explicitScopeReplacement)
     $checklistModeValue = if ($ObserveOnly -and $existing -and $existing.PSObject.Properties['checklistUpdateMode']) { [string]$existing.checklistUpdateMode } elseif ($scopeReplacementRequested) { 'replace' } else { 'additive' }
     $checklistState = Merge-ActiveChecklist $priorCompletedSteps $priorPendingSteps $incomingCompletedSteps $incomingPendingSteps $checklistModeValue
     if (-not $checklistState.ok) {

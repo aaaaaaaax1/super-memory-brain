@@ -120,7 +120,15 @@ MCP_RUNTIME_IDENTITY_PATHS = (
     "runtime/brain_mcp.py",
     "runtime/brain_core.py",
     "runtime/turn_runtime.py",
+    "runtime/project_knowledge.py",
+    "runtime/execution_assist.py",
+    "runtime/capability_source_registry.py",
+    "runtime/capability_shadow_eval.py",
+    "runtime/run_observability.py",
     "runtime/core_rule_registry.py",
+    "capability-source-registry.json",
+    "capability-shadow-fixtures.json",
+    "capability-shadow-evaluation.json",
     "super-brain-rules.json",
 )
 
@@ -1332,7 +1340,49 @@ class BrainCore:
             "rawTranscriptStored": False,
         }
 
-    def _read_context_contract(self, workspace_key: str, session_key: str) -> tuple[dict[str, Any] | None, str]:
+    @staticmethod
+    def _is_terminal_finalization_contract(contract: dict[str, Any]) -> bool:
+        """Allow one completed task back into H7 only for its final close.
+
+        A terminal task is deliberately removed from normal auto-wake selection
+        when its next action becomes ``No automatic action: ...``.  That must
+        not strand the mandatory final H7 checkpoint/close transaction.  This
+        predicate is intentionally stricter than a terminal-looking sentence:
+        it requires the structural completion state and an absent durable
+        receipt, so it cannot revive an already-closed task for ordinary work.
+        """
+
+        if str(contract.get("currentPhase", "")).strip().casefold() not in {"complete", "completed", "done"}:
+            return False
+        if bool(contract.get("returnStack")):
+            return False
+        if not str(contract.get("nextAction", "")).strip().casefold().startswith("no automatic action:"):
+            return False
+        if isinstance(contract.get("visibleProgressReceipt"), dict) and contract.get("visibleProgressReceipt"):
+            return False
+        proof = contract.get("projectProgressProof")
+        # The final checkpoint is the one governed path allowed to repair a
+        # missing/stale project proof.  A terminal contract is deliberately
+        # non-wake-eligible, so requiring an already-current proof here would
+        # strand the checkpoint before it can bind the fresh proof supplied in
+        # that same H7 transaction.  Ordinary context reads still pass
+        # ``allow_terminal_finalization=False`` and therefore never select it.
+        if not isinstance(proof, dict) or str(proof.get("state", "")) not in {"current", "withheld"}:
+            return False
+        canonical_plan = contract.get("canonicalPlan")
+        items = canonical_plan.get("items") if isinstance(canonical_plan, dict) else None
+        if not isinstance(items, list) or not items:
+            return False
+        statuses = [str(item.get("status", "")) for item in items if isinstance(item, dict)]
+        return len(statuses) == len(items) and all(status in {"completed", "cancelled"} for status in statuses)
+
+    def _read_context_contract(
+        self,
+        workspace_key: str,
+        session_key: str,
+        *,
+        allow_terminal_finalization: bool = False,
+    ) -> tuple[dict[str, Any] | None, str]:
         """Read one unique current execution contract without touching SQLite or pointers."""
 
         index_path = self.workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json"
@@ -1346,7 +1396,7 @@ class BrainCore:
         ):
             return None, "BRAIN_CONTEXT_HOT_INDEX_SCOPE_MISMATCH"
         package_version = str(self.manifest.get("version", ""))
-        entries = [
+        scoped_entries = [
             entry
             for entry in index.get("entries", []) or []
             if isinstance(entry, dict)
@@ -1356,11 +1406,45 @@ class BrainCore:
             # workline.  A stale context pointer is merely an ambiguity hint;
             # it must never revive an explicitly non-wake-eligible entry.
             # Missing legacy values remain eligible for compatibility.
-            and entry.get("wakeEligible", True) is not False
             and str(entry.get("packageVersion", "")) == package_version
         ]
+        entries = [entry for entry in scoped_entries if entry.get("wakeEligible", True) is not False]
+        terminal_finalization = False
         if not entries:
-            return None, "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT"
+            if not allow_terminal_finalization:
+                return None, "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT"
+            terminal_entries: list[dict[str, Any]] = []
+            for candidate in scoped_entries:
+                if candidate.get("wakeEligible", True) is not False:
+                    continue
+                if not self._context_timestamp_current(candidate.get("updatedAt", "")):
+                    continue
+                contract_name = Path(str(candidate.get("contractFileName", ""))).name
+                if not contract_name:
+                    continue
+                terminal_contract = _read_json(
+                    self.workspace / "runtime-state" / "execution-contracts" / contract_name
+                )
+                if (
+                    isinstance(terminal_contract, dict)
+                    and str(terminal_contract.get("schema", "")) == "super-brain.execution-contract.v1"
+                    and str(terminal_contract.get("status", "")) == "active"
+                    and str(terminal_contract.get("taskId", "")) == str(candidate.get("taskId", ""))
+                    and str(terminal_contract.get("workspaceKey", "")).lower() == workspace_key.lower()
+                    and str(terminal_contract.get("ownerSessionKey", "")).lower() == session_key
+                    and str(terminal_contract.get("packageVersion", "")) == package_version
+                    and terminal_contract.get("needsReconciliation") is not True
+                    and self._is_terminal_finalization_contract(terminal_contract)
+                ):
+                    terminal_entries.append(candidate)
+            if len(terminal_entries) != 1:
+                return None, (
+                    "BRAIN_CONTEXT_TERMINAL_FINALIZATION_AMBIGUOUS"
+                    if terminal_entries
+                    else "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT"
+                )
+            entries = terminal_entries
+            terminal_finalization = True
         context_hint = self._read_current_context_pointer(workspace_key, session_key)
         if context_hint is not None:
             hinted_entries = [
@@ -1421,6 +1505,8 @@ class BrainCore:
         # revisions behind an otherwise current, identity-matched contract.
         # Recover read-only from that strictly one-way condition; an index that
         # is ahead still fails closed because its contract may not have landed.
+        if terminal_finalization:
+            return contract, "BRAIN_CONTEXT_TERMINAL_FINALIZATION_READY"
         return contract, "BRAIN_CONTEXT_HOT_INDEX_LAGGING_FALLBACK" if hot_index_lagging else "BRAIN_CONTEXT_READY"
 
     def _read_current_context_pointer(
@@ -1728,6 +1814,7 @@ class BrainCore:
         user_control: str = "unknown",
         completion_evidence_present: bool = False,
         rule_signals: Iterable[Any] = (),
+        terminal_finalization: bool = False,
     ) -> dict[str, Any]:
         """Return a bounded, pure-read context packet for the current Desktop Host turn."""
 
@@ -1779,7 +1866,11 @@ class BrainCore:
                 "coreRules": core_rules,
                 "rawPromptStored": False, "rawTranscriptStored": False,
             }
-        contract, code = self._read_context_contract(workspace_key, session_key)
+        contract, code = self._read_context_contract(
+            workspace_key,
+            session_key,
+            allow_terminal_finalization=terminal_finalization,
+        )
         if contract is None:
             return {
                 "ok": True, "schema": "super-brain.context.v1", "available": False,
@@ -1854,6 +1945,19 @@ class BrainCore:
             "canResumeParent": bool(contract.get("returnStack")),
             "actionAuthorization": "withheld",
         }
+        canonical_plan = contract.get("canonicalPlan") if isinstance(contract.get("canonicalPlan"), dict) else {}
+        canonical_items = canonical_plan.get("items") if isinstance(canonical_plan.get("items"), list) else []
+        canonical_statuses = [str(item.get("status", "")) for item in canonical_items if isinstance(item, dict)]
+        canonical_plan_summary = (
+            {
+                "itemCount": len(canonical_items),
+                "completedCount": sum(status == "completed" for status in canonical_statuses),
+                "pendingCount": sum(status in {"pending", "in_progress"} for status in canonical_statuses),
+                "cancelledCount": sum(status == "cancelled" for status in canonical_statuses),
+            }
+            if len(canonical_statuses) == len(canonical_items) and canonical_items
+            else {}
+        )
         continuation_resolution = {
             "ok": True,
             "actionAuthorization": "allowed",
@@ -1861,6 +1965,8 @@ class BrainCore:
             "needsConfirmation": False,
             "blockers": list(contract.get("blockers", []) or []),
             "nextAction": str(contract.get("nextAction", "")),
+            "currentPhase": str(contract.get("currentPhase", "")),
+            "canonicalPlan": canonical_plan_summary,
             "canResumeParent": bool(contract.get("returnStack")),
         }
         continuation = decide_turn_close(

@@ -394,6 +394,7 @@ Describe 'Codegraph Index regression guards' {
 Describe 'Impact Advisor regression guards' {
   BeforeAll { $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
   It 'keeps change impact and verification recommendation markers' { $scriptText = Get-Content -LiteralPath (Join-Path $root 'scripts\impact-advisor.ps1') -Raw -Encoding UTF8; $scriptText.Contains('last-impact-advisor.json') | Should Be $true; $scriptText.Contains('riskLevel') | Should Be $true; $scriptText.Contains('recommendedChecks') | Should Be $true; $scriptText.Contains('directCallers') | Should Be $true; $scriptText.Contains('directCallees') | Should Be $true; $scriptText.Contains('affectedWorkspaceFiles') | Should Be $true }
+  It 'keeps manual compatibility impact analysis read-only and independent of retired continuity state' { $scriptText = Get-Content -LiteralPath (Join-Path $root 'scripts\impact-advisor.ps1') -Raw -Encoding UTF8; $scriptText.Contains('[switch]$NoWrite') | Should Be $true; $scriptText.Contains("scripts/codegraph-index.ps1 -Json -NoWrite") | Should Be $true; $scriptText.Contains('last-project-continuity.json') | Should Be $false; $scriptText.Contains('Get-SuperBrainRelevantStepLedger') | Should Be $false }
 }
 Describe 'Cold Start Output Discipline regression guards' {
   BeforeAll { $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }

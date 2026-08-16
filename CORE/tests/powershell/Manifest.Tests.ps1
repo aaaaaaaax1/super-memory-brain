@@ -15,11 +15,14 @@ Describe 'Super Memory Brain package manifest' {
     @($manifest.legacyCompatibilityFiles) -contains 'runtime\codex_stop_hook.py' | Should Be $true
     @($manifest.legacyCompatibilityFiles) -contains 'runtime\codex_stop_hook_dispatcher.py' | Should Be $true
     @($manifest.nativeRuntimeFiles) -contains 'runtime\turn_close_dispatcher.py' | Should Be $true
+    @($manifest.nativeRuntimeFiles) -contains 'runtime\work_dag.py' | Should Be $true
+    @($manifest.nativeRuntimeFiles) -contains 'runtime\run_observability.py' | Should Be $true
     @($manifest.scripts) -contains 'script-call-contract.ps1' | Should Be $true
     @($manifest.scripts) -contains 'routing-kernel.ps1' | Should Be $true
     @($manifest.scripts) -contains 'task-link-store.ps1' | Should Be $true
     @($manifest.scripts) -contains 'task-state-store.ps1' | Should Be $true
     @($manifest.scripts) -contains 'execution-contract.ps1' | Should Be $true
+    @($manifest.scripts) -contains 'work-dag.ps1' | Should Be $true
     @($manifest.scripts) -contains 'intelligence-eval.ps1' | Should Be $true
     @($manifest.scripts) -contains 'phase6-memory-eval.ps1' | Should Be $true
     @($manifest.scripts) -contains 'evaluation-learning-bridge.ps1' | Should Be $true
@@ -44,6 +47,7 @@ Describe 'Super Memory Brain package manifest' {
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'task-link-store.ps1' }).tier | Should Be 'T1'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'task-state-store.ps1' }).tier | Should Be 'T1'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'execution-contract.ps1' }).tier | Should Be 'T1'
+    ($manifest.scriptMetadata | Where-Object { $_.path -eq 'work-dag.ps1' }).tier | Should Be 'T1'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'intelligence-eval.ps1' }).tier | Should Be 'T1'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'evaluation-learning-bridge.ps1' }).tier | Should Be 'T1'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'autonomy-evidence-ledger.ps1' }).tier | Should Be 'T1'
@@ -76,6 +80,9 @@ Describe 'Super Memory Brain package manifest' {
     @($manifest.legacyCompatibilityFiles) -contains 'runtime\codex_prompt_hook.py' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\codex_stop_hook.py' | Should Be $false
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\turn_close_dispatcher.py' | Should Be $true
+    @($manifest.intelligenceBehaviorFiles) -contains 'runtime\work_dag.py' | Should Be $true
+    @($manifest.intelligenceBehaviorFiles) -contains 'runtime\run_observability.py' | Should Be $true
+    @($manifest.intelligenceBehaviorFiles) -contains 'scripts\work-dag.ps1' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\turn_intent.py' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'scripts\routing-kernel.ps1' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'scripts\internal\hook-runtime-common.ps1' | Should Be $false

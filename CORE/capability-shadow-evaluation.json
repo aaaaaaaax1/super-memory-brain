@@ -1,0 +1,47 @@
+{
+  "schema": "super-brain.capability-shadow-evaluation.v1",
+  "evaluationVersion": 1,
+  "state": "passed",
+  "code": "H7_CAPABILITY_SHADOW_EVALUATION_PASSED",
+  "packageVersion": "0.6.0",
+  "manifestSha256": "8fd45ca012446e20d45d5340e7d0c23a376a133fa77d1663f27cbc43ffbfa16e",
+  "sourceRegistrySha256": "a1c019507efe6a3ad6862ff27d429385cf1793a52e0953f4fb3420e14efd032c",
+  "sourceManifestHashes": [
+    {
+      "sourceId": "mattpocock-skills",
+      "sha256": "e0440c07cad3e9321c66714c2e0ee0eb280c007a421cb865caeab1b7f5d47320"
+    }
+  ],
+  "fixtureSha256": "937720116e8afb022c15e6105f13374ba410b55e65496defb7b218826a344ff3",
+  "evaluatorSha256": "ae7482435fe1c2789087cfc53289508084d40ff68fc2a0ef79925a37bb78fa8f",
+  "routingSha256": "ac0a3f3dffc70f895a234fd38821a4a6ce98b8e2637dece37126bc41d53e1157",
+  "executionAssistSha256": "b0769af0142cdd8b94b6172fde6e4a9c87743f044d5b090a50749ce1d9880c28",
+  "contractIds": [
+    "sb.native.challenge.gate.v1",
+    "sb.native.engineering.evidence-loop.v1",
+    "sb.native.h7.handoff.v1",
+    "sb.native.product-planning.proposal-loop.v1",
+    "sb.native.productivity.learning-loop.v1",
+    "sb.native.productivity.workflow-loop.v1"
+  ],
+  "caseCount": 6,
+  "metrics": {
+    "oracleEvidenceRate": 1.0,
+    "retrievalRecallAt1": 1.0,
+    "retrievalRecallAt3": 1.0,
+    "unknownAbstentionRate": 1.0,
+    "routeStabilityRate": 1.0,
+    "unsupportedActivationCount": 0
+  },
+  "gateIds": [
+    "shadow_fixture_binding",
+    "shadow_route_stability",
+    "shadow_retrieval_at_1",
+    "shadow_retrieval_at_3",
+    "shadow_unknown_abstention",
+    "shadow_no_unsupported_activation"
+  ],
+  "rawPromptStored": false,
+  "rawTranscriptStored": false,
+  "payloadHash": "e3b9ea285879be1a085467b3eeb5599c7e0eea3c21eeaf141a3d963f88652c87"
+}

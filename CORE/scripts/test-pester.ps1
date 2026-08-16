@@ -72,13 +72,14 @@ function Get-SuperBrainPesterTierBudgetMs([string]$RequestedTier) {
   }
 }
 
-function Get-SuperBrainPesterParallelism([int]$RequestedParallelism) {
+function Get-SuperBrainPesterParallelism([int]$RequestedParallelism,[int]$ParallelismCap=8) {
   if ($RequestedParallelism -gt 0) { return $RequestedParallelism }
   # Each suite can start both PowerShell and Python authorities. Keep the
-  # default at half the logical CPUs (capped at eight) so Core remains inside
-  # its budget without starving the editor, MCP transport, or H7 subprocesses.
+  # default at half the logical CPUs and let Core use a lower cap because its
+  # contract-heavy suites contend on child-process startup; this preserves the
+  # 120-second tier budget instead of hiding scheduler contention as a timeout.
   $logicalProcessors = [Math]::Max(1, [Environment]::ProcessorCount)
-  return [Math]::Min(8, [Math]::Max(3, [int][Math]::Floor($logicalProcessors / 2)))
+  return [Math]::Min([Math]::Max(3, $ParallelismCap), [Math]::Max(3, [int][Math]::Floor($logicalProcessors / 2)))
 }
 
 function ConvertTo-SuperBrainProcessArgument([string]$Value) {
@@ -217,7 +218,8 @@ $tierBudgetMs = Get-SuperBrainPesterTierBudgetMs $Tier
 $stateSeed = 'empty-controlled-state'
 $stateSeedPolicy = 'Tests never mirror active private state; every suite must create the smallest explicit fixture it needs.'
 $parallelExecution = ($Tier -ne 'Full')
-$effectiveMaxParallelSuites = if ($parallelExecution) { Get-SuperBrainPesterParallelism $MaxParallelSuites } else { 1 }
+$parallelismCap = if ($Tier -eq 'Core') { 6 } else { 8 }
+$effectiveMaxParallelSuites = if ($parallelExecution) { Get-SuperBrainPesterParallelism $MaxParallelSuites $parallelismCap } else { 1 }
 $stateRootIsolation = if ($parallelExecution) { 'per_suite_rebased_shared_policy' } else { 'single_controlled_state' }
 $exclusiveSuiteNames = @('PesterParallelSandbox.Tests.ps1')
 $reportPathExplicit = -not [string]::IsNullOrWhiteSpace($ReportPath)
@@ -345,6 +347,7 @@ $report = [pscustomobject]@{
   reportPathExplicit = $reportPathExplicit
   parallelExecution = $parallelExecution
   maxParallelSuites = $effectiveMaxParallelSuites
+  parallelismCap = $parallelismCap
   observedMaxParallelSuites = $observedMaxParallelSuites
   exclusiveSuites = @($exclusiveSuiteNames)
   suiteTimeoutSeconds = $suiteTimeout

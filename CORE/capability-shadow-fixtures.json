@@ -1,0 +1,43 @@
+{
+  "schema": "super-brain.capability-shadow-fixtures.v1",
+  "fixtureVersion": 1,
+  "cases": [
+    {
+      "caseId": "engineering-evidence",
+      "contractId": "sb.native.engineering.evidence-loop.v1",
+      "queryTokens": ["engineering", "evidence", "verification"],
+      "requiredChecks": ["source_cold_only", "native_owner", "receipts", "verification"]
+    },
+    {
+      "caseId": "product-proposal",
+      "contractId": "sb.native.product-planning.proposal-loop.v1",
+      "queryTokens": ["product", "proposal", "acceptance"],
+      "requiredChecks": ["source_cold_only", "native_owner", "receipts", "verification"]
+    },
+    {
+      "caseId": "productivity-workflow",
+      "contractId": "sb.native.productivity.workflow-loop.v1",
+      "queryTokens": ["productivity", "workflow", "bounded"],
+      "requiredChecks": ["source_cold_only", "native_owner", "receipts", "verification"]
+    },
+    {
+      "caseId": "productivity-learning",
+      "contractId": "sb.native.productivity.learning-loop.v1",
+      "queryTokens": ["productivity", "learning", "checkback"],
+      "requiredChecks": ["source_cold_only", "native_owner", "receipts", "verification"]
+    },
+    {
+      "caseId": "h7-handoff",
+      "contractId": "sb.native.h7.handoff.v1",
+      "queryTokens": ["h7", "handoff", "continuity"],
+      "requiredChecks": ["source_cold_only", "native_owner", "receipts", "verification"]
+    },
+    {
+      "caseId": "challenge-gate",
+      "contractId": "sb.native.challenge.gate.v1",
+      "queryTokens": ["challenge", "assumption", "counterexample"],
+      "requiredChecks": ["source_cold_only", "native_owner", "receipts", "verification"]
+    }
+  ],
+  "unknownQueryTokens": ["unmatched", "no-such-capability"]
+}

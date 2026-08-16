@@ -26,5 +26,7 @@ Describe 'Super Memory Brain package verification quality gate' {
     $verify.Contains('timeoutControlled = $true') | Should Be $true
     $verify.Contains('runtime_brain_ui_server_regression.py') | Should Be $true
     $verify.Contains('Control Center API and privacy regression') | Should Be $true
+    $verify.Contains('runtime_work_dag_regression.py') | Should Be $true
+    $verify.Contains('native H7 work-DAG regression') | Should Be $true
   }
 }

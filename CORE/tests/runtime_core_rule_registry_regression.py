@@ -130,7 +130,16 @@ def main() -> int:
     assert current["code"] == "CORE_RULE_REGISTRY_CURRENT", current
     assert {rule["ruleId"] for rule in current["rules"]} == set(REQUIRED_RULE_IDS), current
     assert current["payloadHash"] == canonical_hash({key: value for key, value in source.items() if key != "payloadHash"})
-    assert current["registryVersion"] == 51, current
+    assert current["registryVersion"] == 57, current
+    project_knowledge_rule = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-ON-DEMAND-PROJECT-KNOWLEDGE-001")
+    assert project_knowledge_rule["entrypoint"] == "runtime/project_knowledge.py", project_knowledge_rule
+    assert set(project_knowledge_rule["acceptanceTests"]) >= {
+        "project_knowledge_proof_bound_slice_replay",
+        "project_knowledge_path_hash_and_symlink_fail_closed_replay",
+        "project_knowledge_no_full_tree_scan_replay",
+        "project_knowledge_receipt_telemetry_evidence_consistency_replay",
+        "ordinary_continuation_no_project_scan_replay",
+    }, project_knowledge_rule
     h7 = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-H7-ACTIVATION-001")
     assert h7["revision"] == 7, h7
     assert h7["effect"] == "run_h7_mcp_or_same_h7_cli_identity_and_proof_validation_in_background_for_ordinary_continuation_without_creating_or_requiring_task_card_require_current_h7_identity_scope_proof_and_derived_index_rebuild_before_formal_stage_high_impact_action_durable_learning_or_runtime_identity_repair_use_one_package_local_writable_activation_receipt_root_and_treat_p7_hook_and_legacy_host_receipt_junctions_as_fail_open_historical_compatibility_only_without_install_repair_authorization_or_evidence", h7
@@ -245,8 +254,8 @@ def main() -> int:
     }, shared_memory
     absorption = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-ABILITY-ABSORPTION-001")
     assert absorption["priority"] == 105, absorption
-    assert absorption["revision"] == 6, absorption
-    assert absorption["effect"] == "absorb_verified_upstream_provenance_only_into_super_brain_native_procedures_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_without_independent_install_direct_upstream_execution_or_user_named_skill_dependency", absorption
+    assert absorption["revision"] == 7, absorption
+    assert absorption["effect"] == "absorb_verified_upstream_provenance_only_into_super_brain_native_procedures_with_functional_parity_or_enhancement_and_automatic_semantic_route_under_h7_core_rule_project_evidence_and_authorization_boundaries_require_a_current_hash_bound_offline_shadow_evaluation_and_retrieval_experiment_before_native_activation_withhold_unverified_capabilities_without_blocking_h7_or_project_knowledge_and_without_independent_install_direct_upstream_execution_or_user_named_skill_dependency", absorption
     assert absorption["enforcement"] == "runtime", absorption
     assert absorption["entrypoint"] == "runtime/execution_assist.py", absorption
     assert set(absorption["trigger"]) >= {
@@ -271,6 +280,10 @@ def main() -> int:
         "independent_install_and_direct_upstream_route_denial_replay",
         "execution_assist_native_route_replay",
         "capability_route_privacy_projection_replay",
+        "capability_shadow_evaluation_current_binding_replay",
+        "capability_shadow_missing_stale_tampered_withheld_replay",
+        "capability_shadow_no_unsupported_activation_replay",
+        "capability_shadow_retrieval_experiment_replay",
     }, absorption
     four_quadrant = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-FOUR-QUADRANT-EXECUTION-001")
     assert four_quadrant["revision"] == 1, four_quadrant
@@ -315,7 +328,7 @@ def main() -> int:
         "retention_window_cap_replay",
     }, task_retention
     defect_repair = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-DEFECT-ROOT-REPAIR-001")
-    assert defect_repair["revision"] == 5, defect_repair
+    assert defect_repair["revision"] == 6, defect_repair
     assert defect_repair["scope"] == "runtime", defect_repair
     assert defect_repair["enforcement"] == "runtime", defect_repair
     assert defect_repair["entrypoint"] == "runtime/turn_runtime.py", defect_repair
@@ -525,8 +538,10 @@ def main() -> int:
     }, progress_truth
     delivery = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-EFFICIENT-DELIVERY-001")
     assert delivery["priority"] == 95, delivery
-    assert delivery["revision"] == 4, delivery
-    assert delivery["effect"] == "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_use_one_bounded_current_thread_tail_observation_without_project_tree_scan_on_normal_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_avoid_extra_runtime_processes_or_duplicate_routes_and_never_claim_unverified_progress", delivery
+    assert delivery["revision"] == 5, delivery
+    assert delivery["enforcement"] == "runtime", delivery
+    assert delivery["entrypoint"] == "runtime/turn_runtime.py", delivery
+    assert delivery["effect"] == "solve_actual_project_work_fast_and_correctly_with_minimal_verified_control_plane_overhead_measure_only_bounded_actual_h7_runtime_latency_and_report_explicit_budget_state_use_one_bounded_current_thread_tail_observation_without_project_tree_scan_on_normal_continuation_use_fastest_deterministic_feedback_first_parallelize_only_independent_bounded_checks_correct_current_state_then_repair_root_cause_then_replay_prefer_concrete_fix_and_verification_over_repeated_explanation_or_status_chatter_avoid_extra_runtime_processes_or_duplicate_routes_and_never_claim_unverified_progress", delivery
     assert set(delivery["acceptanceTests"]) >= {
         "bounded_parallel_delivery_replay",
         "fast_feedback_timeout_replay",
@@ -537,6 +552,9 @@ def main() -> int:
         "fast_path_preserves_verification_replay",
         "bounded_visible_tail_fast_path_replay",
         "no_extra_mcp_process_on_hot_path_replay",
+        "run_observability_measured_only_replay",
+        "run_observability_budget_and_privacy_replay",
+        "run_observability_telemetry_evidence_consistency_replay",
     }, delivery
     runtime_independence = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-RUNTIME-ADAPTER-INDEPENDENCE-001")
     assert runtime_independence["revision"] == 2, runtime_independence
@@ -565,7 +583,7 @@ def main() -> int:
         "primary_entry_no_optional_health_replay",
     }, primary_entry
     proposal_gate = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-PROPOSAL-GATE-001")
-    assert proposal_gate["revision"] == 3, proposal_gate
+    assert proposal_gate["revision"] == 4, proposal_gate
     assert "mutation_guard" in proposal_gate["trigger"], proposal_gate
     assert proposal_gate["effect"] == "require_exact_user_or_approved_plan_authorization_for_destructive_mutation", proposal_gate
     assert proposal_gate["entrypoint"] == "scripts/cognitive-enforce.ps1", proposal_gate
@@ -575,6 +593,22 @@ def main() -> int:
         "vague_instruction_denial_replay",
         "wildcard_target_drift_fail_closed_replay",
     }, proposal_gate
+    auto_resume = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-AUTO-RESUME-001")
+    assert auto_resume["revision"] == 6, auto_resume
+    assert auto_resume["enforcement"] == "runtime", auto_resume
+    assert auto_resume["entrypoint"] == "runtime/continuation_policy.py", auto_resume
+    assert auto_resume["effect"] == "resume_latest_approved_parent_after_insertion_only_when_a_concrete_authorized_parent_action_remains_and_treat_a_verified_zero_pending_canonical_plan_in_complete_phase_without_parent_as_terminal_not_continue_keep_one_unique_non_wake_eligible_structurally_verified_terminal_contract_available_only_for_the_h7_finalization_checkpoint_that_rebinds_that_exact_terminal_candidate_and_may_refresh_a_withheld_project_proof_only_when_that_same_checkpoint_supplies_fresh_hash_verified_live_project_proof_never_for_normal_auto_wake_or_ordinary_continuation", auto_resume
+    assert set(auto_resume["trigger"]) >= {"continue", "task_complete", "final_closeout"}, auto_resume
+    assert set(auto_resume["acceptanceTests"]) >= {
+        "parent_resume_replay",
+        "cross_session_resume_replay",
+        "verified_completed_plan_terminal_replay",
+        "incomplete_plan_not_terminal_replay",
+        "terminal_finalization_no_auto_wake_replay",
+        "terminal_finalization_unique_scope_replay",
+        "terminal_finalization_proof_refresh_replay",
+        "terminal_finalization_contract_binding_replay",
+    }, auto_resume
     child_lifecycle = next(rule for rule in current["rules"] if rule["ruleId"] == "SB-CHILD-LIFECYCLE-001")
     assert child_lifecycle["revision"] == 3, child_lifecycle
     assert child_lifecycle["effect"] == "close_only_verified_agent_child_and_never_mutate_parent_or_user_task", child_lifecycle
@@ -610,6 +644,7 @@ def main() -> int:
         "SB-PROJECT-GROUNDED-DESIGN-001",
         "SB-FOUR-QUADRANT-EXECUTION-001",
         "SB-PROGRESS-TRUTH-001",
+        "SB-ON-DEMAND-PROJECT-KNOWLEDGE-001",
     ], design
     continuation = public_projection(current, signals=("continue",))
     assert continuation["applicableRuleIds"] == [

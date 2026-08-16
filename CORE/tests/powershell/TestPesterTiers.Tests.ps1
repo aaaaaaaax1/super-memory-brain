@@ -23,7 +23,9 @@ Describe 'Super Memory Brain tiered Pester runner' {
     $runner.Contains('tierBudgetMs = $tierBudgetMs') | Should Be $true
     $runner.Contains('[ValidateRange(0,12)][int]$MaxParallelSuites = 0') | Should Be $true
     $runner.Contains('function Get-SuperBrainPesterParallelism') | Should Be $true
-    $runner.Contains('[Math]::Min(8, [Math]::Max(3, [int][Math]::Floor($logicalProcessors / 2)))') | Should Be $true
+    $runner.Contains('[Math]::Min([Math]::Max(3, $ParallelismCap), [Math]::Max(3, [int][Math]::Floor($logicalProcessors / 2)))') | Should Be $true
+    $runner.Contains("`$parallelismCap = if (`$Tier -eq 'Core') { 6 } else { 8 }") | Should Be $true
+    $runner.Contains('parallelismCap = $parallelismCap') | Should Be $true
     $runner.Contains('per_suite_rebased_shared_policy') | Should Be $true
     $runner.Contains('observedMaxParallelSuites') | Should Be $true
     $runner.Contains("'PesterParallelSandbox.Tests.ps1'") | Should Be $true
