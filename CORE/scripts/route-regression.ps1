@@ -34,7 +34,10 @@ function Normalize-IntentRoute([string]$Intent) {
 }
 
 function Invoke-IntentRoute([string]$Prompt, [string]$Workspace = '') {
-  $raw = & $intentRouter -Text $Prompt -Workspace $Workspace -Json
+  # This suite verifies intent classification. Capability selection has its
+  # own governed tests and is intentionally skipped here to avoid launching a
+  # fresh map/provenance process for every case.
+  $raw = & $intentRouter -Text $Prompt -Workspace $Workspace -Json -SkipCapabilityRoute
   if ($LASTEXITCODE -ne 0) { throw "intent-router failed" }
   $r = $raw | ConvertFrom-Json
   return [pscustomobject]@{

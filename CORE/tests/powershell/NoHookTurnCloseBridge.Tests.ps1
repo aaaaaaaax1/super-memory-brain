@@ -40,10 +40,10 @@ Describe 'No-Hook turn-close bridge' {
     )
     $side.exitCode | Should Be 0
 
-    $previousThread = $env:CODEX_THREAD_ID
+    $previousThread = $env:SUPER_BRAIN_LOCAL_SESSION_ID
     $previousCwd = Get-Location
     try {
-      $env:CODEX_THREAD_ID = $sessionKey
+      $env:SUPER_BRAIN_LOCAL_SESSION_ID = $sessionKey
       Push-Location $hostRoot
       $before = Get-FileHash -LiteralPath $side.value.path -Algorithm SHA256
       $contextRaw = @(& python -X utf8 $brainCli --package-root $root --memory-root (Join-Path $stateRoot 'shared') context --memory-mode auto --turn-outcome side_branch_completed --user-control none --completion-evidence-present 2>$null)
@@ -51,7 +51,7 @@ Describe 'No-Hook turn-close bridge' {
       $after = Get-FileHash -LiteralPath $side.value.path -Algorithm SHA256
     } finally {
       Pop-Location
-      if ($null -eq $previousThread) { Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $previousThread }
+      if ($null -eq $previousThread) { Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $previousThread }
     }
 
     $context.ok | Should Be $true

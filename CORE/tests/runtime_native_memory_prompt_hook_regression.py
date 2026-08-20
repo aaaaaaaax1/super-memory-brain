@@ -1562,7 +1562,7 @@ def test_native_prompt_hook_cli_arms_a_scoped_diagnostic_slot_and_refuses_a_fore
         )
         environment = os.environ.copy()
         environment["SUPER_BRAIN_STATE_ROOT"] = str(state_root)
-        environment["CODEX_THREAD_ID"] = owner_session
+        environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = owner_session
         base_command = [
             sys.executable,
             "-X",
@@ -1620,7 +1620,7 @@ def test_native_prompt_hook_cli_arms_a_scoped_diagnostic_slot_and_refuses_a_fore
         assert not arm_path.exists()
 
         foreign_environment = dict(environment)
-        foreign_environment["CODEX_THREAD_ID"] = foreign_session
+        foreign_environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = foreign_session
         forged_owner = subprocess.run(base_command, capture_output=True, env=foreign_environment, check=False, timeout=10)
         assert forged_owner.returncode == 2
         assert json.loads(forged_owner.stdout.decode("utf-8")) == {
@@ -1680,7 +1680,7 @@ def test_native_prompt_hook_armer_io_failure_is_machine_readable() -> None:
         ]
         output = io.StringIO()
         with (
-            patch.dict(os.environ, {"SUPER_BRAIN_STATE_ROOT": str(state_root), "CODEX_THREAD_ID": session_key}),
+            patch.dict(os.environ, {"SUPER_BRAIN_STATE_ROOT": str(state_root), "SUPER_BRAIN_LOCAL_SESSION_ID": session_key}),
             patch.object(native_prompt_hook.sys, "argv", argv),
             patch.object(native_prompt_hook, "_atomic_json", side_effect=OSError("fixture armer I/O failure")),
             redirect_stdout(output),
@@ -2383,7 +2383,7 @@ def test_cognitive_enforce_captures_only_current_h7_note_use() -> None:
         environment = os.environ.copy()
         environment["SUPER_BRAIN_STATE_ROOT"] = str(state_root)
         environment["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
-        environment["CODEX_THREAD_ID"] = session_key
+        environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = session_key
         contract = subprocess.run(
             [
                 "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",

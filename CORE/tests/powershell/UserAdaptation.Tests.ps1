@@ -1298,9 +1298,9 @@ Describe 'Governed user adaptation' {
     Write-TestAdaptationJson (Join-Path $workspace 'last-causal-change-review.json') ([pscustomobject]@{ok=$true;taskId=$taskId;gaps=@();expectedVsActual=[pscustomobject]@{decision='accepted'}})
     Write-TestAdaptationJson (Join-Path $workspace 'last-integration-contract-replay.json') ([pscustomobject]@{ok=$true;taskId=$taskId;unresolvedBehaviorMismatch=$false;mismatches=@()})
     Write-TestAdaptationJson (Join-Path $workspace 'last-integration-parity-check.json') ([pscustomobject]@{ok=$true;taskId=$taskId;unresolvedIntegrationDrift=$false;drifts=@();moduleVerification=[pscustomobject]@{ok=$true};integrationVerification=[pscustomobject]@{ok=$true};userAcceptanceVerification=[pscustomobject]@{ok=$true;realUserPathVerification=$true}})
-    $oldStateRoot=$env:SUPER_BRAIN_STATE_ROOT;$oldThreadId=$env:CODEX_THREAD_ID
+    $oldStateRoot=$env:SUPER_BRAIN_STATE_ROOT;$oldThreadId=$env:SUPER_BRAIN_LOCAL_SESSION_ID
     try{
-      $env:SUPER_BRAIN_STATE_ROOT=$stateRoot;$env:CODEX_THREAD_ID=$sessionKey
+      $env:SUPER_BRAIN_STATE_ROOT=$stateRoot;$env:SUPER_BRAIN_LOCAL_SESSION_ID=$sessionKey
       $null=& (Join-Path $Root 'scripts\checkpoint-writer.ps1') -Action Start -TaskId $taskId -TaskName 'Pending task' -WorkspaceKey $workspaceKey -SessionId $sessionKey -CurrentStep 'work remains' -PendingSteps 'unfinished implementation' -Json|ConvertFrom-Json
       $raw=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $TaskVerification -TaskId $taskId -WorkspaceKey $workspaceKey -Summary 'verification cannot close pending task' -Evidence 'pending-work failure injection' -AdaptationSignals 'reasoning_style=evidence_first' -AdaptationContext coding -Json 2>$null)
       $LASTEXITCODE|Should Be 1
@@ -1311,7 +1311,7 @@ Describe 'Governed user adaptation' {
       $result.adaptationObservation.reason|Should Match 'USER_ADAPTATION_COMPLETED_TASK_REQUIRED'
       (Get-UserAdaptationStatus $Root $workspace).observationCount|Should Be 0
       @(Get-ChildItem -LiteralPath (Join-Path $workspace 'runtime-state\user-adaptation-verifications') -File -ErrorAction SilentlyContinue).Count|Should Be 0
-    }finally{$env:SUPER_BRAIN_STATE_ROOT=$oldStateRoot;$env:CODEX_THREAD_ID=$oldThreadId}
+    }finally{$env:SUPER_BRAIN_STATE_ROOT=$oldStateRoot;$env:SUPER_BRAIN_LOCAL_SESSION_ID=$oldThreadId}
   }
 
   It 'records a canonical V2 workflow measurement through task verification' {
@@ -1328,11 +1328,11 @@ Describe 'Governed user adaptation' {
     Write-TestAdaptationJson (Join-Path $workspace 'last-integration-parity-check.json') ([pscustomobject]@{ok=$true;taskId=$taskId;unresolvedIntegrationDrift=$false;drifts=@();moduleVerification=[pscustomobject]@{ok=$true;status='module verified'};integrationVerification=[pscustomobject]@{ok=$true;status='integration verified'};userAcceptanceVerification=[pscustomobject]@{ok=$true;status='real path verified';realUserPathVerification=$true}})
     $measurement = 'review_protocol=multi_pass;forwardPasses=3;reversePasses=2;riskFloor=structural'
     $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
-    $oldThreadId = $env:CODEX_THREAD_ID
+    $oldThreadId = $env:SUPER_BRAIN_LOCAL_SESSION_ID
     $oldWorkspaceKey = $env:SUPER_BRAIN_WORKSPACE_KEY
     try {
       $env:SUPER_BRAIN_STATE_ROOT = $stateRoot
-      $env:CODEX_THREAD_ID = $sessionKey
+      $env:SUPER_BRAIN_LOCAL_SESSION_ID = $sessionKey
       $env:SUPER_BRAIN_WORKSPACE_KEY = $workspaceKey
       $checkpointRaw=@(& (Join-Path $Root 'scripts\checkpoint-writer.ps1') -Action Start -TaskId $taskId -TaskName 'Verified review protocol' -WorkspaceKey $workspaceKey -SessionId $sessionKey -CurrentStep 'all protocol passes complete' -Json)
       $checkpoint=(($checkpointRaw-join"`n")|ConvertFrom-Json)
@@ -1392,7 +1392,7 @@ Describe 'Governed user adaptation' {
       @((Get-UserAdaptationV2Store $Root $workspace).observations).Count|Should Be 1
     } finally {
       if($null-eq$oldStateRoot){Remove-Item Env:\SUPER_BRAIN_STATE_ROOT -ErrorAction SilentlyContinue}else{$env:SUPER_BRAIN_STATE_ROOT=$oldStateRoot}
-      if($null-eq$oldThreadId){Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue}else{$env:CODEX_THREAD_ID=$oldThreadId}
+      if($null-eq$oldThreadId){Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue}else{$env:SUPER_BRAIN_LOCAL_SESSION_ID=$oldThreadId}
       if($null-eq$oldWorkspaceKey){Remove-Item Env:\SUPER_BRAIN_WORKSPACE_KEY -ErrorAction SilentlyContinue}else{$env:SUPER_BRAIN_WORKSPACE_KEY=$oldWorkspaceKey}
     }
   }

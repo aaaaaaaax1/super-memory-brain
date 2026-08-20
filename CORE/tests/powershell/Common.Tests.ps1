@@ -39,6 +39,14 @@ Describe 'Super Memory Brain common helpers' {
     }
   }
 
+  It 'keeps the PowerShell MCP path hash compatible with the Python runtime contract' {
+    $actual = Get-SuperBrainMcpPathHash $root
+    $expected = Get-SuperBrainStableHash ((Get-NormalizedSuperBrainRoot $root).ToLowerInvariant()) 64
+
+    $actual | Should Be $expected
+    $actual | Should Match '^[a-f0-9]{64}$'
+  }
+
   It 'writes UTF-8 without BOM' {
     $path = Join-Path ([System.IO.Path]::GetTempPath()) ('super-brain-nobom-' + [guid]::NewGuid().ToString() + '.json')
     Write-Utf8NoBom $path '{"ok":true}'
@@ -138,13 +146,17 @@ Describe 'Super Memory Brain common helpers' {
     (Get-SuperBrainGlobalStartupMaxChars) | Should Be 0
     $block.Contains('## Super Memory Brain Bootstrap') | Should Be $true
     $block.Contains('Entry: explicit Super Brain/G1') | Should Be $true
+    $block.Contains('semantic governed task intent') | Should Be $true
+    $block.Contains('literal naming is not required') | Should Be $true
     $block.Contains('Git workflow trigger') | Should Be $true
     $block.Contains('Authority: bootstrap only') | Should Be $true
     $block.Contains('super-brain-rules.json') | Should Be $true
     $block.Contains('must never duplicate or override') | Should Be $true
-    $block.Contains('Safety: bootstrap never selects a continuation anchor') | Should Be $true
+    $block.Contains('Safety: Host transport is permanently retired') | Should Be $true
     $block.Contains('same H7 CLI') | Should Be $true
     $block.Contains('Never use Hook/P7') | Should Be $true
+    $block.Contains('Host transport is permanently retired') | Should Be $true
+    $block.Contains('current cwd') | Should Be $true
     $block.Contains('Compaction:') | Should Be $false
     $block.Contains('Stage receipt') | Should Be $false
     $block.Contains('checkpoint wins') | Should Be $false
@@ -185,18 +197,22 @@ Describe 'Super Memory Brain common helpers' {
     $skill = Get-Content -LiteralPath (Join-Path $root 'super-memory-brain\SKILL.md') -Raw -Encoding UTF8
 
     $block.Contains('Authority: bootstrap only') | Should Be $true
-    $block.Contains('bootstrap never selects a continuation anchor') | Should Be $true
+    $block.Contains('Host transport is permanently retired') | Should Be $true
     $block.Contains('Compaction:') | Should Be $false
     $skill.Contains('sole behavioral-policy') | Should Be $true
-    $skill.Contains('It must not backscan old summaries') | Should Be $true
-    $skill | Should Match 'a summary\s+is never an assertion substitute'
-    $skill.Contains('current visible locator') | Should Be $true
+    $skill.Contains('Host transport is permanently retired') | Should Be $true
+    $skill.Contains('Summaries, handoffs, memory, checkpoints, old receipts') | Should Be $true
+    $skill.Contains('local cwd/session scope') | Should Be $true
     $skill | Should Match 'scope-bound\s+runtime/checkpoint evidence'
     $skill.Contains('bare `continue`') | Should Be $true
     $skill.Contains('Ordinary continuous work') | Should Be $true
-    $skill | Should Match 'must then\s+actually'
-    $skill.Contains('continue it.') | Should Be $true
-    $skill.Contains('display-only continuity evidence') | Should Be $true
+    $skill.Contains('actual continuation result') | Should Be $true
+    $skill | Should Match 'verified mapped phase,\s+current\s+step,\s+and next action'
+    $skill.Contains('Do not emit raw commentary as a standalone substitute') | Should Be $true
+    $skill.Contains('then actually continues it.') | Should Be $true
+    $skill.Contains('do not turn every intermediate update') | Should Be $true
+    $skill.Contains('Reserve phase/status presentation') | Should Be $true
+    $skill.Contains('The local projection does not mutate the contract') | Should Be $true
     $skill.Contains('Delivery efficiency is an execution invariant') | Should Be $true
     $skill.Contains('MCP transport is unavailable') | Should Be $true
   }

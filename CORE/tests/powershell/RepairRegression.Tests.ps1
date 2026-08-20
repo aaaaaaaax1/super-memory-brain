@@ -63,7 +63,7 @@ function New-RepairPrimaryCodexFixture([string]$Base) {
 Describe 'Super Brain repair regression guards' {
   It 'keeps first-load bootstrap able to detect and repair the formal MCP binding' {
     $bootstrap = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\first-load-bootstrap.ps1')
-    foreach ($marker in @('super-brain.first-load-bootstrap.v1','-RepairMcp','mcpBindingOk','mcpFunctionalOk','McpProbeMaxAgeMinutes','-McpOnly','memory-root.txt','rawPromptStored = $false','needsNewTask')) { $bootstrap.Contains($marker) | Should Be $true }
+    foreach ($marker in @('super-brain.first-load-bootstrap.v1','-RepairMcp','mcpBindingOk','mcpFunctionalOk','mcpLiveHandshakeVerified','offline_replay_not_live_proof','-McpOnly','memory-root.txt','startupRouteReady','startupRouteState','entrySkillPhysicalOk','rawPromptStored = $false','needsNewTask')) { $bootstrap.Contains($marker) | Should Be $true }
   }
 
   It 'reports MCP repair and fresh-task discovery through H7 first-load bootstrap without a prompt Hook' {

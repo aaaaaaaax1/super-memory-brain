@@ -12,14 +12,14 @@ function Invoke-H7Contract([string]$StateRoot,[hashtable]$Parameters) {
   return (($raw -join "`n") | ConvertFrom-Json)
 }
 
-function Invoke-H7Runtime([string]$StateRoot,[string]$HostRoot,[string]$SessionKey,[string]$Phase='open',[string]$TurnIntent='continuity',[string]$ProgressCheckpointBase64='',[string]$ProjectProgressProofBase64='',[string]$TransitionId='',[string]$VisibleProgressAssertionBase64='') {
+function Invoke-H7Runtime([string]$StateRoot,[string]$HostRoot,[string]$SessionKey,[string]$Phase='open',[string]$TurnIntent='continuity',[string]$ProgressCheckpointBase64='',[string]$ProjectProgressProofBase64='',[string]$TransitionId='',[string]$HostVisibleContextBase64='') {
   $oldState = $env:SUPER_BRAIN_STATE_ROOT
-  $oldThread = $env:CODEX_THREAD_ID
+  $oldThread = $env:SUPER_BRAIN_LOCAL_SESSION_ID
   $oldWorkspace = $env:SUPER_BRAIN_WORKSPACE_KEY
   $oldCodexHome = $env:CODEX_HOME
   try {
     $env:SUPER_BRAIN_STATE_ROOT = $StateRoot
-    $env:CODEX_THREAD_ID = $SessionKey
+    $env:SUPER_BRAIN_LOCAL_SESSION_ID = $SessionKey
     $isolatedCodexHome = Join-Path $StateRoot 'codex-home'
     New-Item -ItemType Directory -Force -Path $isolatedCodexHome | Out-Null
     $env:CODEX_HOME = $isolatedCodexHome
@@ -28,14 +28,14 @@ function Invoke-H7Runtime([string]$StateRoot,[string]$HostRoot,[string]$SessionK
     $args = @('-X','utf8',$BrainCli,'--package-root',$Root,'--memory-root',(Join-Path $StateRoot 'shared'),'turn-runtime','--phase',$Phase,'--memory-mode','auto','--turn-intent',$TurnIntent,'--timeout-seconds','12')
     if($ProgressCheckpointBase64){ $args += @('--progress-checkpoint-base64',$ProgressCheckpointBase64) }
     if($ProjectProgressProofBase64){ $args += @('--project-progress-proof-base64',$ProjectProgressProofBase64) }
-    if($VisibleProgressAssertionBase64){ $args += @('--visible-progress-assertion-base64',$VisibleProgressAssertionBase64) }
+    if($HostVisibleContextBase64){ $args += @('--host-visible-context-base64',$HostVisibleContextBase64) }
     if($TransitionId){ $args += @('--transition-id',$TransitionId) }
     $raw = @(& python @args 2>$null)
     $exitCode = $LASTEXITCODE
   } finally {
     Pop-Location
     if($null -eq $oldState){ Remove-Item Env:\SUPER_BRAIN_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_STATE_ROOT = $oldState }
-    if($null -eq $oldThread){ Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $oldThread }
+    if($null -eq $oldThread){ Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $oldThread }
     if($null -eq $oldWorkspace){ Remove-Item Env:\SUPER_BRAIN_WORKSPACE_KEY -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_WORKSPACE_KEY = $oldWorkspace }
     if($null -eq $oldCodexHome){ Remove-Item Env:\CODEX_HOME -ErrorAction SilentlyContinue } else { $env:CODEX_HOME = $oldCodexHome }
   }
@@ -71,26 +71,6 @@ function New-H7AssistantProgressBase64([string]$Sentence,[string]$Phase,[string]
   return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($checkpoint))
 }
 
-function New-H7VisibleTailAssertionBase64([string]$SessionKey,[string]$Sentence,[string]$Phase,[string]$CurrentStep,[string]$NextAction,[string]$MessageId,[string]$ReceiptHash) {
-  $assertion = [ordered]@{
-    schema='super-brain.visible-tail-observation.v4'
-    observation_source='codex_app_read_thread'
-    selection='current_visible_assistant'
-    host_thread_id=$SessionKey
-    host_turn_id='019fe035-b8ac-73e2-947c-6f6fd16cdc65'
-    host_message_id=$MessageId
-    message_phase='commentary'
-    last_confirmed_sentence=$Sentence
-    source='assistant_visible_reply'
-    publication_kind='h7_durable_progress'
-    envelope_version='v4'
-    h7_receipt_hash=$ReceiptHash
-    raw_prompt_stored=$false
-    raw_transcript_stored=$false
-  } | ConvertTo-Json -Compress
-  return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($assertion))
-}
-
 Describe 'H7 runtime wake control plane' {
   It 'opens one scoped contract with a compact progress receipt and no raw prompt' {
     $fixture = New-H7Fixture
@@ -104,8 +84,7 @@ Describe 'H7 runtime wake control plane' {
       PendingSteps=@('read current evidence','run acceptance');TopicKeys=@('h7','wake')
       ProjectRoot=$fixture.hostRoot;ProjectProgressProofBase64=$initialProof;ProgressCheckpointBase64=$initialCheckpoint;TransitionId='h7-open-seed'
     }
-    $tailAssertion = New-H7VisibleTailAssertionBase64 $fixture.sessionKey 'H7 progress is bound to the current contract.' 'stage-h7' 'verify scoped runtime' 'read current evidence' 'item-h7-open-progress' $created.visibleProgressReceipt.payloadHash
-    $opened = Invoke-H7Runtime $fixture.stateRoot $fixture.hostRoot $fixture.sessionKey 'open' 'continuity' '' '' '' $tailAssertion
+    $opened = Invoke-H7Runtime $fixture.stateRoot $fixture.hostRoot $fixture.sessionKey 'open' 'continuity'
 
     $created.ok | Should Be $true
     $opened.exitCode | Should Be 0
@@ -113,7 +92,7 @@ Describe 'H7 runtime wake control plane' {
     $opened.value.context.task.taskId | Should Be 'task-h7-open'
     $opened.value.context.task.lastConfirmedSentence | Should Be 'H7 progress is bound to the current contract.'
     $opened.value.activation.state | Should Be 'full_brain_active'
-    $opened.value.visibleTailAssertion.state | Should Be 'current'
+    (@($opened.value.runtimeReceipt.PSObject.Properties.Name) -contains 'visibleTailAssertion') | Should Be $false
     $opened.value.rawPromptStored | Should Be $false
     $opened.value.rawTranscriptStored | Should Be $false
   }
@@ -150,8 +129,7 @@ Describe 'H7 runtime wake control plane' {
       CurrentPhase='stage-h7';CurrentStep='collect evidence';NextAction='verify evidence';PendingSteps=@('verify evidence')
       ProjectRoot=$fixture.hostRoot;ProjectProgressProofBase64=$initialProof;ProgressCheckpointBase64=$initialCheckpoint;TransitionId='h7-evidence-seed'
     }
-    $tailAssertion = New-H7VisibleTailAssertionBase64 $fixture.sessionKey 'H7 evidence collection is published.' 'stage-h7' 'collect evidence' 'verify evidence' 'item-h7-evidence-progress' $created.visibleProgressReceipt.payloadHash
-    $opened = Invoke-H7Runtime $fixture.stateRoot $fixture.hostRoot $fixture.sessionKey 'open' 'continuity' '' '' '' $tailAssertion
+    $opened = Invoke-H7Runtime $fixture.stateRoot $fixture.hostRoot $fixture.sessionKey 'open' 'continuity'
     $evidence = Invoke-H7Runtime $fixture.stateRoot $fixture.hostRoot $fixture.sessionKey 'evidence' 'continuity'
 
     $created.ok | Should Be $true
@@ -167,6 +145,16 @@ Describe 'H7 runtime wake control plane' {
     (@($evidence.value.PSObject.Properties.Name) -contains 'p7') | Should Be $false
   }
 
+  It 'rejects retired Host transport before decoding or binding it' {
+    $fixture = New-H7Fixture
+    $rejected = Invoke-H7Runtime $fixture.stateRoot $fixture.hostRoot $fixture.sessionKey 'open' 'continuity' '' '' '' 'legacy-host-payload'
+
+    $rejected.exitCode | Should Be 0
+    $rejected.value.available | Should Be $false
+    $rejected.value.code | Should Be 'H7_HOST_TRANSPORT_RETIRED'
+    (@($rejected.value.retiredInputs) -contains 'host_visible_context') | Should Be $true
+  }
+
   It 'keeps greeting turns direct while governed turns remain scope-bound' {
     $fixture = New-H7Fixture
     $created = Invoke-H7Contract $fixture.stateRoot @{
@@ -179,7 +167,7 @@ Describe 'H7 runtime wake control plane' {
     $created.ok | Should Be $true
     $greeting.exitCode | Should Be 0
     $greeting.value.available | Should Be $false
-    $greeting.value.code | Should Be 'TURN_INTENT_DIRECT_HOST_PATH'
+    $greeting.value.code | Should Be 'TURN_INTENT_DIRECT_PATH'
     $greeting.value.turnIntent.kind | Should Be 'greeting'
     $greeting.value.turnIntent.memoryMode | Should Be 'off'
     $greeting.value.rawPromptStored | Should Be $false

@@ -48,6 +48,24 @@ function Get-H7FixtureHash([string]$Value) {
   } finally { $sha.Dispose() }
 }
 
+function Get-H7FixtureFileHash([string]$Path) {
+  $stream = $null
+  $sha = $null
+  try {
+    $stream = [IO.File]::Open(
+      [IO.Path]::GetFullPath($Path),
+      [IO.FileMode]::Open,
+      [IO.FileAccess]::Read,
+      [IO.FileShare]::ReadWrite
+    )
+    $sha = [Security.Cryptography.SHA256]::Create()
+    return -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+  } finally {
+    if ($null -ne $sha) { $sha.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
+  }
+}
+
 function Add-H7FixtureCheckpoint([hashtable]$Parameters,[string]$Root) {
   # Test-only fixture builder. It keeps Pester's direct contract tests inside
   # the same H7 invariant as production: each synthetic visible progress
@@ -109,7 +127,7 @@ function Add-H7FixtureCheckpoint([hashtable]$Parameters,[string]$Root) {
   $evidenceName = 'h7-fixture-evidence-' + (Get-H7FixtureHash $evidenceText).Substring(0,16) + '.txt'
   $evidencePath = Join-Path $projectRoot $evidenceName
   [IO.File]::WriteAllText($evidencePath,$evidenceText,[Text.UTF8Encoding]::new($false))
-  $hash = (Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $hash = Get-H7FixtureFileHash $evidencePath
   $evidenceRef = 'project:file:' + $evidenceName + '@sha256:' + $hash
   $verificationId = 'h7_fixture_proof_passed'
   $completedItems = @($completed | ForEach-Object {

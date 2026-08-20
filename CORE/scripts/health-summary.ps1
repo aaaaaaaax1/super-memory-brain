@@ -23,6 +23,58 @@ $doctor = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'doctor.ps1') -Json 6>$n
 $smartNext = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'smart-next.ps1') -Json 6>$null) 'smart-next.ps1'
 $extensions = Convert-ToolJson @(& (Join-Path $PSScriptRoot 'verify-extensions.ps1') -Json 6>$null) 'verify-extensions.ps1'
 
+# Performance is a separate health axis.  Do not hide a runtime budget breach
+# behind ``dashboard.ok`` or an empty static risk list, and do not claim that a
+# missing telemetry sample is healthy.  Full diagnostics may inspect the most
+# recently updated bounded telemetry projection; the fast status path never
+# performs this scan.
+$telemetryRoot = Join-Path (Join-Path (Get-SuperBrainMemoryBaseRoot $SuperBrainRoot) 'workspace') 'runtime-state\turn-runtime\telemetry'
+$latestTelemetry = Get-ChildItem -LiteralPath $telemetryRoot -Filter '*.json' -File -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$runtimePerformance = [pscustomobject]@{
+  state = 'not_available'
+  code = 'H7_RUNTIME_PERFORMANCE_SAMPLE_MISSING'
+  p50Ms = $null
+  p95Ms = $null
+  maxMs = $null
+  sampleCount = 0
+  slowestPhase = ''
+  checkedAt = $null
+}
+if ($latestTelemetry) {
+  try {
+    $telemetry = Get-Content -LiteralPath $latestTelemetry.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    $observability = $telemetry.runObservability
+    if ($observability) {
+      $latency = $observability.runtimeLatency
+      $slowestPhase = ''
+      $events = @($telemetry.events | Where-Object { $_.runtimeDurationMs -ne $null } | Sort-Object runtimeDurationMs -Descending)
+      if ($events.Count -gt 0) { $slowestPhase = [string]$events[0].phase }
+      $runtimePerformance = [pscustomobject]@{
+        state = [string]$observability.state
+        code = [string]$observability.code
+        p50Ms = if ($latency) { $latency.p50Ms } else { $null }
+        p95Ms = if ($latency) { $latency.p95Ms } else { $null }
+        maxMs = if ($latency) { $latency.maxMs } else { $null }
+        sampleCount = [int]($observability.measuredSampleCount)
+        slowestPhase = $slowestPhase
+        checkedAt = $latestTelemetry.LastWriteTime.ToString('o')
+      }
+    }
+  } catch {
+    $runtimePerformance = [pscustomobject]@{
+      state = 'invalid'
+      code = 'H7_RUNTIME_PERFORMANCE_SAMPLE_INVALID'
+      p50Ms = $null
+      p95Ms = $null
+      maxMs = $null
+      sampleCount = 0
+      slowestPhase = ''
+      checkedAt = $latestTelemetry.LastWriteTime.ToString('o')
+    }
+  }
+}
+
 $summaryLines = @(
   "version=$($dashboard.version)",
   "ready=$($dashboard.ok)",
@@ -37,6 +89,7 @@ $summaryLines = @(
   "locks=$($doctor.lockHealth.lockCount)/stale=$($doctor.lockHealth.staleCount)",
   "tools=$($doctor.toolHealth.warningFresh)",
   "extensions=$($extensions.extensionCount)/$($extensions.skillCount)",
+  "performance=$($runtimePerformance.state) p95=$($runtimePerformance.p95Ms)ms max=$($runtimePerformance.maxMs)ms phase=$($runtimePerformance.slowestPhase)",
   "next=$($smartNext.nextAction)"
 )
 
@@ -54,6 +107,7 @@ $result = [pscustomobject]@{
   toolHealth = $doctor.toolHealth
   extensions = [pscustomobject]@{ ok=$extensions.ok; extensionCount=$extensions.extensionCount; skillCount=$extensions.skillCount; collisionCount=$extensions.collisionCount }
   nextAction = $smartNext.nextAction
+  runtimePerformance = $runtimePerformance
   recentTask = $dashboard.task.summary
   commands = @('scripts\smart-next.ps1 -Json','scripts\super-brain-dashboard.ps1 -Json','scripts\doctor.ps1 -Json','scripts\verify-extensions.ps1 -Json')
 }

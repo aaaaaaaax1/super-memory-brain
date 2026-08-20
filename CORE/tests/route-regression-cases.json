@@ -155,6 +155,32 @@
                       "mustFixBeforePhase6":  false
                   },
                   {
+                      "id":  "fresh-task-semantic-next-step",
+                      "prompt":  "I need the current project progress and next step",
+                      "expectedRoute":  "current_task_status",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "status",
+                                   "semantic",
+                                   "fresh_task"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
+                      "id":  "fresh-task-semantic-resume",
+                      "prompt":  "resume the current project's work",
+                      "expectedRoute":  "current_session_continue",
+                      "observer":  "intent-router",
+                      "tags":  [
+                                   "continue",
+                                   "semantic",
+                                   "fresh_task"
+                               ],
+                      "knownBaselineGap":  false,
+                      "mustFixBeforePhase6":  false
+                  },
+                  {
                       "id":  "continue-current-explain",
                       "prompt":  "continue explaining this concept",
                       "expectedRoute":  "current_session_continue",

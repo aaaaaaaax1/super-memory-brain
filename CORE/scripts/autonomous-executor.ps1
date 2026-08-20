@@ -35,8 +35,8 @@ function Invoke-JsonScript([string]$ScriptName,[string[]]$ScriptArgs){
 
 $inputText = (($Text -join ' ').Trim())
 $workspaceKey = Get-SuperBrainWorkspaceKey
-$hostPlatform = if(-not[string]::IsNullOrWhiteSpace([string]$env:SUPER_BRAIN_HOST_PLATFORM)){[string]$env:SUPER_BRAIN_HOST_PLATFORM}elseif(-not[string]::IsNullOrWhiteSpace([string]$env:CODEX_THREAD_ID)){'codex'}else{'unknown'}
-$hostAgent = if(-not[string]::IsNullOrWhiteSpace([string]$env:SUPER_BRAIN_HOST_AGENT)){[string]$env:SUPER_BRAIN_HOST_AGENT}else{$hostPlatform}
+$hostPlatform = 'local'
+$hostAgent = 'local-runtime'
 if([string]::IsNullOrWhiteSpace($Goal)){ $Goal = $inputText }
 if([string]::IsNullOrWhiteSpace($TaskName)){ $TaskName = if($Goal.Length -gt 80){$Goal.Substring(0,80)}else{$Goal} }
 if([string]::IsNullOrWhiteSpace($SessionTitle)){ $SessionTitle = $TaskName }
@@ -64,11 +64,11 @@ $executionSessionKey = ''
 $contextBindingOk = $false
 $checkpointReason = 'not an approved plan with enough steps'
 if($shouldCreateTask){
-  $sessionSeed = [string]$env:CODEX_THREAD_ID
+  $sessionSeed = [string]$env:SUPER_BRAIN_LOCAL_SESSION_ID
   if([string]::IsNullOrWhiteSpace($sessionSeed)){
     $sessionSeed='autonomous-'+(Get-SuperBrainStableHash ($workspaceKey+'|'+$TaskName+'|'+$Goal) 24)
   }
-  $executionSessionKey = Get-SuperBrainHostSessionKey $sessionSeed
+  $executionSessionKey = Get-SuperBrainLocalSessionKey $sessionSeed
   $task = Invoke-JsonScript -ScriptName 'task-register.ps1' -ScriptArgs @('-Auto','-WorkspaceKey',$workspaceKey,'-TaskName',$TaskName,'-Status','active','-Goal',$Goal,'-CurrentStep','Autonomous executor initialized: intent/memory/why-plan collected.','-NextAction','Execute the smallest verified route from why-plan.','-SessionId',$executionSessionKey,'-SessionTitle',$SessionTitle,'-HostPlatform',$hostPlatform,'-HostAgent',$hostAgent,'-Reason','automatic cognitive executor authorized by natural goal/execute intent','-Evidence','last-memory-scout.json;last-why-plan.json')
   $taskId = [string]$task.taskId
   $taskOwnerAgentId = if ($task -and $task.PSObject.Properties['agentId']) { [string]$task.agentId } else { '' }

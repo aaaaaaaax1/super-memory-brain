@@ -29,31 +29,67 @@ function Get-SuperBrainStableHash([string]$Value,[int]$Length = 16) {
 
 function Get-SuperBrainFileSha256([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
-  try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() } catch { return '' }
+  # Do not depend on Microsoft.PowerShell.Utility autoloading.  The parallel
+  # Pester worker and a few embedded Windows PowerShell hosts can start with a
+  # reduced module surface where Get-FileHash is unavailable even though the
+  # file itself is readable.  A direct .NET stream keeps hashing portable,
+  # deterministic, and fully disposed on every path.
+  $stream = $null
+  $sha = $null
+  try {
+    $stream = [System.IO.File]::Open(
+      [System.IO.Path]::GetFullPath($Path),
+      [System.IO.FileMode]::Open,
+      [System.IO.FileAccess]::Read,
+      [System.IO.FileShare]::ReadWrite
+    )
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    return -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+  } catch {
+    return ''
+  } finally {
+    if ($null -ne $sha) { $sha.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
+  }
+}
+
+# Some embedded Windows PowerShell workers intentionally start without the
+# Microsoft.PowerShell.Utility module.  Keep legacy callers compatible while
+# routing every production hash through the same direct .NET implementation.
+# The shim is defined only when the native cmdlet is genuinely unavailable, so
+# normal hosts retain their standard Get-FileHash behavior and object shape.
+if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+  function Get-FileHash {
+    [CmdletBinding()]
+    param(
+      [Parameter(Mandatory=$true,Position=0)]
+      [Alias('Path')]
+      [string]$LiteralPath,
+      [ValidateSet('SHA256')]
+      [string]$Algorithm = 'SHA256'
+    )
+    $resolved = [IO.Path]::GetFullPath($LiteralPath)
+    $hash = Get-SuperBrainFileSha256 $resolved
+    if ([string]::IsNullOrWhiteSpace($hash)) { throw "SUPER_BRAIN_FILE_HASH_FAILED: $resolved" }
+    [pscustomobject]@{
+      Algorithm = $Algorithm
+      Hash = $hash.ToUpperInvariant()
+      Path = $resolved
+    }
+  }
 }
 
 function Get-SuperBrainMcpRuntimeIdentity([string]$Root = $SuperBrainRoot) {
-  # A package path alone is not an identity: a long-lived MCP server can keep
-  # old Python modules loaded after the package has changed in place.  Bind the
-  # registration to the small set of H7 control-plane files that define the
-  # served protocol and behavior, so a stale registration fails closed instead
-  # of reporting a false healthy runtime.
+  # Keep one identity compiler.  The resident MCP is a Python import graph;
+  # PowerShell must not maintain a second hand-written file list that can drift.
   $normalizedRoot = Get-NormalizedSuperBrainRoot $Root
-  $manifest = Get-SuperBrainManifest $normalizedRoot
-  $relativePaths = @(
-    'runtime\brain_mcp.py',
-    'runtime\brain_core.py',
-    'runtime\turn_runtime.py',
-    'runtime\core_rule_registry.py',
-    'super-brain-rules.json'
-  )
-  $parts = @('version=' + [string]$manifest.version)
-  foreach ($relativePath in $relativePaths) {
-    $hash = Get-SuperBrainFileSha256 (Join-Path $normalizedRoot $relativePath)
-    if ([string]::IsNullOrWhiteSpace($hash)) { throw "SUPER_BRAIN_MCP_RUNTIME_IDENTITY_SOURCE_MISSING: $relativePath" }
-    $parts += (($relativePath.Replace('\','/')) + '=' + $hash)
-  }
-  return Get-SuperBrainStableHash ($parts -join '|') 64
+  $compiler = Join-Path $normalizedRoot 'runtime\mcp_runtime_identity.py'
+  if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw 'SUPER_BRAIN_MCP_RUNTIME_IDENTITY_COMPILER_MISSING' }
+  $raw = @(& python -X utf8 $compiler --package-root $normalizedRoot 2>&1)
+  if ($LASTEXITCODE -ne 0) { throw "SUPER_BRAIN_MCP_RUNTIME_IDENTITY_COMPILE_FAILED: $($raw -join ' ')" }
+  $identity = (($raw | ForEach-Object { [string]$_ }) -join '').Trim().ToLowerInvariant()
+  if ($identity -notmatch '^[a-f0-9]{64}$') { throw 'SUPER_BRAIN_MCP_RUNTIME_IDENTITY_INVALID' }
+  return $identity
 }
 
 function Get-SuperBrainTestSourceTreeBindingCache([string]$Root) {
@@ -402,9 +438,11 @@ function Test-SuperBrainCanonicalPlan([object]$Plan,[switch]$AllowMissingFingerp
   return [pscustomobject]@{ok=$true;code='EXECUTION_CONTRACT_CANONICAL_PLAN_OK';plan=$normalized;byteCount=$byteCount}
 }
 
-function Get-SuperBrainHostSessionKey([string]$SessionId = '') {
+function Get-SuperBrainLocalSessionKey([string]$SessionId = '') {
   $candidate = $SessionId
-  if ([string]::IsNullOrWhiteSpace($candidate) -and -not [string]::IsNullOrWhiteSpace($env:CODEX_THREAD_ID)) { $candidate = [string]$env:CODEX_THREAD_ID }
+  # Local scope is explicit. Legacy desktop thread metadata is never a
+  # fallback because it can bind a stale Host conversation to this process.
+  if ([string]::IsNullOrWhiteSpace($candidate) -and -not [string]::IsNullOrWhiteSpace($env:SUPER_BRAIN_LOCAL_SESSION_ID)) { $candidate = [string]$env:SUPER_BRAIN_LOCAL_SESSION_ID }
   if ([string]::IsNullOrWhiteSpace($candidate)) { return '' }
   $candidate = $candidate.Trim()
   if ($candidate -match '^sid-[0-9a-f]{16,64}$') { return $candidate.ToLowerInvariant() }
@@ -529,6 +567,15 @@ function Get-NormalizedSuperBrainRoot([string]$Root = $SuperBrainRoot) {
   return ([System.IO.Path]::GetFullPath($Root)).TrimEnd('\','/')
 }
 
+function Get-SuperBrainMcpPathHash([string]$Root = $SuperBrainRoot) {
+  # This value crosses the PowerShell installer / Python MCP boundary. Keep
+  # its normalization identical to runtime/brain_core.py::_mcp_path_hash.
+  # Windows paths are case-insensitive, so installer casing must not make a
+  # correctly restarted MCP look stale.
+  $normalized = (Get-NormalizedSuperBrainRoot $Root).ToLowerInvariant()
+  return Get-SuperBrainStableHash $normalized 64
+}
+
 function Get-SuperBrainWorkspaceKey([string]$Workspace = '') {
   $value = $Workspace
   if ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($env:SUPER_BRAIN_WORKSPACE_KEY)) {
@@ -629,6 +676,26 @@ function Get-SuperBrainCurrentTaskContext([string]$WorkspaceRoot,[string]$Worksp
     try { return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
   }
 
+  function Test-CurrentContextProjection([object]$Value,[string]$ExpectedWorkspaceKey) {
+    if (-not $Value -or [string]$Value.status -ne 'active' -or $Value.stale -eq $true) { return $false }
+    if ($Value.PSObject.Properties['wakeEligible'] -and $Value.wakeEligible -eq $false) { return $false }
+    if (-not $Value.PSObject.Properties['taskId'] -or [string]::IsNullOrWhiteSpace([string]$Value.taskId)) { return $false }
+    if (-not $Value.PSObject.Properties['workspaceKey'] -or -not (Test-SuperBrainWorkspaceKey ([string]$Value.workspaceKey) $ExpectedWorkspaceKey)) { return $false }
+    if ($Value.PSObject.Properties['expiresAt'] -and -not [string]::IsNullOrWhiteSpace([string]$Value.expiresAt)) {
+      try {
+        if ([datetimeoffset]::Parse([string]$Value.expiresAt) -le [datetimeoffset]::Now) { return $false }
+      } catch { return $false }
+    }
+    $manifestPath = Join-Path $SuperBrainRoot 'manifest.json'
+    if ($Value.PSObject.Properties['version'] -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+      try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not [string]::IsNullOrWhiteSpace([string]$Value.version) -and [string]$Value.version -ne [string]$manifest.version) { return $false }
+      } catch { return $false }
+    }
+    return $true
+  }
+
   $pointerExists = Test-Path -LiteralPath $pointerPath -PathType Leaf
   if ($pointerExists) {
     $context = Read-ContextProjection $pointerPath
@@ -639,7 +706,7 @@ function Get-SuperBrainCurrentTaskContext([string]$WorkspaceRoot,[string]$Worksp
     $context = Read-ContextProjection $sourcePath
     $source = 'legacy_global'
   }
-  if (-not $context -or -not $context.PSObject.Properties['workspaceKey'] -or -not (Test-SuperBrainWorkspaceKey ([string]$context.workspaceKey) $resolvedKey)) { return $null }
+  if (-not (Test-CurrentContextProjection $context $resolvedKey)) { return $null }
   $context | Add-Member -NotePropertyName contextProjectionSource -NotePropertyValue $source -Force
   $context | Add-Member -NotePropertyName contextProjectionPath -NotePropertyValue $sourcePath -Force
   return $context
@@ -1033,8 +1100,8 @@ function Complete-SuperBrainTaskState(
   Write-JsonUtf8NoBom $checkpointPayloadPath $CompletedCheckpoint 12
   Write-JsonUtf8NoBom $taskCardPayloadPath $CompletedTaskCard 12
   $resolvedWorkspaceKey = Get-SuperBrainWorkspaceKey $WorkspaceKey
-  $resolvedOwnerSessionKey = Get-SuperBrainHostSessionKey $OwnerSessionKey
-  $resolvedCallerSessionKey = Get-SuperBrainHostSessionKey $CallerSessionKey
+  $resolvedOwnerSessionKey = Get-SuperBrainLocalSessionKey $OwnerSessionKey
+  $resolvedCallerSessionKey = Get-SuperBrainLocalSessionKey $CallerSessionKey
   $contractRecord = $null
   try { if (-not [string]::IsNullOrWhiteSpace($ExecutionContractPath) -and (Test-Path -LiteralPath $ExecutionContractPath -PathType Leaf)) { $contractRecord = Get-Content -LiteralPath $ExecutionContractPath -Raw -Encoding UTF8 | ConvertFrom-Json } } catch {}
   $expectedTaskInstanceId = if($contractRecord -and $contractRecord.PSObject.Properties['taskInstanceId']){[string]$contractRecord.taskInstanceId}else{''}
@@ -1655,12 +1722,13 @@ function Get-SuperBrainRuntimeReadiness {
     [bool]$EntryAdapterReady,
     [bool]$MemoryRootReady,
     [bool]$McpBindingReady,
-    [bool]$McpFunctionalReady,
+    [Alias('McpFunctionalReady')]
+    [bool]$McpLiveHandshakeReady,
     [bool]$ActivationCoreReady,
     [bool]$CliRuntimeReady = $false
   )
 
-  $mcpRuntimeReady = ($McpBindingReady -and $McpFunctionalReady)
+  $mcpRuntimeReady = ($McpBindingReady -and $McpLiveHandshakeReady)
   $transportReady = ($mcpRuntimeReady -or $CliRuntimeReady)
   $coreRuntimeReady = ($MemoryRootReady -and $transportReady -and $ActivationCoreReady)
   # Host adapters are optional projections.  Their absence must never turn a
@@ -1689,10 +1757,10 @@ function Get-SuperBrainGlobalStartupBlock([string]$Root = $SuperBrainRoot) {
     '<!-- SUPER_MEMORY_BRAIN_BOOTSTRAP_START -->',
     '## Super Memory Brain Bootstrap',
     '',
-    '- Entry: explicit Super Brain/G1, governed continuity/status/recall/learning/repair, or the configured git workflow phrases load `super-memory-brain`; then use H7 `brain_turn`.',
+    '- Entry: explicit Super Brain/G1 or semantic governed task intent (progress/status/next step/continuation/recovery/recall/learning/repair/maintenance), or the configured git workflow phrases load `super-memory-brain`; literal naming is not required, then use H7 `brain_turn`.',
     ('- Git workflow trigger: `git' + $gitHow + '`/`git' + $gitWhat + '`/`' + $howCommit + '` routes to Super Brain canonical workflow handling.'),
     '- Authority: bootstrap only. All behavioral policy, priority, progress truth, and stage rules come solely from the package `super-brain-rules.json` and H7 contract/runtime; this file must never duplicate or override them.',
-    '- Safety: bootstrap never selects a continuation anchor or interprets summaries. If H7 MCP is unavailable, use the same H7 CLI; if no current scoped receipt is possible, block and repair. Never use Hook/P7 or visible context as a substitute.',
+    '- Safety: Host transport is permanently retired. Never read, bind, wait for, retry, start, bridge, or persist Host tail, context, thread, readback, or metadata. Reject every legacy Host input immediately with `H7_HOST_TRANSPORT_RETIRED`; use only the current cwd, `SUPER_BRAIN_LOCAL_SESSION_ID`, scoped execution contract, current local progress receipt, and live project proof. If H7 MCP is unavailable, use the same H7 CLI; if no current scoped receipt is possible, block and repair. Never use Hook/P7 or summaries as a substitute.',
     '- Refresh: package marker resolves the current Super Brain root; refresh this bootstrap together with the one Super Brain adapter after a verified package update.',
     '',
     '## Browser Route',
@@ -2251,26 +2319,40 @@ function Get-SuperBrainOwnedProcessTree([int]$ProcessId) {
 
 function Stop-SuperBrainOwnedProcessTree([int]$ProcessId) {
   $stopped = @()
-  # CIM/WMI process-parent queries can be denied in restricted Desktop
-  # sessions. Ask the OS to terminate the owned root and its descendants
-  # first; the existing per-process fallback then handles any survivor that
-  # remains observable to this process.
-  $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
-  if (Test-Path -LiteralPath $taskkill -PathType Leaf) {
+  # Snapshot the complete owned tree before touching the root.  If the root is
+  # killed first, a subsequent parent query can no longer discover descendants
+  # and timeout cleanup may strand Python/Pester workers.
+  $observedTree = @(Get-SuperBrainOwnedProcessTree $ProcessId)
+  if ($observedTree.Count -eq 0) { $observedTree = @([int]$ProcessId) }
+  $childFirst = @($observedTree | Where-Object { [int]$_ -ne [int]$ProcessId } | Sort-Object -Descending)
+  foreach ($ownedId in $childFirst) {
     try {
-      & $taskkill /PID ([string]$ProcessId) /T /F 2>$null | Out-Null
-      if ($LASTEXITCODE -eq 0) { return @([int]$ProcessId) }
+      Stop-Process -Id ([int]$ownedId) -Force -ErrorAction Stop
+      $stopped += [int]$ownedId
     } catch { }
   }
   try {
     Stop-Process -Id $ProcessId -Force -ErrorAction Stop
     $stopped += [int]$ProcessId
   } catch { }
-  foreach ($ownedId in @(Get-SuperBrainOwnedProcessTree $ProcessId | Sort-Object -Descending)) {
+
+  # CIM/WMI process-parent queries can be denied in restricted Desktop
+  # sessions. Use taskkill only as a descendant-aware fallback after the
+  # pre-captured child-first pass, then verify every observed PID.
+  $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+  if (Test-Path -LiteralPath $taskkill -PathType Leaf) {
     try {
-      Stop-Process -Id $ownedId -Force -ErrorAction Stop
-      $stopped += [int]$ownedId
+      & $taskkill /PID ([string]$ProcessId) /T /F 2>$null | Out-Null
     } catch { }
+  }
+  Start-Sleep -Milliseconds 80
+  foreach ($ownedId in $observedTree) {
+    try {
+      Get-Process -Id ([int]$ownedId) -ErrorAction Stop | Out-Null
+      # A process still present after taskkill is not reported as terminated.
+    } catch {
+      $stopped += [int]$ownedId
+    }
   }
   return @($stopped | Sort-Object -Unique)
 }

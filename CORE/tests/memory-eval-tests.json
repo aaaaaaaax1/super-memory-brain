@@ -390,7 +390,7 @@
     },
     {
         "id":  "static-session-binding-temporary-evidence",
-        "question":  "H7 会话绑定是否以真实线程和工作区为边界，并保持 memory:off 与隐私失败关闭？",
+        "question":  "H7 会话绑定是否只以本地 session 和当前工作区为边界，并保持 memory:off 与隐私失败关闭？",
         "mode":  "staticSources",
         "sources":  [
                         "super-memory-brain/SKILL.md",
@@ -399,7 +399,7 @@
                         "runtime/turn_runtime.py"
                     ],
         "mustContain":  [
-                            "CODEX_THREAD_ID",
+                            "SUPER_BRAIN_LOCAL_SESSION_ID",
                             "ownerSessionKey",
                             "workspaceKey",
                             "memory:off",
@@ -422,22 +422,22 @@
     },
     {
         "id":  "static-compression-recovery-stale-guard",
-        "question":  "压缩后续接是否只绑定当前线程的最新 durable 可见进度，并拒绝旧摘要或失效项目证明？",
+        "question":  "压缩后续接是否只使用当前本地 session 的合同和项目证明，并拒绝 Host 载荷、旧摘要或失效证明？",
         "mode":  "staticSources",
         "sources":  [
                         "super-memory-brain/SKILL.md",
-                        "runtime/host_visible_tail.py",
+                        "runtime/brain_core.py",
                         "runtime/turn_runtime.py",
                         "scripts/execution-contract.ps1"
                     ],
         "mustContain":  [
-                            "latest_durable_assistant",
-                            "H7_VISIBLE_TAIL_ASSERTION_MISMATCH",
-                            "user_attested_visible_reply",
+                            "SUPER_BRAIN_LOCAL_SESSION_ID",
+                            "H7_HOST_TRANSPORT_RETIRED",
+                            "H7_LOCAL_CONTRACT_RECOVERY_CURRENT",
                             "project_progress_proof",
                             "assistant_visible_reply",
-                            "turnLimit=1",
-                            "codex_visible_context",
+                            "BRAIN_CONTEXT_LOCAL_SESSION_MISSING",
+                            "local H7 proof",
                             "withhold"
                         ],
         "mustNotContain":  [
@@ -527,19 +527,19 @@
     },
     {
         "id":  "static-fast-session-resume",
-        "question":  "继续当前受控任务是否只读取有界当前线程尾部，并避免默认全量或深层召回？",
+        "question":  "继续当前受控任务是否只读取本地作用域合同与有界证明，并避免 Host 读取、默认全量或深层召回？",
         "mode":  "staticSources",
         "sources":  [
                         "super-memory-brain/SKILL.md",
-                        "runtime/host_visible_tail.py",
+                        "runtime/brain_core.py",
                         "runtime/brain_context.py",
                         "runtime/turn_runtime.py"
                     ],
         "mustContain":  [
-                            "read_thread(turnLimit=1",
-                            "codex_visible_context",
-                            "latest_durable_assistant",
-                            "CODEX_THREAD_ID",
+                            "H7_HOST_TRANSPORT_RETIRED",
+                            "SUPER_BRAIN_LOCAL_SESSION_ID",
+                            "local cwd/session scope",
+                            "project_progress_proof",
                             "top_k=1",
                             "max_tokens=120",
                             "memory:auto"
@@ -601,15 +601,15 @@
                         "scripts/task-index.ps1"
                     ],
         "mustContain":  [
-                            "Every same-workline continuation is visible-context-first",
-                            "codex_visible_context",
-                            "visible-readback/state card",
-                            "return to another approved workline",
+                            "Every same-workline continuation uses one verified local cwd/session scope",
+                            "H7_HOST_TRANSPORT_RETIRED",
+                            "local_contract_current",
+                            "parent_return",
                             "CONTINUATION_RECEIPT_RECONCILIATION_REQUIRED",
                             "No deep recall needed unless the user asks for continuity",
                             "active-checkpoint.json",
                             "status-card.json",
-                            "currentVisibleContext",
+                            "current local progress receipt",
                             "Historical evidence is missing/unknown; report that explicitly and do not infer prior task details.",
                             "choiceListPolicy",
                             "numbered choice list",

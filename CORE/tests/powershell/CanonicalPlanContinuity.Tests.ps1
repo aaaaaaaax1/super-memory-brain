@@ -28,6 +28,17 @@ function Get-CanonicalTestFingerprint([string]$Value) {
   finally { $sha.Dispose() }
 }
 
+function Get-CanonicalMutationPayloadHash([object]$Envelope) {
+  $body = [ordered]@{}
+  foreach ($property in @($Envelope.PSObject.Properties | Where-Object { [string]$_.Name -ne 'payloadHash' })) {
+    $body[[string]$property.Name] = $property.Value
+  }
+  $path = Join-Path $TestDrive ('canonical-mutation-hash-' + [guid]::NewGuid().ToString('n') + '.json')
+  $body | ConvertTo-Json -Depth 20 -Compress | Set-Content -LiteralPath $path -Encoding UTF8
+  $script = "import hashlib,json,sys; v=json.load(open(sys.argv[1],encoding='utf-8-sig')); print(hashlib.sha256(json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')).hexdigest())"
+  try { return ((python -c $script $path) -join '').Trim().ToLowerInvariant() } finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+}
+
 function New-CanonicalRoot([string]$StateRoot,[string]$TaskId,[string[]]$Labels) {
   $workspaceKey = 'ws-canonical-4242424242424242'
   $sessionKey = 'sid-canonical-4242424242424242'
@@ -53,9 +64,15 @@ function New-CanonicalMutationEnvelope(
   [string]$Status='',
   [string[]]$EvidenceRefs=@()
 ) {
-  return [pscustomobject]@{
-    schema='super-brain.canonical-plan-mutation.v1'
+  $envelope = [pscustomobject]@{
+    schema='super-brain.canonical-plan-mutation.v2'
     targetScope='canonical_main'
+    scope=[pscustomobject]@{
+      taskId=[string]$Contract.taskId
+      taskInstanceId=[string]$Contract.taskInstanceId
+      workspaceKey=[string]$Contract.workspaceKey
+      ownerSessionKey=[string]$Contract.ownerSessionKey
+    }
     operation=$Operation
     targetItemIds=@($TargetItemIds)
     items=@($Items)
@@ -69,17 +86,22 @@ function New-CanonicalMutationEnvelope(
     expectedFingerprint=[string]$Contract.canonicalPlan.currentFingerprint
     transitionId=$TransitionId
   }
+  $envelope | Add-Member -NotePropertyName payloadHash -NotePropertyValue (Get-CanonicalMutationPayloadHash $envelope) -Force
+  return $envelope
 }
 
-function Invoke-CanonicalMutation([object]$Fixture,[object]$Contract,[object]$Envelope,[string]$Instruction,[string]$NextAction='continue canonical main') {
+function Invoke-CanonicalMutation([object]$Fixture,[object]$Contract,[object]$Envelope,[string]$Instruction,[string]$NextAction='continue canonical main',[string]$CurrentPhase='',[string]$CurrentStep='') {
   $path = Write-CanonicalMutation $Fixture.stateRoot ([string]$Envelope.transitionId) $Envelope
-  return Invoke-CanonicalContract @{
+  $parameters = @{
     Action='Set';TaskId=$Fixture.taskId;WorkspaceKey=$Fixture.workspaceKey;SessionKey=$Fixture.sessionKey
     FocusId='main-line';InstructionMode='continue';LatestUserInstruction=$Instruction;NextAction=$NextAction
     ExpectedRevision=[int]$Contract.revision;ExpectedPlanFingerprint=[string]$Contract.planReceipt.planFingerprint
     TransitionId=[string]$Envelope.transitionId;CanonicalMutationPath=$path
     StateRoot=$Fixture.stateRoot;Source='CanonicalPlanContinuity.Tests.ps1'
   }
+  if (-not [string]::IsNullOrWhiteSpace($CurrentPhase)) { $parameters.CurrentPhase = $CurrentPhase }
+  if (-not [string]::IsNullOrWhiteSpace($CurrentStep)) { $parameters.CurrentStep = $CurrentStep }
+  return Invoke-CanonicalContract $parameters
 }
 
 Describe 'Canonical plan continuity authority' {
@@ -191,6 +213,36 @@ Describe 'Canonical plan continuity authority' {
     (@($started.value.continuityStateCard.activeWorkPackageChecklist | Where-Object { $_.label -eq 'B' })[0].status) | Should Be 'in_progress'
   }
 
+  It 'blocks final canonical completion when the phase and action projection is stale' {
+    $fixture = New-CanonicalRoot (Join-Path $TestDrive 'final-completion-stale-projection') 'task-canonical-final-stale' @('A')
+    $item = @($fixture.contract.canonicalPlan.items | Where-Object { $_.label -eq 'A' })[0]
+    $instruction = 'verified evidence marks the final canonical item A completed'
+    $envelope = New-CanonicalMutationEnvelope $fixture.contract 'set_status' 'complete-final-stale-projection' 'verified_status_transition' $instruction @() @([string]$item.itemId) 'completed' @('test:canonical-final-complete')
+    $blocked = Invoke-CanonicalMutation $fixture $fixture.contract $envelope $instruction 'continue A'
+
+    $blocked.exitCode | Should Be 1
+    $blocked.value.code | Should Be 'EXECUTION_CONTRACT_CANONICAL_COMPLETION_PROGRESS_BINDING_REQUIRED'
+    $contractAfter = Invoke-CanonicalContract @{Action='Get';TaskId=$fixture.taskId;WorkspaceKey=$fixture.workspaceKey;SessionKey=$fixture.sessionKey;StateRoot=$fixture.stateRoot}
+    $contractAfter.exitCode | Should Be 0
+    $contractAfter.value.revision | Should Be $fixture.contract.revision
+    (@($contractAfter.value.canonicalPlan.items | Where-Object { $_.label -eq 'A' })[0].status) | Should Be 'pending'
+  }
+
+  It 'accepts final canonical completion only with an explicit fresh progress projection' {
+    $fixture = New-CanonicalRoot (Join-Path $TestDrive 'final-completion-fresh-projection') 'task-canonical-final-fresh' @('A')
+    $item = @($fixture.contract.canonicalPlan.items | Where-Object { $_.label -eq 'A' })[0]
+    $instruction = 'verified evidence marks the final canonical item A completed and publishes the completion checkpoint'
+    $envelope = New-CanonicalMutationEnvelope $fixture.contract 'set_status' 'complete-final-fresh-projection' 'verified_status_transition' $instruction @() @([string]$item.itemId) 'completed' @('test:canonical-final-complete')
+    $accepted = Invoke-CanonicalMutation $fixture $fixture.contract $envelope $instruction 'publish the verified completion receipt' 'Stage 3' 'All canonical items verified'
+
+    $accepted.exitCode | Should Be 0
+    $accepted.value.revision | Should BeGreaterThan $fixture.contract.revision
+    (@($accepted.value.canonicalPlan.items | Where-Object { $_.label -eq 'A' })[0].status) | Should Be 'completed'
+    @($accepted.value.pendingSteps).Count | Should Be 0
+    $accepted.value.currentStep | Should Be 'All canonical items verified'
+    $accepted.value.nextAction | Should Be 'publish the verified completion receipt'
+  }
+
   It 'reports the canonical main first and keeps a side-branch checklist as an active work package' {
     $fixture = New-CanonicalRoot (Join-Path $TestDrive 'branch-separation') 'task-canonical-branch' @('A','B','C')
     $rootContract = $fixture.contract
@@ -297,7 +349,7 @@ Describe 'Canonical plan continuity authority' {
       TransitionId='scalar-items-must-fail';CanonicalMutationPath=$malformedPath;StateRoot=$fixture.stateRoot
     }
     $malformedResult.exitCode | Should Be 1
-    $malformedResult.value.code | Should Be 'EXECUTION_CONTRACT_CANONICAL_MUTATION_ITEMS_ARRAY_REQUIRED'
+    $malformedResult.value.code | Should Be 'EXECUTION_CONTRACT_CANONICAL_MUTATION_PAYLOAD_HASH_MISMATCH'
 
     $after = Invoke-CanonicalContract @{Action='Get';TaskId=$fixture.taskId;WorkspaceKey=$fixture.workspaceKey;SessionKey=$fixture.sessionKey;StateRoot=$fixture.stateRoot}
     [int]$after.value.revision | Should Be ([int]$current.revision)
@@ -422,6 +474,7 @@ Describe 'Canonical plan continuity authority' {
 
     $replaceEnvelope = New-CanonicalMutationEnvelope $fixture.contract 'replace_canonical' 'replace-root-canonical' 'user_confirmation' $instruction @([pscustomobject]@{label='K';status='pending'})
     $replaceEnvelope | Add-Member -NotePropertyName rootFocusId -NotePropertyValue 'new-root' -Force
+    $replaceEnvelope | Add-Member -NotePropertyName payloadHash -NotePropertyValue (Get-CanonicalMutationPayloadHash $replaceEnvelope) -Force
     $replacePath = Write-CanonicalMutation $fixture.stateRoot 'replace-root-canonical' $replaceEnvelope
     $replaced = Invoke-CanonicalContract @{
       Action='Set';TaskId=$fixture.taskId;WorkspaceKey=$fixture.workspaceKey;SessionKey=$fixture.sessionKey

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from brain_context import canonical_hash, project_progress_root_hash, validate_project_progress_proof
-from project_knowledge import public_projection, resolve_project_knowledge
+from project_knowledge import public_projection, receipt_is_valid, resolve_project_knowledge
 
 
 def _sha256(path: Path) -> str:
@@ -122,6 +122,22 @@ def test_not_applicable_route_never_requires_a_project_root_or_reads_files() -> 
     assert result["state"] == "not_applicable" and result["filesRead"] == 0
 
 
+def test_public_project_knowledge_tamper_is_rejected() -> None:
+    route = _route()
+    route["state"] = "not_applicable"
+    route["code"] = "H7_PROJECT_KNOWLEDGE_ROUTE_NOT_APPLICABLE"
+    route["payloadHash"] = canonical_hash({key: value for key, value in route.items() if key != "payloadHash"})
+    result, _ = resolve_project_knowledge(None, project_progress_proof=None, project_progress_status=None, route=route)
+    public = public_projection(result)
+    assert receipt_is_valid(public), public
+    tampered = dict(public)
+    tampered["code"] = "FAKE_CURRENT"
+    assert receipt_is_valid(tampered) is False, tampered
+    tampered = dict(public)
+    tampered["publicPayloadHash"] = "0" * 64
+    assert receipt_is_valid(tampered) is False, tampered
+
+
 def test_hash_drift_and_path_escape_fail_closed_without_cache_reuse() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-project-knowledge-drift-") as directory:
         root = Path(directory)
@@ -199,6 +215,7 @@ def test_implementation_is_bounded_and_does_not_walk_the_tree() -> None:
 def main() -> None:
     test_proof_bound_slice_parses_local_relations_and_marks_dynamic_unknowns()
     test_not_applicable_route_never_requires_a_project_root_or_reads_files()
+    test_public_project_knowledge_tamper_is_rejected()
     test_hash_drift_and_path_escape_fail_closed_without_cache_reuse()
     test_external_symlink_evidence_is_rejected_when_supported()
     test_implementation_is_bounded_and_does_not_walk_the_tree()

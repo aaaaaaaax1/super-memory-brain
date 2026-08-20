@@ -23,6 +23,8 @@ args = ['$brainMcp', '--package-root', '$Root', '--memory-root', '$boundMemoryRo
 SUPER_BRAIN_PACKAGE_ROOT = '$Root'
 NEXSANDBASE_HOME = '$boundMemoryRoot'
 SUPER_BRAIN_RUNTIME_IDENTITY = '$runtimeIdentity'
+SUPER_BRAIN_MCP_TRANSPORT = 'codex_registered_v1'
+SUPER_BRAIN_MCP_REGISTRATION_EPOCH = 'test-registration-epoch'
 "@
   $configPath = Join-Path $codexHome 'config.toml'
   [IO.File]::WriteAllText($configPath,$config,[Text.UTF8Encoding]::new($false))

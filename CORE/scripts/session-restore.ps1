@@ -417,7 +417,7 @@ if (Test-Path $statusCardPath) {
 }
 $currentWorkspaceKey = Get-SuperBrainWorkspaceKey $WorkspaceKey
 $sessionCandidate = if (-not [string]::IsNullOrWhiteSpace($SessionKey)) { $SessionKey } else { $SessionId }
-$hostSessionKey = Get-SuperBrainHostSessionKey $sessionCandidate
+$hostSessionKey = Get-SuperBrainLocalSessionKey $sessionCandidate
 $memoryBase = Get-SuperBrainMemoryBaseRoot $Root
 $requestedAnchorTaskId = if (-not [string]::IsNullOrWhiteSpace($TaskId)) { $TaskId.Trim() } else { '' }
 $instructionAnchorLookup = Get-RestoreInstructionAnchor $memoryBase $currentWorkspaceKey $hostSessionKey $requestedAnchorTaskId

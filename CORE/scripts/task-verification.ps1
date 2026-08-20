@@ -515,7 +515,7 @@ if ($verification.ok) {
       $contract = ConvertFrom-SuperBrainJsonOutput ($contractRaw -join "`n") 'task verification execution contract'
       if (-not $contract -or $contract.ok -ne $true -or [string]$contract.status -ne 'active') { throw 'TASK_VERIFICATION_EXECUTION_CONTRACT_REQUIRED' }
       $completionContract = $contract
-      $completionRaw = @(& (Join-Path $PSScriptRoot 'checkpoint-writer.ps1') -Action Complete -TaskId ([string]$activeCheckpoint.taskId) -Source 'task-verification.ps1' -CurrentStep $Summary -NextAction '' -Evidence @($Evidence) -ExecutionContractPath ([string]$contract.path) -VerificationPath $verificationEvidencePath -ExpectedPlanFingerprint ([string]$contract.planReceipt.planFingerprint) -ExpectedContractRevision ([int]$contract.revision) -OwnerSessionKey ([string]$contract.ownerSessionKey) -CallerSessionKey (Get-SuperBrainHostSessionKey) -Json 2>&1)
+      $completionRaw = @(& (Join-Path $PSScriptRoot 'checkpoint-writer.ps1') -Action Complete -TaskId ([string]$activeCheckpoint.taskId) -Source 'task-verification.ps1' -CurrentStep $Summary -NextAction '' -Evidence @($Evidence) -ExecutionContractPath ([string]$contract.path) -VerificationPath $verificationEvidencePath -ExpectedPlanFingerprint ([string]$contract.planReceipt.planFingerprint) -ExpectedContractRevision ([int]$contract.revision) -OwnerSessionKey ([string]$contract.ownerSessionKey) -CallerSessionKey (Get-SuperBrainLocalSessionKey) -Json 2>&1)
       if ($LASTEXITCODE -ne 0) { throw (($completionRaw | ForEach-Object { [string]$_ }) -join "`n") }
       $completionResult = ConvertFrom-SuperBrainJsonOutput ($completionRaw -join "`n") 'task completion transaction'
       $verification.completionOutcome = [pscustomobject]@{ attempted=$true; completed=$true; reason='atomic_completion_committed'; transactionId=[string]$completionResult.completionTransactionId; taskStateRevision=[int]$completionResult.taskStateRevision }
@@ -597,7 +597,7 @@ if ($verification.ok) {
         }
       }
       $trialScript = Join-Path $PSScriptRoot 'typed-memory-trial.ps1'
-      $trialRaw = @(& $trialScript -Action Resolve -TaskId $TaskId -TaskInstanceId $trialTaskInstanceId -WorkspaceKey $workspaceKeyValue -SessionKey (Get-SuperBrainHostSessionKey) -NoExit -Json 2>$null)
+      $trialRaw = @(& $trialScript -Action Resolve -TaskId $TaskId -TaskInstanceId $trialTaskInstanceId -WorkspaceKey $workspaceKeyValue -SessionKey (Get-SuperBrainLocalSessionKey) -NoExit -Json 2>$null)
       $trialValue = ConvertFrom-SuperBrainJsonOutput (($trialRaw | ForEach-Object { [string]$_ }) -join "`n") 'task verification typed memory trial'
       $verification.typedMemoryTrial = $trialValue
       $verification.typedMemoryTrial | Add-Member -NotePropertyName attempted -NotePropertyValue $true -Force

@@ -19,7 +19,20 @@ def main() -> int:
     assert "wrotePackageStatus=$false" in source_branch
     assert "skill-sync-check.ps1" not in source_branch
     assert "startup-check.ps1" not in source_branch
-    assert "memory-eval.ps1 -Json" in source_branch
+    assert "memory-eval.ps1" in source_branch and "'-Json'" in source_branch
+    # PackageOnly checks must overlap through a bounded owned-process pool,
+    # while the receipt remains deterministic in the original check order.
+    for marker in (
+        "Get-PackageOnlyParallelism",
+        "Start-SuperBrainOwnedProcess",
+        "Complete-SuperBrainOwnedProcess",
+        "$resultByIndex",
+        "$parallelism = Get-PackageOnlyParallelism",
+        "PYTHONDONTWRITEBYTECODE",
+        "PACKAGE_ONLY_CHECK_NOT_COMPLETED",
+    ):
+        assert marker in source_branch, marker
+    assert "Push-Location $Root" not in source_branch
     assert "memory\\workspace\\procedure-cards" not in text
     assert "memory/workspace/procedure-cards" not in text
     assert "public procedure contract support" in text

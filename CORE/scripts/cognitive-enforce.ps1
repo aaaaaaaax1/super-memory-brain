@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $PSScriptRoot
-$hostSessionKey = Get-SuperBrainHostSessionKey $SessionKey
+$hostSessionKey = Get-SuperBrainLocalSessionKey $SessionKey
 $memoryBase = Get-SuperBrainMemoryBaseRoot $Root
 $workspace = Join-Path $memoryBase 'workspace'
 if (-not (Test-Path -LiteralPath $workspace)) { New-Item -ItemType Directory -Force -Path $workspace | Out-Null }
@@ -167,11 +167,11 @@ function Invoke-H7MemoryLearningCandidate([string]$WorkspaceKey,[string]$Effecti
   }
   $pythonPath = [string]$python.Source
   if ([string]::IsNullOrWhiteSpace($pythonPath)) { $pythonPath = [string]$python.Name }
-  $oldThread = $env:CODEX_THREAD_ID
+  $oldThread = $env:SUPER_BRAIN_LOCAL_SESSION_ID
   $oldWorkspace = $env:SUPER_BRAIN_WORKSPACE_KEY
   $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
   try {
-    $env:CODEX_THREAD_ID = $hostSessionKey
+    $env:SUPER_BRAIN_LOCAL_SESSION_ID = $hostSessionKey
     $env:SUPER_BRAIN_WORKSPACE_KEY = $WorkspaceKey
     $env:SUPER_BRAIN_STATE_ROOT = $memoryBase
     $memoryRoot = Join-Path $memoryBase 'shared'
@@ -226,7 +226,7 @@ function Invoke-H7MemoryLearningCandidate([string]$WorkspaceKey,[string]$Effecti
       rawPromptStored=$false; rawTranscriptStored=$false; memoryBodyStored=$false
     }
   } finally {
-    if ($null -eq $oldThread) { Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $oldThread }
+    if ($null -eq $oldThread) { Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $oldThread }
     if ($null -eq $oldWorkspace) { Remove-Item Env:\SUPER_BRAIN_WORKSPACE_KEY -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_WORKSPACE_KEY = $oldWorkspace }
     if ($null -eq $oldStateRoot) { Remove-Item Env:\SUPER_BRAIN_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot }
   }

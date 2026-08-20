@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ from brain_core import BrainCore, Candidate, GraphEdge
 from brain_mcp import TOOLS as MCP_TOOLS, handle_tool
 from continuation_policy import decide_turn_close
 from layout_paths import resolve_layout_path, state_root
+from mcp_runtime_identity import runtime_dependency_paths
 from turn_close_dispatcher import _normalize_progress_checkpoint
 from turn_intent import resolve_turn_intent
 from turn_runtime import _contract_binding
@@ -39,7 +41,7 @@ def package_version() -> str:
     return str(manifest["version"])
 
 
-def host_workspace_key(path: Path) -> str:
+def cwd_workspace_key(path: Path) -> str:
     source = os.path.abspath(str(path)).rstrip("/\\").lower()
     return "ws-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
 
@@ -69,7 +71,7 @@ def write_native_memory_snapshot(workspace: Path) -> None:
                     "title": "Keep verified context bounded",
                     "effect": "shape_behavior",
                     "statement": "Use the active execution contract but keep action authorization withheld.",
-                    "conditions": ["A unique Host scope is verified."],
+                    "conditions": ["A unique local project scope is verified."],
                     "confidence": 99,
                     "strength": "strong",
                 },
@@ -331,7 +333,7 @@ def test_current_task_recall_rejects_stale_global_checkpoint() -> None:
         memory_root = state_root / "shared"
         workspace = state_root / "workspace"
         memory_root.mkdir(parents=True)
-        workspace_key = "ws-111111111111111111111111"
+        workspace_key = cwd_workspace_key(workspace)
         task_id = "task-current-20260717"
         thread_id = "task-recall-stale-global-thread"
         write_json(
@@ -385,24 +387,21 @@ def test_current_task_recall_rejects_stale_global_checkpoint() -> None:
             },
         )
 
-        previous_workspace = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_session = os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        previous_cwd = Path.cwd()
+        os.chdir(workspace)
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         try:
             core = make_isolated_recall_core(workspace)
             core._sandglass_candidates = lambda query, top_k, query_date="": []
             results = core.recall("当前任务下一步是什么？", top_k=3, max_tokens=500)
         finally:
-            if previous_workspace is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
+            os.chdir(previous_cwd)
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
             if previous_session is not None:
                 os.environ["SUPER_BRAIN_SESSION_ID"] = previous_session
         serialized = json.dumps(results, ensure_ascii=False)
@@ -418,7 +417,7 @@ def test_unbound_task_pointer_without_current_session_fails_closed() -> None:
         state_root = Path(directory)
         memory_root = state_root / "shared"
         memory_root.mkdir(parents=True)
-        workspace_key = "ws-unbound-task-pointer"
+        workspace_key = cwd_workspace_key(state_root / "workspace")
         core = BrainCore(ROOT, memory_root)
         write_json(
             core._workspace_context_pointer_path(workspace_key),
@@ -434,21 +433,18 @@ def test_unbound_task_pointer_without_current_session_fails_closed() -> None:
                 "nextAction": "UNVERIFIED_SCOPE_SENTINEL_ACTION",
             },
         )
-        previous_workspace = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.pop("CODEX_THREAD_ID", None)
+        previous_thread = os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
         previous_session = os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
+        previous_cwd = Path.cwd()
+        os.chdir(state_root / "workspace")
         try:
             assert core._current_task_context() is None
             ordinary = core.recall("current task next step", top_k=1, max_tokens=500, layer="all")
             forced = core.recall("unrelated intent", top_k=1, max_tokens=500, layer="task")
         finally:
-            if previous_workspace is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
+            os.chdir(previous_cwd)
             if previous_thread is not None:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
             if previous_session is not None:
                 os.environ["SUPER_BRAIN_SESSION_ID"] = previous_session
 
@@ -470,7 +466,7 @@ def test_session_bound_pointer_without_execution_contract_fails_closed() -> None
         state_root = Path(directory)
         memory_root = state_root / "shared"
         memory_root.mkdir(parents=True)
-        workspace_key = "ws-bound-pointer-only"
+        workspace_key = cwd_workspace_key(state_root / "workspace")
         thread_id = "bound-pointer-only-thread"
         session_key = "sid-" + hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:24]
         core = BrainCore(ROOT, memory_root)
@@ -489,11 +485,11 @@ def test_session_bound_pointer_without_execution_contract_fails_closed() -> None
                 "nextAction": "POINTER_ONLY_SENTINEL_ACTION",
             },
         )
-        previous_workspace = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_session = os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        previous_cwd = Path.cwd()
+        os.chdir(state_root / "workspace")
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         try:
             pointer_context = core._current_task_context()
             assert pointer_context is not None
@@ -501,14 +497,11 @@ def test_session_bound_pointer_without_execution_contract_fails_closed() -> None
             ordinary = core.recall("current task next step", top_k=1, max_tokens=500, layer="all")
             forced = core.recall("unrelated intent", top_k=1, max_tokens=500, layer="task")
         finally:
-            if previous_workspace is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
+            os.chdir(previous_cwd)
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
             if previous_session is not None:
                 os.environ["SUPER_BRAIN_SESSION_ID"] = previous_session
 
@@ -531,7 +524,7 @@ def test_all_layer_rejects_unverified_current_task_memory_without_contract() -> 
         memory_root = state_root / "shared"
         workspace = state_root / "workspace"
         memory_root.mkdir(parents=True)
-        workspace_key = "ws-all-layer-current-task-leak"
+        workspace_key = cwd_workspace_key(workspace)
         thread_id = "all-layer-current-task-leak-thread"
         session_key = "sid-" + hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:24]
         task_id = "task-all-layer-current-task-leak"
@@ -563,11 +556,11 @@ def test_all_layer_rejects_unverified_current_task_memory_without_contract() -> 
                 "nextAction": "UNVERIFIED_ALL_LAYER_TASK_ACTION",
             },
         )
-        previous_workspace = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_session = os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        previous_cwd = Path.cwd()
+        os.chdir(workspace)
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         try:
             pointer_context = core._current_task_context()
             assert pointer_context is not None
@@ -587,14 +580,11 @@ def test_all_layer_rejects_unverified_current_task_memory_without_contract() -> 
             authoritative_context = core._current_task_context()
             explicit_with_contract = core.recall("continue approved work", top_k=1, max_tokens=500, layer="task")
         finally:
-            if previous_workspace is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
+            os.chdir(previous_cwd)
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
             if previous_session is not None:
                 os.environ["SUPER_BRAIN_SESSION_ID"] = previous_session
 
@@ -612,7 +602,7 @@ def test_bound_context_without_current_session_fails_closed() -> None:
         memory_root = state_root / "shared"
         workspace = state_root / "workspace"
         memory_root.mkdir(parents=True)
-        workspace_key = "ws-" + "d" * 24
+        workspace_key = cwd_workspace_key(workspace)
         write_json(
             workspace / "current-task-context.json",
             {
@@ -627,19 +617,16 @@ def test_bound_context_without_current_session_fails_closed() -> None:
                 "nextAction": "must remain unavailable",
             },
         )
-        previous_workspace = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.pop("CODEX_THREAD_ID", None)
+        previous_thread = os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
         previous_session = os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
+        previous_cwd = Path.cwd()
+        os.chdir(workspace)
         try:
             results = BrainCore(ROOT, memory_root).recall("current task next step", top_k=1, max_tokens=500)
         finally:
-            if previous_workspace is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
+            os.chdir(previous_cwd)
             if previous_thread is not None:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
             if previous_session is not None:
                 os.environ["SUPER_BRAIN_SESSION_ID"] = previous_session
 
@@ -667,7 +654,7 @@ def test_current_task_recall_prefers_session_bound_execution_contract() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-contract-task-recall-") as directory:
         state_root = Path(directory)
         workspace = state_root / "workspace"
-        workspace_key = "ws-222222222222222222222222"
+        workspace_key = cwd_workspace_key(workspace)
         thread_id = "brain-core-session-bound-thread"
         session_key = "sid-" + hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:24]
         task_id = "task-session-bound-current"
@@ -729,10 +716,10 @@ def test_current_task_recall_prefers_session_bound_execution_contract() -> None:
             },
         )
 
-        previous_workspace = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        previous_cwd = Path.cwd()
+        os.chdir(workspace)
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         try:
             core = make_isolated_recall_core(workspace)
             core._sandglass_candidates = lambda query, top_k, query_date="": []
@@ -768,6 +755,7 @@ def test_current_task_recall_prefers_session_bound_execution_contract() -> None:
                 encoding="utf-8",
                 check=False,
                 env=os.environ.copy(),
+                cwd=str(workspace),
                 timeout=30,
             )
             index_path = workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json"
@@ -785,14 +773,11 @@ def test_current_task_recall_prefers_session_bound_execution_contract() -> None:
             write_json(index_path, ambiguous_index)
             ambiguous_results = core.recall(implicit_query, top_k=1, max_tokens=500, layer="task")
         finally:
-            if previous_workspace is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
+            os.chdir(previous_cwd)
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
 
         serialized = json.dumps(results, ensure_ascii=False)
         assert results
@@ -809,15 +794,14 @@ def test_current_task_recall_prefers_session_bound_execution_contract() -> None:
         assert ambiguous_results == []
 
 
-def test_current_workspace_scope_uses_host_cwd_not_derived_status_card() -> None:
+def test_current_workspace_scope_uses_cwd_not_derived_status_card() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-cwd-scope-") as directory:
         base = Path(directory)
         state_root = base / "state"
         workspace = state_root / "workspace"
-        host_project = base / "host-project"
-        host_project.mkdir(parents=True)
-        normalized_host = str(host_project.resolve()).rstrip("/\\").lower()
-        workspace_key = "ws-" + hashlib.sha256(normalized_host.encode("utf-8")).hexdigest()[:24]
+        project_root = base / "project-root"
+        project_root.mkdir(parents=True)
+        workspace_key = cwd_workspace_key(project_root)
         thread_id = "brain-core-cwd-scope-thread"
         session_key = "sid-" + hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:24]
         task_id = "task-cwd-scope-current"
@@ -855,8 +839,8 @@ def test_current_workspace_scope_uses_host_cwd_not_derived_status_card() -> None
                 "status": "active",
                 "revision": revision,
                 "focusId": "cwd-scope",
-                "focusLabel": "Host cwd scope",
-                "currentStep": "use the host project directory",
+                "focusLabel": "Local cwd scope",
+                "currentStep": "use the local project directory",
                 "nextAction": "continue the cwd-bound task",
                 "needsReconciliation": False,
                 "planReceiptRequired": False,
@@ -864,38 +848,35 @@ def test_current_workspace_scope_uses_host_cwd_not_derived_status_card() -> None
             },
         )
 
-        previous_workspace = os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_cwd = Path.cwd()
-        os.environ["CODEX_THREAD_ID"] = thread_id
-        os.chdir(host_project)
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
+        os.chdir(project_root)
         try:
             core = make_core(workspace)
             assert core._current_workspace_key() == workspace_key
             context = core._execution_contract_context()
         finally:
             os.chdir(previous_cwd)
-            if previous_workspace is not None:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
 
         assert context is not None
         assert context["taskId"] == task_id
         assert context["workspaceKey"] == workspace_key
 
 
-def test_execution_contract_context_ignores_non_wake_eligible_terminal_contracts() -> None:
-    """A completed terminal card must not make the runnable workline ambiguous."""
+def test_execution_contract_context_filters_misprojected_completed_terminal_contracts() -> None:
+    """A stale wake flag cannot make a completed terminal card ambiguous."""
 
     with tempfile.TemporaryDirectory(prefix="super-brain-wake-eligible-context-") as directory:
         state_root = Path(directory)
         workspace = state_root / "workspace"
         host_project = state_root / "host-project"
         host_project.mkdir()
-        workspace_key = host_workspace_key(host_project)
+        workspace_key = cwd_workspace_key(host_project)
         thread_id = "brain-core-wake-eligible-thread"
         updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         session_key = write_authoritative_task_contract(
@@ -915,11 +896,43 @@ def test_execution_contract_context_ignores_non_wake_eligible_terminal_contracts
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
         contract["taskInstanceId"] = "ti-" + "a" * 32
         write_json(contract_path, contract)
+        terminal_contract = json.loads(json.dumps(contract))
+        terminal_contract.update(
+            {
+                "taskId": "task-terminal-history",
+                "taskInstanceId": "ti-" + "b" * 32,
+                "revision": 8,
+                "focusId": "terminal-history",
+                "focusLabel": "Terminal history",
+                "currentPhase": "Complete",
+                "currentStep": "Final H7 closeout is complete.",
+                "nextAction": "No remaining task action; await the user's next instruction.",
+                "pendingSteps": [],
+                "returnStack": [],
+                "canonicalPlan": {
+                    "items": [
+                        {"itemId": "terminal-item", "ordinal": 1, "label": "completed work", "status": "completed"}
+                    ]
+                },
+                "planReceipt": {
+                    "focusId": "terminal-history",
+                    "contractRevision": 8,
+                    "planFingerprint": "fixture-terminal-history",
+                },
+            }
+        )
+        write_json(
+            workspace / "runtime-state" / "execution-contracts" / "task-terminal-history--fixture.json",
+            terminal_contract,
+        )
         index["entries"].append(
             {
                 "taskId": "task-terminal-history",
                 "status": "active",
-                "wakeEligible": False,
+                # Simulate an interrupted terminalization transaction: the
+                # contract is structurally complete but the derived index has
+                # not yet dropped its wake flag.
+                "wakeEligible": True,
                 "packageVersion": package_version(),
                 "revision": 8,
                 "updatedAt": updated_at,
@@ -928,9 +941,9 @@ def test_execution_contract_context_ignores_non_wake_eligible_terminal_contracts
         )
         write_json(index_path, index)
 
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_cwd = Path.cwd()
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         os.chdir(host_project)
         try:
             core = make_core(workspace)
@@ -939,9 +952,9 @@ def test_execution_contract_context_ignores_non_wake_eligible_terminal_contracts
         finally:
             os.chdir(previous_cwd)
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
 
         assert context is not None
         assert context["taskId"] == "task-runnable-current"
@@ -958,7 +971,7 @@ def test_terminal_finalization_context_is_opt_in_unique_and_never_auto_wakes() -
         workspace = state_root / "workspace"
         host_project = state_root / "host-project"
         host_project.mkdir()
-        workspace_key = host_workspace_key(host_project)
+        workspace_key = cwd_workspace_key(host_project)
         thread_id = "brain-core-terminal-finalization-thread"
         updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         task_id = "task-terminal-finalization"
@@ -1063,13 +1076,135 @@ def test_terminal_finalization_context_is_opt_in_unique_and_never_auto_wakes() -
         assert ambiguous_code == "BRAIN_CONTEXT_TERMINAL_FINALIZATION_AMBIGUOUS"
 
 
+def test_terminal_finalization_allows_missing_formal_closeout_with_existing_v4_receipt() -> None:
+    """A terminal plan with a current v4 receipt remains repairable until its phase closeout exists."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-terminal-closeout-repair-") as directory:
+        state_root = Path(directory)
+        workspace = state_root / "workspace"
+        host_project = state_root / "host-project"
+        host_project.mkdir()
+        workspace_key = cwd_workspace_key(host_project)
+        thread_id = "brain-core-terminal-closeout-repair-thread"
+        updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        task_id = "task-terminal-closeout-repair"
+        session_key = write_authoritative_task_contract(
+            workspace,
+            workspace_key,
+            thread_id,
+            task_id,
+            task_name="Terminal closeout repair task",
+            current_step="Stage 4 closeout is still missing.",
+            next_action="No automatic action: await the next instruction.",
+            updated_at=updated_at,
+        )
+        contract_path = workspace / "runtime-state" / "execution-contracts" / f"{task_id}--fixture.json"
+        index_path = workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract.update(
+            {
+                "taskInstanceId": "ti-" + "e" * 32,
+                "currentPhase": "Stage 4 runtime validation and handoff",
+                "currentStep": "Stage 4 closeout is still missing.",
+                "nextAction": "No automatic action: await the next instruction.",
+                "pendingSteps": [],
+                "returnStack": [],
+                "canonicalPlan": {
+                    "items": [
+                        {"itemId": "terminal-item", "ordinal": 1, "label": "completed work", "status": "completed"}
+                    ]
+                },
+                "phaseCloseouts": [],
+                "projectProgressProof": {"state": "withheld"},
+                "visibleProgressReceipt": {
+                    "schema": "super-brain.visible-progress-receipt.v1",
+                    "source": "assistant_visible_reply",
+                    "payloadHash": "a" * 64,
+                },
+            }
+        )
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["entries"][0]["wakeEligible"] = False
+        write_json(contract_path, contract)
+        write_json(index_path, index)
+
+        core = make_core(workspace)
+        ordinary, ordinary_code = core._read_context_contract(workspace_key, session_key)
+        terminal, terminal_code = core._read_context_contract(
+            workspace_key,
+            session_key,
+            allow_terminal_finalization=True,
+        )
+
+        assert ordinary is None
+        assert ordinary_code == "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT"
+        assert terminal is not None
+        assert terminal_code == "BRAIN_CONTEXT_TERMINAL_FINALIZATION_READY"
+        assert terminal["taskId"] == task_id
+
+        # A same-session workspace can retain other terminal cards.  The
+        # explicit checkpoint carries its formal phase, so H7 may use that
+        # bounded phase token to select the matching terminal workline without
+        # guessing from recency or a stale state card.
+        second_task = "task-terminal-closeout-repair-other"
+        second_name = f"{second_task}--fixture.json"
+        second = json.loads(json.dumps(contract))
+        second.update(
+            {
+                "taskId": second_task,
+                "taskInstanceId": "ti-" + "f" * 32,
+                "focusId": f"{second_task}-focus",
+                "focusLabel": "Other terminal workline",
+                "currentPhase": "Complete",
+                "currentStep": "Other terminal work is complete.",
+                "nextAction": "No automatic action: await the next instruction.",
+                "planReceipt": {
+                    "focusId": f"{second_task}-focus",
+                    "contractRevision": 1,
+                    "planFingerprint": "fixture-other-terminal",
+                },
+            }
+        )
+        second.pop("visibleProgressReceipt", None)
+        index["entries"].append(
+            {
+                "taskId": second_task,
+                "status": "active",
+                "wakeEligible": False,
+                "packageVersion": package_version(),
+                "revision": 1,
+                "updatedAt": updated_at,
+                "contractFileName": second_name,
+            }
+        )
+        write_json(workspace / "runtime-state" / "execution-contracts" / second_name, second)
+        write_json(index_path, index)
+
+        unhinted, unhinted_code = core._read_context_contract(
+            workspace_key,
+            session_key,
+            allow_terminal_finalization=True,
+        )
+        hinted, hinted_code = core._read_context_contract(
+            workspace_key,
+            session_key,
+            allow_terminal_finalization=True,
+            terminal_finalization_phase="Stage 4 runtime validation and handoff",
+        )
+        assert unhinted is None
+        assert unhinted_code == "BRAIN_CONTEXT_TERMINAL_FINALIZATION_AMBIGUOUS"
+        assert hinted is not None
+        assert hinted_code == "BRAIN_CONTEXT_TERMINAL_FINALIZATION_READY"
+        assert hinted["taskId"] == task_id
+
+
 def test_execution_contract_context_requires_current_native_intent_receipt() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-contract-intent-") as directory:
         state_root = Path(directory)
         workspace = state_root / "workspace"
         host_project = state_root / "host-project"
         host_project.mkdir()
-        workspace_key = host_workspace_key(host_project)
+        workspace_key = cwd_workspace_key(host_project)
         thread_id = "brain-core-intent-bound-thread"
         session_key = "sid-" + hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:24]
         task_id = "task-intent-bound-current"
@@ -1197,11 +1332,9 @@ def test_execution_contract_context_requires_current_native_intent_receipt() -> 
         contract_path = workspace / "runtime-state" / "execution-contracts" / contract_name
         write_json(contract_path, execution_contract)
 
-        previous_workspace = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_cwd = Path.cwd()
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         os.chdir(host_project)
         try:
             core = make_core(workspace)
@@ -1221,23 +1354,19 @@ def test_execution_contract_context_requires_current_native_intent_receipt() -> 
             assert rejected["code"] == "BRAIN_CONTEXT_INTENT_RECEIPT_NOT_CURRENT"
         finally:
             os.chdir(previous_cwd)
-            if previous_workspace is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
 
 
-def test_no_hook_context_uses_real_host_scope_and_stays_read_only() -> None:
+def test_local_context_uses_cwd_scope_and_stays_read_only() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-no-hook-context-") as directory:
         state_root = Path(directory)
         workspace = state_root / "workspace"
         host_project = state_root / "host-project"
         host_project.mkdir()
-        workspace_key = host_workspace_key(host_project)
+        workspace_key = cwd_workspace_key(host_project)
         thread_id = "no-hook-context-thread"
         session_key = "sid-" + hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:24]
         task_id = "task-no-hook-context"
@@ -1279,7 +1408,7 @@ def test_no_hook_context_uses_real_host_scope_and_stays_read_only() -> None:
                 "assistantCommitment": "Read a bounded context packet without authorizing an old action.",
                 "lastConfirmedSentence": "The no-Hook context packet must expose the latest verified progress receipt.",
                 "currentPhase": "P2",
-                "currentStep": "verify pure Host context",
+                "currentStep": "verify pure local context",
                 "nextAction": "continue only after the visible instruction is reconciled",
                 "needsReconciliation": False,
                 "planReceiptRequired": False,
@@ -1288,12 +1417,10 @@ def test_no_hook_context_uses_real_host_scope_and_stays_read_only() -> None:
         )
         write_native_memory_snapshot(workspace)
 
-        previous_workspace = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_legacy_session = os.environ.get("SUPER_BRAIN_SESSION_ID")
         previous_cwd = Path.cwd()
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = "ws-" + "f" * 24
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         os.environ["SUPER_BRAIN_SESSION_ID"] = "legacy-session-must-not-be-used"
         os.chdir(host_project)
         try:
@@ -1326,7 +1453,7 @@ def test_no_hook_context_uses_real_host_scope_and_stays_read_only() -> None:
             assert continuation_before == continuation_after
 
             cli_environment = os.environ.copy()
-            cli_environment["CODEX_THREAD_ID"] = thread_id
+            cli_environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
             cli = subprocess.run(
                 [
                     sys.executable,
@@ -1357,7 +1484,7 @@ def test_no_hook_context_uses_real_host_scope_and_stays_read_only() -> None:
             assert cli_packet["activation"]["rawTranscriptStored"] is False
 
             off_core = make_core(workspace)
-            off_core._context_session_key = lambda: (_ for _ in ()).throw(AssertionError("memory:off must not inspect Host scope"))
+            off_core._context_session_key = lambda: (_ for _ in ()).throw(AssertionError("memory:off must not inspect local scope"))
             off_packet = off_core.context("off")
             assert off_packet["code"] == "BRAIN_CONTEXT_MEMORY_OFF"
 
@@ -1390,10 +1517,10 @@ def test_no_hook_context_uses_real_host_scope_and_stays_read_only() -> None:
             assert invalid_packet["typedMemory"]["refs"] == []
             snapshot_path.write_bytes(original_snapshot)
 
-            os.environ.pop("CODEX_THREAD_ID", None)
+            os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             missing_thread = core.context("auto")
-            assert missing_thread["code"] == "BRAIN_CONTEXT_THREAD_ID_MISSING"
-            os.environ["CODEX_THREAD_ID"] = thread_id
+            assert missing_thread["code"] == "BRAIN_CONTEXT_LOCAL_SESSION_MISSING"
+            os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
 
             index_path = workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json"
             index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -1403,14 +1530,10 @@ def test_no_hook_context_uses_real_host_scope_and_stays_read_only() -> None:
             assert ambiguous["code"] == "BRAIN_CONTEXT_AMBIGUOUS_ACTIVE_CONTRACT"
         finally:
             os.chdir(previous_cwd)
-            if previous_workspace is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
             if previous_legacy_session is None:
                 os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
             else:
@@ -1425,7 +1548,7 @@ def test_context_recovers_from_a_lagging_hot_index_after_a_committed_transition(
         workspace = state_root / "workspace"
         host_project = state_root / "host-project"
         host_project.mkdir()
-        workspace_key = host_workspace_key(host_project)
+        workspace_key = cwd_workspace_key(host_project)
         thread_id = "hot-index-lag-thread"
         session_key = "sid-" + hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:24]
         task_id = "task-hot-index-lag"
@@ -1473,9 +1596,9 @@ def test_context_recovers_from_a_lagging_hot_index_after_a_committed_transition(
         )
         write_native_memory_snapshot(workspace)
 
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_cwd = Path.cwd()
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         os.chdir(host_project)
         try:
             core = make_core(workspace)
@@ -1497,9 +1620,9 @@ def test_context_recovers_from_a_lagging_hot_index_after_a_committed_transition(
         finally:
             os.chdir(previous_cwd)
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
 
 
 def test_mcp_does_not_expose_untrusted_host_context() -> None:
@@ -1508,8 +1631,8 @@ def test_mcp_does_not_expose_untrusted_host_context() -> None:
     assert tool_names == {"brain_recall", "brain_status", "brain_recent", "brain_turn"}
 
 
-def test_mcp_status_and_tools_withhold_a_stale_long_lived_runtime() -> None:
-    """An in-place rule update must not leave an old MCP worker usable."""
+def test_mcp_status_stays_truthful_while_stale_worker_uses_current_cli() -> None:
+    """An in-place update keeps MCP health stale but preserves H7 availability."""
 
     with tempfile.TemporaryDirectory(prefix="super-brain-mcp-runtime-identity-") as directory:
         package_root = Path(directory) / "package"
@@ -1518,12 +1641,7 @@ def test_mcp_status_and_tools_withhold_a_stale_long_lived_runtime() -> None:
         memory_root.mkdir(parents=True)
         for name in ("manifest.json", "route-map.json", "capabilities.json", "super-brain-rules.json"):
             (package_root / name).write_bytes((ROOT / name).read_bytes())
-        for relative_path in (
-            "runtime/brain_mcp.py",
-            "runtime/brain_core.py",
-            "runtime/turn_runtime.py",
-            "runtime/core_rule_registry.py",
-        ):
+        for relative_path in (*runtime_dependency_paths(ROOT), "runtime/brain_cli.py"):
             destination = package_root / relative_path
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes((ROOT / relative_path).read_bytes())
@@ -1543,10 +1661,9 @@ def test_mcp_status_and_tools_withhold_a_stale_long_lived_runtime() -> None:
         assert status["runtimeIdentity"]["code"] == "H7_MCP_RUNTIME_RULE_REGISTRY_STALE", status
         assert status["operational"]["state"] == "withheld", status
 
-        denied = handle_tool(core, "brain_recent", {})
-        assert denied["isError"] is True, denied
-        denied_payload = json.loads(denied["content"][0]["text"])
-        assert denied_payload["code"] == "H7_MCP_RUNTIME_RULE_REGISTRY_STALE", denied_payload
+        bridged_recent = handle_tool(core, "brain_recent", {})
+        assert bridged_recent["isError"] is False, bridged_recent
+        assert json.loads(bridged_recent["content"][0]["text"]) == [], bridged_recent
 
 
 def test_turn_close_policy_requires_current_turn_attestation_and_never_echoes_input() -> None:
@@ -2299,16 +2416,16 @@ def test_scoped_session_provenance_preserves_assistant_role_and_isolates_session
             + "\n",
             encoding="utf-8",
         )
-        original_session = os.environ.get("SUPER_BRAIN_SESSION_ID")
-        os.environ["SUPER_BRAIN_SESSION_ID"] = "session-local"
+        original_session = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = "session-local"
         try:
             core = BrainCore(ROOT, memory_root)
             results = core.recall("what did you recommend route?", top_k=3, max_tokens=500, layer="session")
         finally:
             if original_session is None:
-                os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["SUPER_BRAIN_SESSION_ID"] = original_session
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = original_session
 
         assert len(results) == 1
         assert "local-route" in results[0]["text"]
@@ -2519,7 +2636,7 @@ def test_newer_task_context_beats_an_older_matching_checkpoint() -> None:
         memory_root = state_root / "shared"
         workspace = state_root / "workspace"
         memory_root.mkdir(parents=True, exist_ok=True)
-        workspace_key = "ws-runtime-stale-checkpoint"
+        workspace_key = cwd_workspace_key(workspace)
         task_id = "task-runtime-stale-checkpoint"
         thread_id = "runtime-stale-checkpoint-thread"
         now = datetime.now()
@@ -2544,23 +2661,20 @@ def test_newer_task_context_beats_an_older_matching_checkpoint() -> None:
                 "nextAction": "repeat obsolete mutation",
             },
         )
-        previous_workspace_key = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
-        previous_thread = os.environ.get("CODEX_THREAD_ID")
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
         previous_session = os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
-        os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = workspace_key
-        os.environ["CODEX_THREAD_ID"] = thread_id
+        previous_cwd = Path.cwd()
+        os.chdir(workspace)
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
         try:
             core = BrainCore(ROOT, memory_root)
             results = core.recall("current task next step", top_k=1, max_tokens=500)
         finally:
-            if previous_workspace_key is None:
-                os.environ.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
-            else:
-                os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = previous_workspace_key
+            os.chdir(previous_cwd)
             if previous_thread is None:
-                os.environ.pop("CODEX_THREAD_ID", None)
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
             else:
-                os.environ["CODEX_THREAD_ID"] = previous_thread
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
             if previous_session is not None:
                 os.environ["SUPER_BRAIN_SESSION_ID"] = previous_session
 
@@ -2693,7 +2807,7 @@ def test_mcp_only_probe_replays_the_narrow_stdio_contract() -> None:
             "call_brain_recall",
             "call_brain_status",
             "call_brain_recent",
-            "brain_turn_metadata_scope",
+            "brain_turn_metadata_ignored",
             "brain_turn_missing_metadata_fails_closed",
         ]
 
@@ -2745,17 +2859,43 @@ def test_h7_progress_checkpoint_refuses_truncation_without_a_prompt_packet() -> 
     assert checkpoint is None
 
 
+def test_h7_control_plane_is_host_model_neutral() -> None:
+    """Production H7 control paths must not choose a host model/provider."""
+
+    production_paths = [
+        ROOT / "runtime" / "brain_core.py",
+        ROOT / "runtime" / "brain_mcp.py",
+        ROOT / "runtime" / "brain_cli.py",
+        ROOT / "runtime" / "turn_runtime.py",
+        ROOT / "runtime" / "turn_close_dispatcher.py",
+        ROOT / "scripts" / "execution-contract.ps1",
+        ROOT / "scripts" / "common.ps1",
+        ROOT / "scripts" / "first-load-bootstrap.ps1",
+        ROOT / "scripts" / "install-runtime.ps1",
+        ROOT / "scripts" / "startup-check.ps1",
+    ]
+    forbidden = re.compile(r"gpt-\d|judgemodel|modelid|approval[_ -]?provider", re.IGNORECASE)
+    hits = {
+        path.relative_to(ROOT).as_posix(): forbidden.findall(path.read_text(encoding="utf-8"))
+        for path in production_paths
+        if forbidden.search(path.read_text(encoding="utf-8"))
+    }
+    assert not hits, hits
+
+
 if __name__ == "__main__":
     test_adaptive_sparse_recall_uses_fts_before_heavier_backends()
     test_adaptive_sparse_recall_uses_bounded_scan_after_fts_miss()
     test_brain_core_keeps_memory_roots_process_isolated()
     test_brain_core_projects_retired_agent_and_group_roots_to_shared()
     test_runtime_layout_beats_a_stale_nexsandbase_environment_root()
+    test_execution_contract_context_filters_misprojected_completed_terminal_contracts()
     test_current_task_recall_rejects_stale_global_checkpoint()
-    test_current_workspace_scope_uses_host_cwd_not_derived_status_card()
+    test_current_workspace_scope_uses_cwd_not_derived_status_card()
     test_terminal_finalization_context_is_opt_in_unique_and_never_auto_wakes()
+    test_terminal_finalization_allows_missing_formal_closeout_with_existing_v4_receipt()
     test_execution_contract_context_requires_current_native_intent_receipt()
-    test_no_hook_context_uses_real_host_scope_and_stays_read_only()
+    test_local_context_uses_cwd_scope_and_stays_read_only()
     test_context_recovers_from_a_lagging_hot_index_after_a_committed_transition()
     test_turn_close_policy_requires_current_turn_attestation_and_never_echoes_input()
     test_mcp_does_not_expose_untrusted_host_context()
@@ -2800,4 +2940,5 @@ if __name__ == "__main__":
     test_mcp_only_probe_replays_the_narrow_stdio_contract()
     test_retired_prompt_hook_never_observes_or_mutates_state()
     test_h7_progress_checkpoint_refuses_truncation_without_a_prompt_packet()
+    test_h7_control_plane_is_host_model_neutral()
     print("RUNTIME_BRAIN_REGRESSION_OK")

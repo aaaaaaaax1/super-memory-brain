@@ -3,18 +3,49 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
-import hashlib
 import json
 import os
 import sys
-from contextlib import nullcontext
+from collections.abc import Mapping
 from pathlib import Path
 
 from brain_core import DEFAULT_RECALL_MAX_TOKENS, DEFAULT_RECALL_TOP_K, BrainCore
 from activation_receipt import activate as activate_brain, ensure_current
 from turn_close_dispatcher import dispatch_turn_close
-from turn_runtime import run_turn, visible_tail_assertion_payload_parse_invalid
+from turn_runtime import run_turn
 from turn_intent import TURN_INTENTS, public_projection as public_turn_intent, resolve_turn_intent
+
+
+_MCP_CLI_BRIDGE_SCHEMA = "super-brain.mcp-cli-bridge-request.v1"
+_MCP_CLI_BRIDGE_MAX_STDIN_BYTES = 96 * 1024
+_MCP_CLI_BRIDGE_TURN_ARGUMENTS = frozenset(
+    {
+        "phase",
+        "memory_mode",
+        "recovery_event",
+        "turn_outcome",
+        "user_control",
+        "completion_evidence_ref",
+        "latest_user_instruction",
+        "progress_checkpoint",
+        "project_progress_proof",
+        "execution_assist_request",
+        "capability_route_receipt",
+        "transition_id",
+        "turn_intent",
+    }
+)
+_RETIRED_HOST_BRIDGE_FIELDS = frozenset(
+    {"visible_progress_assertion", "host_visible_context", "host_thread_payload", "host_readback_projection"}
+)
+_RETIRED_HOST_OPTION_FIELDS = {
+    "visible_progress_assertion_json": "visible_progress_assertion",
+    "visible_progress_assertion_base64": "visible_progress_assertion",
+    "host_thread_json": "host_thread_payload",
+    "host_thread_base64": "host_thread_payload",
+    "host_visible_context_json": "host_visible_context",
+    "host_visible_context_base64": "host_visible_context",
+}
 
 
 def _parse_object_payload(json_payload: str, base64_payload: str) -> tuple[object | None, bool]:
@@ -36,14 +67,38 @@ def _parse_object_payload(json_payload: str, base64_payload: str) -> tuple[objec
     return (value, False) if isinstance(value, dict) else ({"invalid": True}, True)
 
 
-def _cli_host_scope(workspace_root: Path) -> tuple[str, str] | None:
-    """Convert an explicit CLI workspace into the same ephemeral Host scope as MCP."""
+def _parse_text_base64(payload: str, *, maximum: int = 480) -> tuple[str | None, bool]:
+    """Decode one transient current-user instruction without shell encoding loss."""
 
-    thread_id = os.environ.get("CODEX_THREAD_ID", "").strip()
-    source = str(workspace_root).rstrip("/\\").lower()
-    if not thread_id or not source:
+    if not payload:
+        return None, False
+    try:
+        value = base64.b64decode(payload, validate=True).decode("utf-8")
+    except (TypeError, ValueError, binascii.Error, UnicodeDecodeError):
+        return None, True
+    if not value or len(value) > maximum or "\r" in value or "\n" in value:
+        return None, True
+    return value, False
+
+
+def _retired_host_transport_payload(args: argparse.Namespace) -> dict[str, object] | None:
+    """Refuse legacy Host flags before decoding, importing, or retrying them."""
+
+    supplied = sorted(
+        {retired_name for field, retired_name in _RETIRED_HOST_OPTION_FIELDS.items() if str(getattr(args, field, "") or "")}
+    )
+    if not supplied:
         return None
-    return "ws-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:24], thread_id
+    return {
+        "ok": False,
+        "schema": "super-brain.host-transport-retirement.v1",
+        "available": False,
+        "code": "H7_HOST_TRANSPORT_RETIRED",
+        "retiredInputs": supplied,
+        "next": "Remove Host payloads and use the current local cwd/session scope with H7 contract and project proof.",
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -127,6 +182,10 @@ def build_parser() -> argparse.ArgumentParser:
     turn_runtime.add_argument("--completion-evidence-ref", default="")
     turn_runtime.add_argument("--visible-progress-assertion-json", default="")
     turn_runtime.add_argument("--visible-progress-assertion-base64", default="")
+    turn_runtime.add_argument("--host-thread-json", default="")
+    turn_runtime.add_argument("--host-thread-base64", default="")
+    turn_runtime.add_argument("--host-visible-context-json", default="")
+    turn_runtime.add_argument("--host-visible-context-base64", default="")
     turn_runtime.add_argument("--progress-checkpoint-json", default="")
     turn_runtime.add_argument("--progress-checkpoint-base64", default="")
     turn_runtime.add_argument("--project-progress-proof-json", default="")
@@ -135,9 +194,15 @@ def build_parser() -> argparse.ArgumentParser:
     turn_runtime.add_argument("--execution-assist-request-base64", default="")
     turn_runtime.add_argument("--capability-route-receipt-json", default="")
     turn_runtime.add_argument("--capability-route-receipt-base64", default="")
+    turn_runtime.add_argument("--latest-user-instruction-base64", default="")
     turn_runtime.add_argument("--transition-id", default="")
     turn_runtime.add_argument("--timeout-seconds", type=float, default=8.0)
     turn_runtime.add_argument("--turn-intent", choices=TURN_INTENTS, default="direct")
+
+    # Internal stdio bridge used only when an already-running MCP worker is
+    # stale. Its bounded JSON body stays process-memory-only and is never
+    # written to a temporary file.
+    sub.add_parser("mcp-bridge", help=argparse.SUPPRESS)
 
     sub.add_parser("status")
     sub.add_parser("health")
@@ -210,6 +275,276 @@ def _ensure_core_activation(
     return receipt
 
 
+def _mcp_bridge_failure(code: str) -> dict[str, object]:
+    """Return a bounded, non-durable bridge failure without echoing input."""
+
+    return {
+        "ok": False,
+        "schema": "super-brain.mcp-cli-bridge.v1",
+        "available": False,
+        "code": code,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+
+
+def _read_mcp_bridge_request() -> tuple[str, dict[str, object] | None, str]:
+    """Read one bounded local MCP-to-CLI request from stdin."""
+
+    try:
+        payload = sys.stdin.buffer.read(_MCP_CLI_BRIDGE_MAX_STDIN_BYTES + 1)
+    except OSError:
+        return "", None, "H7_MCP_CLI_BRIDGE_STDIN_UNAVAILABLE"
+    if not payload or len(payload) > _MCP_CLI_BRIDGE_MAX_STDIN_BYTES:
+        return "", None, "H7_MCP_CLI_BRIDGE_INPUT_INVALID"
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "", None, "H7_MCP_CLI_BRIDGE_INPUT_INVALID"
+    if not isinstance(value, Mapping) or set(value) != {"schema", "name", "arguments"}:
+        return "", None, "H7_MCP_CLI_BRIDGE_INPUT_INVALID"
+    name = value.get("name")
+    arguments = value.get("arguments")
+    if value.get("schema") != _MCP_CLI_BRIDGE_SCHEMA or not isinstance(name, str) or not isinstance(arguments, Mapping):
+        return "", None, "H7_MCP_CLI_BRIDGE_INPUT_INVALID"
+    return name, dict(arguments), ""
+
+
+def _mcp_bridge_object_json(arguments: Mapping[str, object], field: str) -> tuple[str, str]:
+    if field not in arguments:
+        return "", ""
+    value = arguments.get(field)
+    if not isinstance(value, Mapping):
+        return "", "H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID"
+    try:
+        return json.dumps(dict(value), ensure_ascii=False, separators=(",", ":")), ""
+    except (TypeError, ValueError):
+        return "", "H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID"
+
+
+def _mcp_bridge_turn_runtime_args(arguments: Mapping[str, object]) -> tuple[argparse.Namespace | None, str]:
+    """Translate a strict bridge body into the existing CLI turn contract."""
+
+    if set(arguments).intersection(_RETIRED_HOST_BRIDGE_FIELDS):
+        return None, "H7_HOST_TRANSPORT_RETIRED"
+    if set(arguments).difference(_MCP_CLI_BRIDGE_TURN_ARGUMENTS):
+        return None, "H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID"
+
+    def enum_value(field: str, default: str, allowed: tuple[str, ...] | list[str]) -> tuple[str, str]:
+        value = arguments.get(field, default)
+        if not isinstance(value, str) or value not in allowed:
+            return "", "H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID"
+        return value, ""
+
+    phase, code = enum_value("phase", "open", ("open", "checkpoint", "close", "evidence"))
+    if code:
+        return None, code
+    memory_mode, code = enum_value("memory_mode", "auto", ("auto", "force", "off"))
+    if code:
+        return None, code
+    recovery_event, code = enum_value(
+        "recovery_event",
+        "none",
+        ("none", "compaction", "restart", "model_switch", "cross_session", "pause_resume", "user_correction", "parent_return"),
+    )
+    if code:
+        return None, code
+    turn_outcome, code = enum_value(
+        "turn_outcome",
+        "unknown",
+        ("unknown", "ephemeral_insertion", "active_work_progressed", "side_branch_completed", "side_branch_partial", "blocked"),
+    )
+    if code:
+        return None, code
+    user_control, code = enum_value("user_control", "unknown", ("unknown", "none", "stop", "replace"))
+    if code:
+        return None, code
+    turn_intent, code = enum_value("turn_intent", "direct", list(TURN_INTENTS))
+    if code:
+        return None, code
+
+    completion_evidence_ref = arguments.get("completion_evidence_ref", "")
+    transition_id = arguments.get("transition_id", "")
+    if (
+        not isinstance(completion_evidence_ref, str)
+        or len(completion_evidence_ref) > 240
+        or not isinstance(transition_id, str)
+        or len(transition_id) > 120
+    ):
+        return None, "H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID"
+
+    latest_user_instruction = arguments.get("latest_user_instruction")
+    if latest_user_instruction is None:
+        latest_user_instruction_base64 = ""
+    elif (
+        not isinstance(latest_user_instruction, str)
+        or not latest_user_instruction
+        or len(latest_user_instruction) > 480
+        or "\r" in latest_user_instruction
+        or "\n" in latest_user_instruction
+    ):
+        return None, "H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID"
+    else:
+        latest_user_instruction_base64 = base64.b64encode(latest_user_instruction.encode("utf-8")).decode("ascii")
+
+    objects: dict[str, str] = {}
+    for field in (
+        "progress_checkpoint",
+        "project_progress_proof",
+        "execution_assist_request",
+        "capability_route_receipt",
+    ):
+        encoded, code = _mcp_bridge_object_json(arguments, field)
+        if code:
+            return None, code
+        objects[field] = encoded
+
+    return (
+        argparse.Namespace(
+            phase=phase,
+            memory_mode=memory_mode,
+            recovery_event=recovery_event,
+            turn_outcome=turn_outcome,
+            user_control=user_control,
+            completion_evidence_ref=completion_evidence_ref,
+            visible_progress_assertion_json="",
+            visible_progress_assertion_base64="",
+            host_thread_json="",
+            host_thread_base64="",
+            host_visible_context_json="",
+            host_visible_context_base64="",
+            progress_checkpoint_json=objects["progress_checkpoint"],
+            progress_checkpoint_base64="",
+            project_progress_proof_json=objects["project_progress_proof"],
+            project_progress_proof_base64="",
+            execution_assist_request_json=objects["execution_assist_request"],
+            execution_assist_request_base64="",
+            capability_route_receipt_json=objects["capability_route_receipt"],
+            capability_route_receipt_base64="",
+            latest_user_instruction_base64=latest_user_instruction_base64,
+            transition_id=transition_id,
+            timeout_seconds=8.0,
+            turn_intent=turn_intent,
+        ),
+        "",
+    )
+
+
+def _run_turn_runtime_command(
+    core: BrainCore,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    """Run the normal turn-runtime implementation from parsed CLI arguments."""
+
+    retired_host = _retired_host_transport_payload(args)
+    if retired_host is not None:
+        return retired_host
+
+    progress_checkpoint, _ = _parse_object_payload(
+        args.progress_checkpoint_json,
+        args.progress_checkpoint_base64,
+    )
+    project_progress_proof, _ = _parse_object_payload(
+        args.project_progress_proof_json,
+        args.project_progress_proof_base64,
+    )
+    execution_assist_request, _ = _parse_object_payload(
+        args.execution_assist_request_json,
+        args.execution_assist_request_base64,
+    )
+    capability_route_receipt, _ = _parse_object_payload(
+        args.capability_route_receipt_json,
+        args.capability_route_receipt_base64,
+    )
+    latest_user_instruction, latest_user_instruction_parse_failed = _parse_text_base64(
+        args.latest_user_instruction_base64
+    )
+    if latest_user_instruction_parse_failed:
+        return {
+            "ok": False,
+            "schema": "super-brain.turn-runtime.v1",
+            "available": False,
+            "code": "H7_LATEST_INSTRUCTION_PAYLOAD_INVALID",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    # ``--workspace-root`` changes cwd in ``main``. BrainCore derives the local
+    # workspace key and local session identity directly.
+    return run_turn(
+        core,
+        phase=args.phase,
+        memory_mode=args.memory_mode,
+        recovery_event=args.recovery_event,
+        turn_outcome=args.turn_outcome,
+        user_control=args.user_control,
+        completion_evidence_ref=args.completion_evidence_ref,
+        visible_progress_assertion=None,
+        progress_checkpoint=progress_checkpoint,
+        project_progress_proof=project_progress_proof,
+        execution_assist_request=execution_assist_request,
+        capability_route_receipt=capability_route_receipt,
+        latest_user_instruction=latest_user_instruction,
+        transition_id=args.transition_id,
+        timeout=args.timeout_seconds,
+        turn_intent=args.turn_intent,
+        require_visible_tail_assertion=False,
+    )
+
+
+def _run_mcp_bridge(core: BrainCore, workspace_root: Path | None) -> object:
+    """Serve one equivalent H7 call from a stale MCP worker's child process."""
+
+    name, arguments, code = _read_mcp_bridge_request()
+    if code:
+        return _mcp_bridge_failure(code)
+    assert arguments is not None
+    if name == "brain_turn":
+        if workspace_root is None:
+            return _mcp_bridge_failure("H7_MCP_CLI_BRIDGE_LOCAL_SCOPE_REQUIRED")
+        turn_args, code = _mcp_bridge_turn_runtime_args(arguments)
+        if code or turn_args is None:
+            return _mcp_bridge_failure(code or "H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID")
+        return _run_turn_runtime_command(
+            core,
+            turn_args,
+        )
+    if name == "brain_recall":
+        if set(arguments).difference({"query", "top_k", "max_tokens", "layer", "query_date"}):
+            return _mcp_bridge_failure("H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID")
+        query = arguments.get("query")
+        top_k = arguments.get("top_k", DEFAULT_RECALL_TOP_K)
+        max_tokens = arguments.get("max_tokens", DEFAULT_RECALL_MAX_TOKENS)
+        layer = arguments.get("layer", "all")
+        query_date = arguments.get("query_date", "")
+        if (
+            not isinstance(query, str)
+            or not query.strip()
+            or len(query) > 2000
+            or isinstance(top_k, bool)
+            or not isinstance(top_k, int)
+            or top_k < 1
+            or top_k > 4
+            or isinstance(max_tokens, bool)
+            or not isinstance(max_tokens, int)
+            or max_tokens < 32
+            or max_tokens > 500
+            or not isinstance(layer, str)
+            or layer not in {"all", "profile", "project", "decision"}
+            or not isinstance(query_date, str)
+            or len(query_date) > 120
+        ):
+            return _mcp_bridge_failure("H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID")
+        return core.recall(query, top_k, max_tokens, layer, query_date)
+    if name == "brain_recent":
+        if set(arguments).difference({"limit"}):
+            return _mcp_bridge_failure("H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID")
+        limit = arguments.get("limit", 5)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 20:
+            return _mcp_bridge_failure("H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID")
+        return core.recent(limit)
+    return _mcp_bridge_failure("H7_MCP_CLI_BRIDGE_TOOL_UNSUPPORTED")
+
+
 def main() -> int:
     args = build_parser().parse_args()
     workspace_root: Path | None = None
@@ -228,11 +563,29 @@ def main() -> int:
             sys.stdout.write(base64.b64encode(payload).decode("ascii") if args.base64 else payload.decode("utf-8"))
             return 2
         workspace_root = candidate
+        # ``--workspace-root`` is also the Host-independent local scope for
+        # CLI and stale-MCP bridge calls.  Changing cwd inside this one-shot
+        # process lets BrainCore derive the exact same workspace key without
+        # manufacturing Host metadata or persisting a machine path.
+        try:
+            os.chdir(workspace_root)
+        except OSError:
+            result = {
+                "ok": False,
+                "schema": "super-brain.turn-runtime.v1",
+                "available": False,
+                "code": "H7_WORKSPACE_ROOT_INVALID",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+            payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            sys.stdout.write(base64.b64encode(payload).decode("ascii") if args.base64 else payload.decode("utf-8"))
+            return 2
     core = BrainCore(args.package_root, args.memory_root or None)
     activation = None
     # Status and health are observational.  They must never create an
     # activation receipt merely because a user asked to inspect the system.
-    if args.command not in {"activate", "turn-runtime", "context", "status", "health"}:
+    if args.command not in {"activate", "turn-runtime", "mcp-bridge", "context", "status", "health"}:
         route = {
             "recall": "memory_recall",
             "recent": "memory_recall",
@@ -321,52 +674,9 @@ def main() -> int:
             session_key=args.session_key,
         )
     elif args.command == "turn-runtime":
-        visible_progress_assertion, visible_progress_assertion_parse_failed = _parse_object_payload(
-            args.visible_progress_assertion_json,
-            args.visible_progress_assertion_base64,
-        )
-        progress_checkpoint, _ = _parse_object_payload(
-            args.progress_checkpoint_json,
-            args.progress_checkpoint_base64,
-        )
-        project_progress_proof, _ = _parse_object_payload(
-            args.project_progress_proof_json,
-            args.project_progress_proof_base64,
-        )
-        execution_assist_request, _ = _parse_object_payload(
-            args.execution_assist_request_json,
-            args.execution_assist_request_base64,
-        )
-        capability_route_receipt, _ = _parse_object_payload(
-            args.capability_route_receipt_json,
-            args.capability_route_receipt_base64,
-        )
-        if visible_progress_assertion_parse_failed:
-            result = visible_tail_assertion_payload_parse_invalid(args.phase)
-        else:
-            scope_context = (
-                core.bind_host_scope(_cli_host_scope(workspace_root), workspace_root=workspace_root)
-                if workspace_root is not None
-                else nullcontext()
-            )
-            with scope_context:
-                result = run_turn(
-                    core,
-                    phase=args.phase,
-                    memory_mode=args.memory_mode,
-                    recovery_event=args.recovery_event,
-                    turn_outcome=args.turn_outcome,
-                    user_control=args.user_control,
-                    completion_evidence_ref=args.completion_evidence_ref,
-                    visible_progress_assertion=visible_progress_assertion,
-                    progress_checkpoint=progress_checkpoint,
-                    project_progress_proof=project_progress_proof,
-                    execution_assist_request=execution_assist_request,
-                    capability_route_receipt=capability_route_receipt,
-                    transition_id=args.transition_id,
-                    timeout=args.timeout_seconds,
-                    turn_intent=args.turn_intent,
-                )
+        result = _run_turn_runtime_command(core, args)
+    elif args.command == "mcp-bridge":
+        result = _run_mcp_bridge(core, workspace_root)
     elif args.command == "status":
         result = core.status()
     elif args.command == "activate":

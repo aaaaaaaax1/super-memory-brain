@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
-$hostSessionKey = Get-SuperBrainHostSessionKey $SessionKey
+$hostSessionKey = Get-SuperBrainLocalSessionKey $SessionKey
 
 function Read-WorkspaceJson([string]$Name) {
   $path = Join-Path $workspace $Name

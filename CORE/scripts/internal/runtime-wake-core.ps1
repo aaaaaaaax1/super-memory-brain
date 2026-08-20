@@ -216,7 +216,7 @@ function New-SuperBrainRuntimeWakeEntry([object]$Contract) {
 
 function Get-SuperBrainRuntimeWakeIndexPath([string]$MemoryBase,[string]$SessionKey,[string]$WorkspaceKey) {
   if ([string]::IsNullOrWhiteSpace($MemoryBase) -or [string]::IsNullOrWhiteSpace($SessionKey) -or [string]::IsNullOrWhiteSpace($WorkspaceKey)) { return '' }
-  $session = Get-SuperBrainHostSessionKey $SessionKey
+  $session = Get-SuperBrainLocalSessionKey $SessionKey
   $workspace = Get-SuperBrainWorkspaceKey $WorkspaceKey
   if ([string]::IsNullOrWhiteSpace($session) -or [string]::IsNullOrWhiteSpace($workspace)) { return '' }
   return Join-Path (Join-Path $MemoryBase 'workspace\runtime-state\execution-hot-index') ($session+'--'+$workspace+'.json')
@@ -224,7 +224,7 @@ function Get-SuperBrainRuntimeWakeIndexPath([string]$MemoryBase,[string]$Session
 
 function Get-SuperBrainPromptHookTelemetryPath([string]$MemoryBase,[string]$SessionKey,[string]$WorkspaceKey) {
   if ([string]::IsNullOrWhiteSpace($MemoryBase)) { return '' }
-  $session = Get-SuperBrainHostSessionKey $SessionKey
+  $session = Get-SuperBrainLocalSessionKey $SessionKey
   $workspace = Get-SuperBrainWorkspaceKey $WorkspaceKey
   if ([string]::IsNullOrWhiteSpace($session) -or [string]::IsNullOrWhiteSpace($workspace)) { return '' }
   return Join-Path (Join-Path $MemoryBase 'workspace\runtime-state\prompt-hook-telemetry') ($session+'--'+$workspace+'.json')
@@ -261,7 +261,7 @@ function Write-SuperBrainRuntimeWakeTextUnlocked([string]$Path,[string]$Value) {
 
 function Get-SuperBrainRuntimeWakeRecoveryPath([string]$MemoryBase,[string]$SessionKey,[string]$WorkspaceKey,[string]$TaskId) {
   if ([string]::IsNullOrWhiteSpace($MemoryBase) -or [string]::IsNullOrWhiteSpace($TaskId)) { return '' }
-  $session = Get-SuperBrainHostSessionKey $SessionKey
+  $session = Get-SuperBrainLocalSessionKey $SessionKey
   $workspace = Get-SuperBrainWorkspaceKey $WorkspaceKey
   if ([string]::IsNullOrWhiteSpace($session) -or [string]::IsNullOrWhiteSpace($workspace)) { return '' }
   $safeTask = (([string]$TaskId -replace '[^A-Za-z0-9._-]+','-').Trim('-')).ToLowerInvariant()
@@ -304,7 +304,7 @@ function Write-SuperBrainRuntimeWakeRecoveryMarker([string]$MemoryBase,[object]$
 }
 
 function Restore-SuperBrainRuntimeWakeRecovery([string]$MemoryBase,[string]$SessionKey,[string]$WorkspaceKey) {
-  $session = Get-SuperBrainHostSessionKey $SessionKey
+  $session = Get-SuperBrainLocalSessionKey $SessionKey
   $workspace = Get-SuperBrainWorkspaceKey $WorkspaceKey
   if ([string]::IsNullOrWhiteSpace($session) -or [string]::IsNullOrWhiteSpace($workspace)) { return $null }
   $root = Join-Path $MemoryBase 'workspace\runtime-state\hot-index-recovery'
@@ -664,7 +664,7 @@ function Invoke-SuperBrainRuntimeWakeInstructionAnchorObservation(
   return Invoke-SuperBrainRuntimeWakeAnchorControl 'observe-instruction-anchor' $MemoryBase @{
     taskId=[string]$Contract.taskId
     workspaceKey=(Get-SuperBrainWorkspaceKey $WorkspaceKey)
-    ownerSessionKey=(Get-SuperBrainHostSessionKey $SessionKey)
+    ownerSessionKey=(Get-SuperBrainLocalSessionKey $SessionKey)
     instruction=$instruction
     classification=$Classification
     signals=$signals
@@ -683,7 +683,7 @@ function Get-SuperBrainRuntimeWakeInstructionAnchorStatus(
 ) {
   $task = if (-not [string]::IsNullOrWhiteSpace($TaskId)) { $TaskId } elseif ($Contract) { [string]$Contract.taskId } else { '' }
   if ([string]::IsNullOrWhiteSpace($task)) { return [pscustomobject]@{ok=$true;required=$false;current=$true;code='INSTRUCTION_ANCHOR_NOT_APPLICABLE';anchor=$null} }
-  $owner = if ($Contract -and $Contract.PSObject.Properties['ownerSessionKey']) { [string]$Contract.ownerSessionKey } else { Get-SuperBrainHostSessionKey $SessionKey }
+  $owner = if ($Contract -and $Contract.PSObject.Properties['ownerSessionKey']) { [string]$Contract.ownerSessionKey } else { Get-SuperBrainLocalSessionKey $SessionKey }
   if ([string]::IsNullOrWhiteSpace($owner)) { return [pscustomobject]@{ok=$false;required=$true;current=$false;code='INSTRUCTION_ANCHOR_SESSION_REQUIRED';anchor=$null} }
   $boundAnchor = if ($Contract -and $Contract.PSObject.Properties['instructionAnchor']) { $Contract.instructionAnchor } else { $null }
   return Invoke-SuperBrainRuntimeWakeAnchorControl 'check-instruction-anchor' $MemoryBase @{
@@ -728,7 +728,7 @@ function Invoke-SuperBrainRuntimeWakeObservation(
   }
   return Invoke-SuperBrainFileLock $contractPath {
     try { $contract = Get-Content -Raw -Encoding UTF8 -LiteralPath $contractPath | ConvertFrom-Json } catch { return [pscustomobject]@{ok=$false;code='RUNTIME_WAKE_FAST_OBSERVE_CONTRACT_INVALID';written=$false} }
-    $session = Get-SuperBrainHostSessionKey $SessionKey
+    $session = Get-SuperBrainLocalSessionKey $SessionKey
     $workspace = Get-SuperBrainWorkspaceKey $WorkspaceKey
     if ([string]$contract.schema -ne 'super-brain.execution-contract.v1' -or [string]$contract.status -ne 'active' -or [string]$contract.taskId -ne [string]$Decision.taskId -or -not (Test-SuperBrainWorkspaceKey ([string]$contract.workspaceKey) $workspace) -or [string]$contract.ownerSessionKey -ne $session) {
       return [pscustomobject]@{ok=$false;code='RUNTIME_WAKE_FAST_OBSERVE_IDENTITY_MISMATCH';written=$false}
@@ -793,7 +793,7 @@ function Get-SuperBrainRuntimeWakeDecision(
     if (Test-Path -LiteralPath $pointerPath -PathType Leaf) {
       try {
         $pointer = Get-Content -Raw -Encoding UTF8 -LiteralPath $pointerPath | ConvertFrom-Json
-        $session = Get-SuperBrainHostSessionKey $SessionKey
+        $session = Get-SuperBrainLocalSessionKey $SessionKey
         $workspace = Get-SuperBrainWorkspaceKey $WorkspaceKey
         if ([string]$pointer.status -eq 'active' -and [string]$pointer.ownerSessionKey -eq $session -and (Test-SuperBrainWorkspaceKey ([string]$pointer.workspaceKey) $workspace)) {
           $entries = @(New-SuperBrainRuntimeWakeEntry $pointer)
@@ -815,7 +815,7 @@ function Get-SuperBrainRuntimeWakeDecision(
   $entries = @($currentEntries.ToArray())
   if ($entries.Count -gt 1 -and (Get-Command Get-SuperBrainCurrentTaskContext -ErrorAction SilentlyContinue)) {
     $context = Get-SuperBrainCurrentTaskContext (Join-Path $MemoryBase 'workspace') $WorkspaceKey
-    $session = Get-SuperBrainHostSessionKey $SessionKey
+    $session = Get-SuperBrainLocalSessionKey $SessionKey
     $contextMatchesScope = ($context -and [string]$context.status -eq 'active' -and $context.stale -ne $true -and [string]$context.ownerSessionKey -eq $session)
     if ($contextMatchesScope) {
       $selected = @($entries | Where-Object { [string]$_.taskId -eq [string]$context.taskId })

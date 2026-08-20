@@ -12,7 +12,9 @@ Describe 'Super Memory Brain tiered Pester runner' {
     $runner.Contains("ValidateSet('Fast','Core','Full')") | Should Be $true
     $runner.Contains('[string]$Tier = ''Full''') | Should Be $true
     $runner.Contains("'Fast' { return 45 }") | Should Be $true
-    $runner.Contains("'Core' { return 90 }") | Should Be $true
+    $runner.Contains("if (`$SuiteName -eq 'CanonicalPlanContinuity.Tests.ps1') { return 105 }") | Should Be $true
+    $runner.Contains("return 90") | Should Be $true
+    $runner.Contains("default=90;CanonicalPlanContinuity.Tests.ps1=105") | Should Be $true
     $runner.Contains("if (`$SuiteName -eq 'ExecutionContract.Tests.ps1') { return 540 }") | Should Be $true
     $runner.Contains("return 360") | Should Be $true
     $runner.Contains('Get-SuperBrainPesterTierBudgetMs') | Should Be $true

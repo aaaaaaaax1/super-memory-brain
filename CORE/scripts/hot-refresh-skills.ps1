@@ -17,9 +17,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $StatusPath = Join-Path (Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace') 'last-hot-refresh.json'
+$RuntimeInstallPath = Join-Path (Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace') 'last-runtime-install.json'
+$RuntimeBindingPath = Join-Path (Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace') 'runtime-state\mcp-runtime-binding.json'
 $ManifestPath = Join-Path $Root 'manifest.json'
 $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $PackageVersion = [string]$Manifest.version
+$McpRuntimeIdentity = Get-SuperBrainMcpRuntimeIdentity $Root
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $installBackupRoot = Get-SuperBrainInstallBackupRoot $Root
 $results = @()
@@ -277,7 +280,23 @@ function Write-Status([object]$Status) {
   }
 }
 
+function Read-RefreshJson([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  try { return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+}
+
 try {
+  $runtimeInstall = Read-RefreshJson $RuntimeInstallPath
+  $runtimeBinding = Read-RefreshJson $RuntimeBindingPath
+  $mcpRebindRequired = (
+    -not $runtimeInstall -or
+    [string]$runtimeInstall.runtimeIdentity -ne $McpRuntimeIdentity -or
+    -not $runtimeBinding -or
+    [string]$runtimeBinding.schema -ne 'super-brain.mcp-runtime-binding.v1' -or
+    [string]$runtimeBinding.runtimeIdentity -ne $McpRuntimeIdentity -or
+    [string]$runtimeBinding.state -ne 'current'
+  )
+  $mcpRebindState = if ($mcpRebindRequired) { 'required' } else { 'current' }
   $roots = @($SkillRoots)
   if ($roots.Count -eq 0 -or $AllKnown) { $roots += Get-KnownSkillRoots }
   $roots = @($roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
@@ -307,11 +326,14 @@ try {
     rebindPackageRoot = [bool]$RebindPackageRoot
     skipGlobalStartup = [bool]$SkipGlobalStartup
     includeZCode = [bool]$IncludeZCode
+    mcpRuntimeIdentity = $McpRuntimeIdentity
+    mcpRebindRequired = [bool]$mcpRebindRequired
+    mcpRebindState = $mcpRebindState
     results = $results
     note = $(if ($ReportOnlyMode) {
       'Report-only mode does not copy skills, write markers, initialize memory runtime, write status JSON, or update global startup.'
     } else {
-      'Hot refresh scans installed Super Brain agent skill roots, updates selected skill files, package/memory root markers, memory runtime files, and unless skipped each agent global startup bootstrap; open a new agent session if the agent caches skill content.'
+      'Hot refresh scans installed Super Brain agent skill roots, updates selected skill files, package/memory root markers, memory runtime files, and unless skipped each agent global startup bootstrap. It never re-registers the global MCP; mcpRebindRequired means run the separately approved runtime install and restart Codex for a live handshake.'
     })
   }
   Write-Status $status
@@ -328,6 +350,9 @@ try {
     rebindPackageRoot = [bool]$RebindPackageRoot
     skipGlobalStartup = [bool]$SkipGlobalStartup
     includeZCode = [bool]$IncludeZCode
+    mcpRuntimeIdentity = $McpRuntimeIdentity
+    mcpRebindRequired = $true
+    mcpRebindState = 'unknown_due_to_refresh_failure'
     results = $results
   }
   if (-not $ReportOnlyMode) {

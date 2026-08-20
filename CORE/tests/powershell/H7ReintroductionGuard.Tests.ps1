@@ -22,6 +22,8 @@ args = ['$brainMcp', '--package-root', '$Root', '--memory-root', '$memoryRoot']
 SUPER_BRAIN_PACKAGE_ROOT = '$Root'
 NEXSANDBASE_HOME = '$memoryRoot'
 SUPER_BRAIN_RUNTIME_IDENTITY = '$runtimeIdentity'
+SUPER_BRAIN_MCP_TRANSPORT = 'codex_registered_v1'
+SUPER_BRAIN_MCP_REGISTRATION_EPOCH = 'test-registration-epoch'
 "@
   [IO.File]::WriteAllText((Join-Path $codexHome 'config.toml'),$config,[Text.UTF8Encoding]::new($false))
   return [pscustomobject]@{ codexHome=$codexHome; codexSkills=$codexSkills; zcodeSkills=$zcodeSkills; memoryRoot=$memoryRoot; configPath=(Join-Path $codexHome 'config.toml') }

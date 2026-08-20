@@ -4,6 +4,20 @@
     "description":  "Focused native Windows Super Brain package with BAT/VBS entrypoints, a host-independent H7 core, Codex integration, optional ZCode and compatible host adapters, one active shared memory root, custom agent skill directory injection, preview-first install-backup cleanup, Hybrid Recall, ADR decision records, Memory Eval Harness, structured local memory, package-root and memory-root hot-load markers, verification, direct Git privacy preflight, silent START response discipline, Commander review gates, team memory retrieval, roadmap management, recall regression checks, task state reporting, cross-agent/session task identity indexing, lightweight task registration fast path, compact task status tables, scriptable intent gating, recovery E2E checks, detailed step ledgers, ranked resume candidates, host cache checks, paste-free current-task resume, host-tool availability boundaries, privacy sentinel checks, completion guard, maintenance tools, strict task verification parameter binding, smoke-test policy restoration, regression guards for completion-state isolation, dispatch learning, trigger simulation, intent routing, smart next actions, health summaries, agent scorecards, agent bridge isolation/failover, shared channel conversations with active target mode, task handoff, bridge dispatch packets, bridge role permissions, bridge queue relay, team-task archival, release readiness checks, a unified brain command, safe version bump previews, a read-only optimization advisor, causal change plans for structural problem-solving, automatic workspace lifecycle maintenance, auto memory hygiene, policy-governed post-task maintenance hooks, self-improvement queues, compaction-safe continuation priority, and evidence-bounded engineering decision gates.",
     "entrySkill":  "super-memory-brain",
     "runtimeMode":  "hookless_h7",
+    "mcpRuntimeIdentityRoots":  [
+                                     "runtime/brain_mcp.py"
+                                 ],
+    "mcpRuntimeIdentityAssets":  [
+                                     "capability-source-registry.json",
+                                     "capability-shadow-fixtures.json",
+                                     "capability-shadow-evaluation.json",
+                                     "super-brain-rules.json",
+                                     "scripts/common.ps1",
+                                     "scripts/execution-contract.ps1",
+                                     "scripts/execution-contract-worker.ps1",
+                                     "scripts/internal/runtime-wake-core.ps1",
+                                     "scripts/internal/phase-closeout-core.ps1"
+                                 ],
     "modules":  [
                     "skill-orchestrator",
                     "plusunm-g1",
@@ -63,12 +77,11 @@
                                "runtime\\migration_control.py",
                                "runtime\\brain_cli.py",
                                "runtime\\brain_mcp.py",
+                               "runtime\\mcp_runtime_identity.py",
                                "runtime\\brain_eval.py",
                                "runtime\\phase6_memory_eval.py",
                                "runtime\\continuation_policy.py",
                                "runtime\\turn_close_dispatcher.py",
-                               "runtime\\host_visible_tail.py",
-                               "runtime\\host_continuation_bridge.py",
                                "runtime\\turn_runtime.py",
                                "runtime\\execution_assist.py",
                                "runtime\\capability_source_registry.py",
@@ -169,6 +182,9 @@
                                       "scripts\\why-plan.ps1",
                                       "scripts\\retire-codex-super-brain-hooks.ps1",
                                       "scripts\\execution-contract.ps1",
+                                      "scripts\\execution-contract-worker.ps1",
+                                      "scripts\\external-repair.ps1",
+                                      "scripts\\external_repair.py",
                                       "scripts\\work-dag.ps1",
                                       "scripts\\self-model.ps1",
                                       "scripts\\intelligence-eval.ps1",
@@ -316,6 +332,8 @@
                     "checkpoint-writer.ps1",
                     "super-brain-dashboard.ps1",
                     "execution-contract.ps1",
+                    "execution-contract-worker.ps1",
+                    "external-repair.ps1",
                     "work-dag.ps1",
                     "auto-continuation.ps1",
                     "status-snapshot-writer.ps1",
@@ -508,7 +526,8 @@
                                              "script-call-contract.ps1",
                                              "task-link-store.ps1",
                                              "task-state-store.ps1",
-                                             "runtime-eval.ps1"
+                                             "runtime-eval.ps1",
+                                             "external-repair.ps1"
                                          ],
                          "team":  [
                                       "team-dispatch-check.ps1",
@@ -1699,6 +1718,24 @@
 
                                ],
                                "notes":  "Maintains one compact task-scoped latest execution contract. Visible conversation wins; after compression it restores the latest reconciled user instruction and assistant commitment, and blocks superseded or unreconciled work."
+                           },
+                           {
+                               "path":  "execution-contract-worker.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                               ],
+                               "notes":  "Bounded local authority transport worker for the execution contract. It keeps the PowerShell authority warm without storing prompts, transcripts, or persistent worker state."
+                           },
+                           {
+                               "path":  "external-repair.ps1",
+                               "tier":  "T1",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                               ],
+                               "notes":  "Independent inspect, plan, and allow-listed verification lane for package repair; it does not enter the H7 runtime graph or mutate package state automatically."
                            },
                            {
                                "path":  "work-dag.ps1",

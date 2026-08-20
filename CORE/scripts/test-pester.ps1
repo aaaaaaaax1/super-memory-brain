@@ -28,13 +28,13 @@ function Get-SuperBrainPesterTierFiles([string]$RequestedTier) {
       # Measured longest-first order keeps all three workers balanced instead
       # of launching the two recovery matrices only at the tier deadline.
       'CanonicalPlanContinuity.Tests.ps1','DecisionExecutionBinding.Tests.ps1','RecoveryContinuityMatrix.Tests.ps1',
-      'CurrentTaskContextScope.Tests.ps1','CrossSessionRecoveryMatrix.Tests.ps1','NoHookTurnCloseDispatcher.Tests.ps1',
+      'CurrentTaskContextScope.Tests.ps1','CrossSessionRecoveryMatrix.Tests.ps1',
       'TurnCloseContinuation.Tests.ps1','RuntimeWakeControlPlane.Tests.ps1','WorkspaceContinuity.Tests.ps1',
       'CompletionLifecycleAuthority.Tests.ps1','LegacyWriterRetirement.Tests.ps1','RecoveryCheckpointFreshness.Tests.ps1',
       'RecoveryCheckpoint.Tests.ps1','H7RuntimeWakeControlPlane.Tests.ps1','NoHookTurnCloseBridge.Tests.ps1',
       'RuntimeDriftCheckpoint.Tests.ps1','ColdStartCapabilityMap.Tests.ps1','ActivationReceipt.Tests.ps1',
       'AdaptationConfirmationReceipt.Tests.ps1','VerifyPackageReceiptProtocol.Tests.ps1','InstallUiAccessibility.Tests.ps1',
-      'QualityGateProgress.Tests.ps1'
+      'QualityGateProgress.Tests.ps1','NoHookTurnCloseDispatcher.Tests.ps1'
     )
   }
   if ($RequestedTier -eq 'Full') { return @(Get-ChildItem -LiteralPath $testRoot -Filter '*.Tests.ps1' | Sort-Object Name) }
@@ -49,11 +49,38 @@ function Get-SuperBrainPesterTierFiles([string]$RequestedTier) {
   return @($selected)
 }
 
+function Get-SuperBrainPesterSelectedFiles([string]$RequestedTier,[string]$RequestedPath) {
+  if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
+    return @(Get-SuperBrainPesterTierFiles $RequestedTier)
+  }
+  if (-not (Test-Path -LiteralPath $RequestedPath -PathType Leaf)) {
+    throw "PESTER_TEST_PATH_MISSING path=$RequestedPath"
+  }
+  $candidate = Get-Item -LiteralPath $RequestedPath -ErrorAction Stop
+  if ($candidate.Name -notlike '*.Tests.ps1') {
+    throw "PESTER_TEST_PATH_NOT_SUITE path=$RequestedPath"
+  }
+  $rootPath = ([System.IO.Path]::GetFullPath($testRoot)).TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar,[System.IO.Path]::AltDirectorySeparatorChar))
+  $candidatePath = [System.IO.Path]::GetFullPath($candidate.FullName)
+  $insideTestRoot = $candidatePath.StartsWith($rootPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+  if (-not $insideTestRoot) {
+    throw "PESTER_TEST_PATH_OUTSIDE_TEST_ROOT path=$RequestedPath"
+  }
+  return @($candidate)
+}
+
 function Get-SuperBrainPesterSuiteTimeout([string]$RequestedTier,[int]$RequestedTimeout,[string]$SuiteName='') {
   if ($RequestedTimeout -gt 0) { return $RequestedTimeout }
   switch ($RequestedTier) {
     'Fast' { return 45 }
-    'Core' { return 90 }
+    'Core' {
+      # This matrix completes in roughly 68 seconds alone but can cross the
+      # former 90-second ceiling while six contract-heavy workers contend for
+      # child-process startup. Keep the tier budget at 120 seconds and grant
+      # only this measured suite a small scheduling margin.
+      if ($SuiteName -eq 'CanonicalPlanContinuity.Tests.ps1') { return 105 }
+      return 90
+    }
     default {
       # Measured on 2026-07-29: ExecutionContract has 68 isolated behavioral
       # paths and completes in about 480 seconds. Keep every other Full suite
@@ -114,12 +141,13 @@ function Initialize-SuperBrainPesterStateRoot([string]$StateRoot) {
 }
 
 function Test-SuperBrainPesterExclusiveSuite([object]$File) {
-  # Every Core worker has its own PowerShell process and state root. Runtime
-  # wake therefore has no shared mutable surface with sibling suites; keeping
-  # it exclusive only serialized the longest tests and made the tier budget
-  # mathematically unattainable.
+  # Each Core worker owns its state root, but this dispatcher launches nested
+  # PowerShell H7 authority transactions. Run it after the parallel batch so
+  # CPU contention cannot turn a bounded fail-closed transaction into a flaky
+  # continuation result. This preserves the 12-second authority deadline.
   return @(
-    'PesterParallelSandbox.Tests.ps1'
+    'PesterParallelSandbox.Tests.ps1',
+    'NoHookTurnCloseDispatcher.Tests.ps1'
   ) -contains [string]$File.Name
 }
 
@@ -136,7 +164,7 @@ if ($Worker) {
       $env:SUPER_BRAIN_STATE_ROOT = [System.IO.Path]::GetFullPath($StateRoot)
       $env:SUPER_BRAIN_ARCHIVE_ROOT = Join-Path $env:SUPER_BRAIN_STATE_ROOT 'archive'
       Remove-Item Env:\SUPER_BRAIN_WORKSPACE_KEY -ErrorAction SilentlyContinue
-      $env:CODEX_THREAD_ID = 'pester-' + [guid]::NewGuid().ToString('n')
+      $env:SUPER_BRAIN_LOCAL_SESSION_ID = 'pester-' + [guid]::NewGuid().ToString('n')
     }
     if (-not (Get-Command Invoke-Pester -ErrorAction SilentlyContinue)) { throw 'PESTER_WORKER_PESTER_NOT_INSTALLED' }
     $pesterResult = Invoke-Pester -Script $TestPath -PassThru -Quiet
@@ -221,7 +249,7 @@ $parallelExecution = ($Tier -ne 'Full')
 $parallelismCap = if ($Tier -eq 'Core') { 6 } else { 8 }
 $effectiveMaxParallelSuites = if ($parallelExecution) { Get-SuperBrainPesterParallelism $MaxParallelSuites $parallelismCap } else { 1 }
 $stateRootIsolation = if ($parallelExecution) { 'per_suite_rebased_shared_policy' } else { 'single_controlled_state' }
-$exclusiveSuiteNames = @('PesterParallelSandbox.Tests.ps1')
+$exclusiveSuiteNames = @()
 $reportPathExplicit = -not [string]::IsNullOrWhiteSpace($ReportPath)
 if ([string]::IsNullOrWhiteSpace($ReportPath)) {
   $reportPathDirectory = Join-Path ([System.IO.Path]::GetTempPath()) 'super-brain-pester-reports'
@@ -234,7 +262,8 @@ $observedMaxParallelSuites = 0
 $runWatch = [Diagnostics.Stopwatch]::StartNew()
 
 try {
-  $selectedFiles = @(Get-SuperBrainPesterTierFiles $Tier)
+  $selectedFiles = @(Get-SuperBrainPesterSelectedFiles $Tier $TestPath)
+  $exclusiveSuiteNames = @($selectedFiles | Where-Object { Test-SuperBrainPesterExclusiveSuite $_ } | ForEach-Object { $_.Name })
   New-Item -ItemType Directory -Force -Path $sandboxRoot | Out-Null
   $resultRoot = Join-Path $sandboxRoot 'results'
   New-Item -ItemType Directory -Force -Path $resultRoot | Out-Null
@@ -245,7 +274,15 @@ try {
   $pending = New-Object System.Collections.Queue
   foreach ($file in @($selectedFiles)) { $pending.Enqueue($file) }
   $nextOrder = 0
-  $suiteTimeoutPolicy = if ($Tier -eq 'Full' -and $SuiteTimeoutSeconds -eq 0) { 'default=360;ExecutionContract.Tests.ps1=540' } else { 'uniform=' + $suiteTimeout }
+  $suiteTimeoutPolicy = if ($SuiteTimeoutSeconds -gt 0) {
+    'uniform=' + $suiteTimeout
+  } elseif ($Tier -eq 'Full') {
+    'default=360;ExecutionContract.Tests.ps1=540'
+  } elseif ($Tier -eq 'Core') {
+    'default=90;CanonicalPlanContinuity.Tests.ps1=105'
+  } else {
+    'uniform=' + $suiteTimeout
+  }
   Write-Host "PESTER_START tier=$Tier suites=$($selectedFiles.Count) suiteTimeoutSeconds=$suiteTimeout suiteTimeoutPolicy=$suiteTimeoutPolicy tierBudgetMs=$tierBudgetMs maxParallelSuites=$effectiveMaxParallelSuites exclusiveSuites=$($exclusiveSuiteNames -join ',') stateSeed=$stateSeed stateRootIsolation=$stateRootIsolation"
 
   while ($pending.Count -gt 0 -or $active.Count -gt 0) {
@@ -351,7 +388,15 @@ $report = [pscustomobject]@{
   observedMaxParallelSuites = $observedMaxParallelSuites
   exclusiveSuites = @($exclusiveSuiteNames)
   suiteTimeoutSeconds = $suiteTimeout
-  suiteTimeoutPolicy = if ($Tier -eq 'Full' -and $SuiteTimeoutSeconds -eq 0) { 'default=360;ExecutionContract.Tests.ps1=540' } else { 'uniform=' + $suiteTimeout }
+  suiteTimeoutPolicy = if ($SuiteTimeoutSeconds -gt 0) {
+    'uniform=' + $suiteTimeout
+  } elseif ($Tier -eq 'Full') {
+    'default=360;ExecutionContract.Tests.ps1=540'
+  } elseif ($Tier -eq 'Core') {
+    'default=90;CanonicalPlanContinuity.Tests.ps1=105'
+  } else {
+    'uniform=' + $suiteTimeout
+  }
   tierBudgetMs = $tierBudgetMs
   durationMs = $durationMs
   budgetMet = $budgetMet

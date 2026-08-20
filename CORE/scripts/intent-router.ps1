@@ -3,7 +3,11 @@ param(
   [Parameter(Position=0,ValueFromRemainingArguments=$true)]
   [string[]]$Text,
   [string]$Workspace = '',
-  [switch]$Json
+  [switch]$Json,
+  # Route regression exercises intent classification only.  Capability
+  # selection is a separate governed route and starting it for every case
+  # would repeatedly reload the capability map and provenance files.
+  [switch]$SkipCapabilityRoute
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -420,21 +424,23 @@ $capabilityRoute = $null
 $capabilityRouteWithheld = $false
 $capabilityRouteCode = ''
 $nativeCapabilityReceipts = @()
-try {
-  $capabilityRouteRaw = @(& (Join-Path $PSScriptRoot 'absorbed-capability-route.ps1') -Text $inputText -Intent $intent -TopK 4 -Json 2>$null)
-  if (-not $capabilityRouteRaw -or $LASTEXITCODE -ne 0) { throw 'CAPABILITY_ROUTE_UNAVAILABLE' }
-  $capabilityRoute = (($capabilityRouteRaw -join "`n") | ConvertFrom-Json -ErrorAction Stop)
-} catch {
-  $capabilityRoute = [pscustomobject]@{
-    ok = $false
-    state = 'withheld'
-    code = 'CAPABILITY_ROUTE_UNAVAILABLE'
-    selected = $false
-    reason = 'capability_route_unavailable'
-    capabilities = @()
-    withheldCapabilities = @()
-    repairAction = 'Repair the absorbed capability route or map, then retry the same intent.'
-    error = $_.Exception.Message
+if (-not $SkipCapabilityRoute) {
+  try {
+    $capabilityRouteRaw = @(& (Join-Path $PSScriptRoot 'absorbed-capability-route.ps1') -Text $inputText -Intent $intent -TopK 4 -Json 2>$null)
+    if (-not $capabilityRouteRaw -or $LASTEXITCODE -ne 0) { throw 'CAPABILITY_ROUTE_UNAVAILABLE' }
+    $capabilityRoute = (($capabilityRouteRaw -join "`n") | ConvertFrom-Json -ErrorAction Stop)
+  } catch {
+    $capabilityRoute = [pscustomobject]@{
+      ok = $false
+      state = 'withheld'
+      code = 'CAPABILITY_ROUTE_UNAVAILABLE'
+      selected = $false
+      reason = 'capability_route_unavailable'
+      capabilities = @()
+      withheldCapabilities = @()
+      repairAction = 'Repair the absorbed capability route or map, then retry the same intent.'
+      error = $_.Exception.Message
+    }
   }
 }
 if ($capabilityRoute -and [string]$capabilityRoute.state -eq 'withheld') {

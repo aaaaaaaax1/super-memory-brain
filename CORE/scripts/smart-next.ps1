@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = (Get-Location).Path }
 $workspaceKey = Get-SuperBrainWorkspaceKey $Workspace
-$hostSessionKey = Get-SuperBrainHostSessionKey $SessionKey
+$hostSessionKey = Get-SuperBrainLocalSessionKey $SessionKey
 
 function Convert-ToolJson([object[]]$Output, [string]$ScriptName) {
   $jsonStart = -1

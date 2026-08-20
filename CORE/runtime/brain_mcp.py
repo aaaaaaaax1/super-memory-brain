@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -32,111 +32,59 @@ def tool_result(payload: Any, is_error: bool = False) -> dict[str, Any]:
     }
 
 
-_CODEX_THREAD_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+def _retired_host_transport_payload(arguments: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Reject retired Host inputs before any bridge, bind, retry, or read occurs."""
 
-
-def _metadata_mappings(request: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    """Return supported MCP metadata envelopes without trusting arguments.
-
-    MCP convention puts request metadata under ``params._meta``.  A few
-    transports forward it at the JSON-RPC request level, so accept that
-    equivalent envelope as well.  User tool arguments are intentionally never
-    considered Host identity.
-    """
-
-    candidates: list[Mapping[str, Any]] = []
-    params = request.get("params")
-    if isinstance(params, Mapping) and isinstance(params.get("_meta"), Mapping):
-        candidates.append(params["_meta"])
-    if isinstance(request.get("_meta"), Mapping):
-        candidates.append(request["_meta"])
-    return candidates
-
-
-def _metadata_string(value: Any, *, maximum: int) -> str:
-    if not isinstance(value, str):
-        return ""
-    compact = value.strip()
-    if not compact or len(compact) > maximum or any(ord(char) < 32 for char in compact):
-        return ""
-    return compact
-
-
-def _workspace_scope_from_metadata(workspaces: Any) -> tuple[str, Path] | None:
-    """Keep one verified Desktop workspace root only for this request."""
-
-    if not isinstance(workspaces, Mapping) or len(workspaces) != 1:
+    supplied = sorted(key for key in _RETIRED_HOST_ARGUMENTS if key in arguments)
+    if not supplied:
         return None
-    raw_root = next(iter(workspaces.keys()))
-    root = _metadata_string(raw_root, maximum=2048)
-    if not root:
-        return None
-    try:
-        if not os.path.isabs(root):
-            return None
-        root_path = Path(root).expanduser().resolve()
-        normalized = str(root_path).rstrip("/\\").lower()
-    except (OSError, ValueError):
-        return None
-    if not normalized or not root_path.is_dir():
-        return None
-    return "ws-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24], root_path
+    return {
+        "schema": "super-brain.host-transport-retirement.v1",
+        "available": False,
+        "code": "H7_HOST_TRANSPORT_RETIRED",
+        "retiredInputs": supplied,
+        "next": "Remove Host payloads and use the current local cwd/session scope with H7 contract and project proof.",
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
 
 
-def _workspace_key_from_metadata(workspaces: Any) -> str:
-    """Hash exactly one Desktop workspace root; ambiguous metadata fails closed."""
-
-    scoped = _workspace_scope_from_metadata(workspaces)
-    return scoped[0] if scoped is not None else ""
-
-
-def host_scope_binding_from_request(request: Mapping[str, Any]) -> tuple[tuple[str, str], Path] | None:
-    """Extract the opaque scope plus an ephemeral workspace root for H7 rechecks.
-
-    The raw path is held only while the request is executing.  It is neither
-    emitted by MCP nor copied into the runtime's durable state.
-    """
-
-    candidates: list[tuple[tuple[str, str], Path]] = []
-    for metadata in _metadata_mappings(request):
-        turn_metadata = metadata.get("x-codex-turn-metadata")
-        if not isinstance(turn_metadata, Mapping):
-            continue
-        outer_thread = _metadata_string(metadata.get("threadId"), maximum=200)
-        inner_thread = _metadata_string(turn_metadata.get("thread_id"), maximum=200)
-        thread_values = [value for value in (outer_thread, inner_thread) if value]
-        if not thread_values or len({value.lower() for value in thread_values}) != 1:
-            return None
-        thread_id = thread_values[0]
-        if not _CODEX_THREAD_ID_RE.fullmatch(thread_id):
-            return None
-        workspace = _workspace_scope_from_metadata(turn_metadata.get("workspaces"))
-        if workspace is None:
-            return None
-        candidates.append(((workspace[0], thread_id), workspace[1]))
-    if not candidates:
-        return None
-    first_scope, first_root = candidates[0]
-    if any(
-        candidate_scope[0] != first_scope[0]
-        or candidate_scope[1].lower() != first_scope[1].lower()
-        or candidate_root != first_root
-        for candidate_scope, candidate_root in candidates[1:]
-    ):
-        return None
-    return first_scope, first_root
-
-
-def host_scope_from_request(request: Mapping[str, Any]) -> tuple[str, str] | None:
-    """Extract one verified Codex Desktop Host scope from request metadata.
-
-    The raw thread id and workspace path are held only for this request.  They
-    are converted to the existing opaque scope keys before runtime code sees
-    them and are never emitted, logged, or persisted.
-    """
-
-    binding = host_scope_binding_from_request(request)
-    return binding[0] if binding is not None else None
+_LIVE_MCP_TRANSPORT_ENV = "SUPER_BRAIN_MCP_TRANSPORT"
+_LIVE_MCP_TRANSPORT_VALUE = "codex_registered_v1"
+_OFFLINE_REPLAY_ENV = "SUPER_BRAIN_MCP_OFFLINE_REPLAY"
+_LOCAL_SESSION_ENV = "SUPER_BRAIN_LOCAL_SESSION_ID"
+_MCP_CLI_BRIDGE_SCHEMA = "super-brain.mcp-cli-bridge-request.v1"
+_MCP_CLI_BRIDGE_MAX_STDIN_BYTES = 512 * 1024
+_MCP_CLI_BRIDGE_MAX_STDOUT_BYTES = 512 * 1024
+_MCP_CLI_BRIDGE_TIMEOUT_SECONDS = 16
+_RETIRED_HOST_ARGUMENTS = frozenset(
+    {
+        "host_readback_projection",
+        "host_visible_context",
+        "host_thread_payload",
+        "visible_progress_assertion",
+    }
+)
+_MCP_CLI_CHILD_ENV_KEYS = (
+    "APPDATA",
+    "COMSPEC",
+    "ComSpec",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "PROGRAMDATA",
+    "SystemRoot",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+)
 
 
 TOOLS = [
@@ -157,7 +105,7 @@ TOOLS = [
                 "query_date": {"type": "string", "description": "Optional reference date for relative-time recall."},
                 "task_scope": {
                     "type": "object",
-                    "description": "Optional verified host scope for exact current-task projection; no fallback is allowed.",
+                    "description": "Optional verified local scope for exact current-task projection; no fallback is allowed.",
                     "properties": {
                         "workspace_key": {"type": "string", "pattern": "^ws-[a-f0-9]{24}$"},
                         "owner_session_key": {"type": "string", "pattern": "^sid-[a-f0-9]{16,64}$"},
@@ -177,7 +125,7 @@ TOOLS = [
     },
     {
         "name": "brain_turn",
-        "description": "Authoritative hookless Super Brain turn lifecycle. Every same-workline continuation starts from one bounded Host-derived observation of the current thread's newest real assistant reply: use already injected current Host-visible context when available, otherwise one bounded current-thread read. current_visible_assistant is the only normal candidate, and v4 only classifies that same candidate for durable progress or formal stages. H7 then maps it to one same-scope task/workline and current live project proof before selecting an action. Ordinary current commentary is display-only and cannot alter contract progress, stage, proof, or authorization. H7 never backscans an old receipt and never allows a process cache, lease, old contract, summary, checkpoint, memory, or caller-provided capsule to bypass the current locator. H7 validates scope and receipt binding but this MCP field is not a cryptographic Host attestation. If no current observation is available, governed continuation withholds and repairs the evidence path. latest_assistant is detected-drift diagnosis only and requires an explicit H7 reconciliation checkpoint plus a fresh v4 publication; it never mutates the contract automatically. parent_return alone may select the already-approved different workline from its verified state card. Normal observation is transient, not a persistent state card. Pass recovery_event only for a verified recovery and show the returned recoveryPresentation.openingLine exactly; none suppresses it. Close before a terminal reply.",
+        "description": "Authoritative local-only turn lifecycle. Every governed continuation starts from the current cwd/session scope, the current H7 execution contract, current project proof, and current visible progress receipt. No Host transport, metadata, thread payload, readback, summary, cache, or external continuation capsule is read, retried, or persisted. H7 maps the local scope to one task/workline and live project proof before selecting an action. Ordinary commentary is display-only and cannot alter contract progress, stage, proof, or authorization. If the local contract or proof is unavailable, continuation withholds and repairs the local evidence path. Close before a terminal reply.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -204,6 +152,12 @@ TOOLS = [
                 },
                 "user_control": {"type": "string", "enum": ["unknown", "none", "stop", "replace"], "default": "unknown"},
                 "completion_evidence_ref": {"type": "string", "maxLength": 240},
+                "latest_user_instruction": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 480,
+                    "description": "One compact current-user instruction for a pending H7 reconciliation. It is redacted and bound as a task instruction anchor; raw prompts and transcripts are never retained.",
+                },
                 "progress_checkpoint": {
                     "type": "object",
                     "description": "Exact visible assistant-progress anchor, source-qualified and bounded; never user prompt or transcript.",
@@ -215,34 +169,6 @@ TOOLS = [
                         "next_action": {"type": "string", "minLength": 1, "maxLength": 360},
                     },
                     "required": ["last_confirmed_sentence", "source", "current_phase", "current_step", "next_action"],
-                    "additionalProperties": False,
-                },
-                "visible_progress_assertion": {
-                    "type": "object",
-                    "description": "Transient exact current-thread observation produced by runtime/host_visible_tail.py. The time-latest actual agentMessage is always the candidate for normal and recovery turns; user messages cannot choose or truncate it, and a newer plain or legacy reply blocks backward selection. H7 maps this same candidate to the scoped task and live project step before any action. A current plain reply is non-authorizing display-only evidence; v4 only validates the same candidate for durable progress/formal stages. Raw Host ids and source thread payload are never persisted.",
-                    "properties": {
-                        "schema": {"const": "super-brain.visible-tail-observation.v4"},
-                        "observation_source": {"enum": ["codex_app_read_thread", "codex_visible_context"]},
-                        "selection": {
-                            "enum": ["current_visible_assistant", "latest_durable_assistant", "latest_assistant"],
-                            "description": "Use current_visible_assistant for every same-workline normal or recovery boundary; v4 validates only this same candidate, while an unclassified current reply remains display-only. latest_durable_assistant is a compatibility classifier for the same candidate, never a separate selection path. latest_assistant is valid only for H7-detected drift diagnosis; recovery still requires an explicit H7 reconciliation checkpoint and a fresh v4 publication before continuation.",
-                        },
-                        "host_thread_id": {"type": "string", "minLength": 1, "maxLength": 200},
-                        "host_turn_id": {"type": "string", "minLength": 1, "maxLength": 200},
-                        "host_message_id": {"type": "string", "minLength": 1, "maxLength": 200},
-                        "message_phase": {"type": "string", "enum": ["commentary", "final"]},
-                        "last_confirmed_sentence": {"type": "string", "minLength": 1, "maxLength": 320},
-                        "source": {"const": "assistant_visible_reply"},
-                        "raw_prompt_stored": {"const": False},
-                        "raw_transcript_stored": {"const": False},
-                        "publication_kind": {"enum": ["h7_durable_progress", "unclassified_assistant_reply", "legacy_h7_progress_withheld"]},
-                        "envelope_version": {"enum": ["v4", "none", "legacy_v3"]},
-                        "h7_receipt_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-                    },
-                    "required": [
-                        "schema", "observation_source", "host_thread_id", "host_turn_id", "host_message_id",
-                        "selection", "message_phase", "last_confirmed_sentence", "source", "publication_kind", "envelope_version", "raw_prompt_stored", "raw_transcript_stored"
-                    ],
                     "additionalProperties": False,
                 },
                 "project_progress_proof": {
@@ -448,7 +374,7 @@ def _task_scope(arguments: dict[str, Any]) -> tuple[str, str] | None:
 
 
 def _ensure_scoped_activation(core: BrainCore) -> None:
-    """Self-heal activation only when MCP has a verified Host scope."""
+    """Self-heal activation only for the current local scope."""
 
     workspace_key = core._context_workspace_key()
     session_key = core._context_session_key()
@@ -485,6 +411,83 @@ def _ensure_scoped_activation(core: BrainCore) -> None:
         return_point=contract.get("returnPoint") if isinstance(contract.get("returnPoint"), dict) else None,
         require_scope=True,
     )
+
+
+def _same_package_root(value: str, package_root: Path) -> bool:
+    """Compare a registered package root without returning the raw path."""
+
+    if not value:
+        return False
+    try:
+        return Path(value).expanduser().resolve() == package_root
+    except OSError:
+        return False
+
+
+def _live_mcp_handshake(
+    core: BrainCore,
+    *,
+    runtime_identity: dict[str, Any] | None = None,
+    binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Emit evidence that *this* response came from the registered MCP worker.
+
+    A subprocess protocol replay can prove that ``brain_mcp.py`` parses MCP,
+    but it cannot prove which process Codex has resident.  This lightweight
+    handshake is deliberately emitted only by the running MCP transport and
+    requires the installer-owned environment marker as well as the exact
+    manifest identity.  It is response evidence, not durable task state.
+    """
+
+    runtime_identity = (
+        runtime_identity
+        if isinstance(runtime_identity, dict)
+        else core.runtime_identity_status()
+    )
+    binding = (
+        binding
+        if isinstance(binding, dict)
+        else core.mcp_runtime_binding_status(runtime_identity=runtime_identity)
+    )
+    startup_identity = str(runtime_identity.get("startupIdentity", ""))
+    configured_root = str(os.environ.get("SUPER_BRAIN_PACKAGE_ROOT", "")).strip()
+    configured_identity = str(os.environ.get("SUPER_BRAIN_RUNTIME_IDENTITY", "")).strip()
+    configured_transport = str(os.environ.get(_LIVE_MCP_TRANSPORT_ENV, "")).strip()
+    if str(os.environ.get(_OFFLINE_REPLAY_ENV, "")) == "1":
+        return {
+            "schema": "super-brain.mcp-live-handshake.v1",
+            "state": "offline_replay",
+            "code": "H7_MCP_OFFLINE_REPLAY_NOT_LIVE",
+            "transport": "offline_mcp_replay",
+            "packageVersion": str(core.manifest.get("version", "")),
+            "runtimeIdentity": "",
+            "registryVersion": int((runtime_identity.get("servedCoreRules") or {}).get("registryVersion", 0) or 0),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    if runtime_identity.get("state") != "current":
+        state, code = "withheld", str(runtime_identity.get("code", "H7_MCP_RUNTIME_IDENTITY_STALE"))
+    elif configured_transport != _LIVE_MCP_TRANSPORT_VALUE:
+        state, code = "withheld", "H7_MCP_LIVE_HANDSHAKE_REGISTRATION_MARKER_MISSING"
+    elif not _same_package_root(configured_root, core.package_root):
+        state, code = "withheld", "H7_MCP_LIVE_HANDSHAKE_PACKAGE_BINDING_MISMATCH"
+    elif not startup_identity or configured_identity != startup_identity:
+        state, code = "withheld", "H7_MCP_LIVE_HANDSHAKE_IDENTITY_BINDING_MISMATCH"
+    elif binding.get("state") != "current":
+        state, code = "withheld", str(binding.get("code", "H7_MCP_RUNTIME_REBIND_REQUIRED"))
+    else:
+        state, code = "current", "H7_MCP_LIVE_HANDSHAKE_CURRENT"
+    return {
+        "schema": "super-brain.mcp-live-handshake.v1",
+        "state": state,
+        "code": code,
+        "transport": "codex_registered_mcp_stdio",
+        "packageVersion": str(core.manifest.get("version", "")),
+        "runtimeIdentity": startup_identity if state == "current" else "",
+        "registryVersion": int((runtime_identity.get("servedCoreRules") or {}).get("registryVersion", 0) or 0),
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
 
 
 def _task_projection_result(
@@ -538,7 +541,7 @@ def _task_projection_result(
         "source": source,
         "sourceType": "task_projection",
         "claim": claim,
-        "whyRelevant": "exact_host_scope_current_task",
+        "whyRelevant": "exact_local_scope_current_task",
         "confidence": 1.0,
         "lastVerified": "verified",
         "layer": "task",
@@ -569,7 +572,7 @@ def _task_projection_result(
             "tags": card["tags"],
             "score": 1.0,
             "confidence": 1.0,
-            "reason": "exact_host_scope_current_task",
+            "reason": "exact_local_scope_current_task",
             "ageDays": 0.0,
             "recallPriority": "task_projection",
             "tokenEstimate": card["tokenEstimate"],
@@ -594,20 +597,180 @@ def _task_projection_result(
     ]
 
 
-def handle_tool(core: BrainCore, name: str, arguments: dict[str, Any], snapshot_path: Path | None = None) -> dict[str, Any]:
+def _mcp_transport_problem(core: BrainCore) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Return only a code-identity problem that can make this worker unsafe.
+
+    MCP registration epochs and live handshakes remain visible through
+    ``brain_status``. They are deployment diagnostics, not a per-request local
+    gate.  Keeping them off the hot path prevents a missing/stale binding from
+    spawning a fresh Python process for every otherwise-valid request.
+    """
+
+    runtime_identity = core.runtime_identity_status()
+    return runtime_identity, None
+
+
+def _mcp_cli_child_environment(*, local_session_key: str = "") -> dict[str, str]:
+    """Build a minimal child environment that cannot inherit stale MCP state."""
+
+    environment = {
+        key: value
+        for key in _MCP_CLI_CHILD_ENV_KEYS
+        if isinstance((value := os.environ.get(key)), str) and value
+    }
+    if re.fullmatch(r"sid-[0-9a-f]{16,64}", local_session_key, re.IGNORECASE):
+        # Only the already-normalized local session key crosses the process
+        # boundary; no ambient legacy or Host identity is copied.
+        environment[_LOCAL_SESSION_ENV] = local_session_key.lower()
+    environment["PYTHONUTF8"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
+    return environment
+
+
+def _mcp_cli_bridge_workspace_root(core: BrainCore) -> Path | None:
+    """Return the resident process's current local project root only."""
+
+    try:
+        candidate = core._context_project_root()
+    except (OSError, ValueError):
+        return None
+    return candidate if isinstance(candidate, Path) and candidate.is_dir() else None
+
+
+def _mcp_cli_bridge_is_safe(name: str, arguments: Mapping[str, Any]) -> bool:
+    """Allow only equivalent H7 operations whose scope cannot be invented."""
+
+    if name in {"brain_turn", "brain_recent"}:
+        return True
+    if name != "brain_recall":
+        return False
+    # Task/session recall is an MCP snapshot projection bound to the current
+    # local scope. A fresh CLI can safely perform only ordinary bounded memory
+    # recall; it must not substitute its own view for that projection.
+    if "task_scope" in arguments:
+        return False
+    return str(arguments.get("layer", "all")) not in {"task", "session"}
+
+
+def _mcp_cli_bridge_failure(code: str) -> dict[str, Any]:
+    return {
+        "schema": "super-brain.mcp-cli-bridge.v1",
+        "available": False,
+        "code": "H7_RUNTIME_UNAVAILABLE",
+        "failureCode": code,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+
+
+def _run_current_cli_bridge(
+    core: BrainCore,
+    name: str,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Use a fresh package-owned CLI process when the resident MCP is stale.
+
+    The old worker stays honestly stale: it transfers only a bounded local
+    request to the package currently on disk. Host transport is not bridged.
+    """
+
+    retired_host = _retired_host_transport_payload(arguments)
+    if retired_host is not None:
+        return tool_result(retired_host, True)
+    if not _mcp_cli_bridge_is_safe(name, arguments):
+        return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_OPERATION_UNSAFE"), True)
+    bridge_workspace_root: Path | None = None
+    local_session_key = ""
+    if name == "brain_turn":
+        bridge_workspace_root = _mcp_cli_bridge_workspace_root(core)
+        if bridge_workspace_root is None:
+            return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_LOCAL_SCOPE_REQUIRED"), True)
+        local_session_key = core._context_session_key()
+        if not local_session_key:
+            return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_LOCAL_SESSION_REQUIRED"), True)
+    cli_path = core.package_root / "runtime" / "brain_cli.py"
+    if not cli_path.is_file():
+        return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_ENTRYPOINT_MISSING"), True)
+    bridge_arguments = dict(arguments)
+    try:
+        body = json.dumps(
+            {"schema": _MCP_CLI_BRIDGE_SCHEMA, "name": name, "arguments": bridge_arguments},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_INPUT_INVALID"), True)
+    if not body or len(body) > _MCP_CLI_BRIDGE_MAX_STDIN_BYTES:
+        return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_INPUT_INVALID"), True)
+
+    command = [
+        sys.executable,
+        "-X",
+        "utf8",
+        str(cli_path),
+        "--package-root",
+        str(core.package_root),
+        "--memory-root",
+        str(core.memory_root),
+    ]
+    if name == "brain_turn":
+        assert bridge_workspace_root is not None
+        command.extend(("--workspace-root", str(bridge_workspace_root)))
+    command.append("mcp-bridge")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(core.package_root),
+            env=_mcp_cli_child_environment(local_session_key=local_session_key),
+            input=body,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=_MCP_CLI_BRIDGE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_EXECUTION_FAILED"), True)
+    if completed.returncode != 0 or len(completed.stdout) > _MCP_CLI_BRIDGE_MAX_STDOUT_BYTES:
+        return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_EXECUTION_FAILED"), True)
+    try:
+        result = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_OUTPUT_INVALID"), True)
+    if not isinstance(result, (dict, list)):
+        return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_OUTPUT_INVALID"), True)
+    # Success intentionally returns the ordinary tool shape.  It does not say
+    # the stale MCP is current; ``brain_status`` remains the source of truth
+    # for that explicit transport-health question.
+    return tool_result(result)
+
+
+def handle_tool(
+    core: BrainCore,
+    name: str,
+    arguments: dict[str, Any],
+    snapshot_path: Path | None = None,
+) -> dict[str, Any]:
+    retired_host = _retired_host_transport_payload(arguments)
+    if retired_host is not None:
+        return tool_result(retired_host, True)
+    if name == "brain_turn" and "continuation_capsule" in arguments:
+        return tool_result(
+            {
+                "schema": "super-brain.continuation-control.v1",
+                "available": False,
+                "code": "H7_EXTERNAL_CONTINUATION_STATE_FORBIDDEN",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            },
+            True,
+        )
     if name != "brain_status":
-        runtime_identity = core.runtime_identity_status()
-        if runtime_identity.get("state") != "current":
-            return tool_result(
-                {
-                    "schema": "super-brain.mcp-runtime-identity.v1",
-                    "available": False,
-                    "code": str(runtime_identity.get("code", "H7_MCP_RUNTIME_IDENTITY_STALE")),
-                    "runtimeIdentity": runtime_identity,
-                    "rawPromptStored": False,
-                    "rawTranscriptStored": False,
-                },
-                True,
+        runtime_identity, binding_problem = _mcp_transport_problem(core)
+        if runtime_identity.get("state") != "current" or binding_problem is not None:
+            return _run_current_cli_bridge(
+                core,
+                name,
+                arguments,
             )
     if name == "brain_turn":
         if "continuation_capsule" in arguments:
@@ -631,12 +794,18 @@ def handle_tool(core: BrainCore, name: str, arguments: dict[str, Any], snapshot_
                 user_control=str(arguments.get("user_control", "unknown")),
                 completion_evidence_ref=str(arguments.get("completion_evidence_ref", "")),
                 progress_checkpoint=arguments.get("progress_checkpoint") if isinstance(arguments.get("progress_checkpoint"), dict) else None,
-                visible_progress_assertion=arguments.get("visible_progress_assertion") if isinstance(arguments.get("visible_progress_assertion"), dict) else None,
+                visible_progress_assertion=None,
                 project_progress_proof=arguments.get("project_progress_proof") if isinstance(arguments.get("project_progress_proof"), dict) else None,
                 execution_assist_request=arguments.get("execution_assist_request"),
                 capability_route_receipt=arguments.get("capability_route_receipt"),
+                latest_user_instruction=(
+                    arguments.get("latest_user_instruction")
+                    if isinstance(arguments.get("latest_user_instruction"), str)
+                    else None
+                ),
                 transition_id=str(arguments.get("transition_id", "")),
                 turn_intent=str(arguments.get("turn_intent", "direct")),
+                require_visible_tail_assertion=False,
             )
         )
     if name == "brain_recall":
@@ -674,6 +843,11 @@ def handle_tool(core: BrainCore, name: str, arguments: dict[str, Any], snapshot_
     if name == "brain_status":
         status = core.status()
         status["controlPlaneSnapshot"] = control_plane_status(snapshot_path)
+        status["liveMcpHandshake"] = _live_mcp_handshake(
+            core,
+            runtime_identity=(status.get("runtimeIdentity") if isinstance(status.get("runtimeIdentity"), dict) else None),
+            binding=(status.get("mcpRuntimeBinding") if isinstance(status.get("mcpRuntimeBinding"), dict) else None),
+        )
         return tool_result(status)
     if name == "brain_recent":
         return tool_result(core.recent(int(arguments.get("limit", 5))))
@@ -696,21 +870,27 @@ def serve(core: BrainCore, snapshot_path: Path | None = None) -> int:
         method = request.get("method", "")
         try:
             if method == "initialize":
+                live_handshake = core.record_mcp_live_handshake()
                 result = {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "super-memory-brain", "version": str(core.status().get("version", "0"))},
-                    "instructions": "For every same-workline governed turn, including compaction/restart/pause-resume/model-switch/cross-session/correction, first observe the newest visible assistant reply: use codex_visible_context when already exposed, otherwise one bounded current-thread observation. Always use current_visible_assistant; a v4 prefix classifies that same candidate but never selects an older reply. H7 maps it to one scoped task/workline and live project phase/step before action. An ordinary current reply is display-only and cannot alter contract progress, stage, proof, or authorization. latest_assistant is drift diagnosis only and requires an explicit H7 reconciliation checkpoint plus a fresh v4 publication. Normal observation is transient H7 receipt binding, not a persistent readback card; only a verified parent return selects the already-approved alternate workline from its state card. Before each material assistant progress/status update, call phase=checkpoint with the exact source-qualified visible assistant progress checkpoint and matching project proof. Call phase=close before a terminal reply; if close says mustContinue, continue or ResumeParent. Never persist raw prompts or transcripts.",
+                    # Initialization must stay cheap.  Version is package data;
+                    # calling status() here performed a full identity, binding,
+                    # hook and active-task scan before the first tool request.
+                    "serverInfo": {"name": "super-memory-brain", "version": str(core.manifest.get("version", "0"))},
+                    "liveMcpHandshake": live_handshake,
+                    "instructions": "Use the local H7 runtime only. Host binding, visible context, thread payloads, metadata, and readback are permanently retired and are never read, retried, or persisted. Bind the current local cwd/session scope, use the scoped H7 contract and project proof, call phase=checkpoint before material progress changes, and call phase=close before a terminal reply. Never persist raw prompts or transcripts.",
                 }
             elif method == "tools/list":
                 result = {"tools": TOOLS}
             elif method == "tools/call":
                 params = request.get("params", {}) or {}
-                host_binding = host_scope_binding_from_request(request)
-                scope = host_binding[0] if host_binding is not None else None
-                workspace_root = host_binding[1] if host_binding is not None else None
-                with core.bind_host_scope(scope, workspace_root=workspace_root):
-                    result = handle_tool(core, str(params.get("name", "")), params.get("arguments", {}) or {}, snapshot_path)
+                result = handle_tool(
+                    core,
+                    str(params.get("name", "")),
+                    params.get("arguments", {}) or {},
+                    snapshot_path,
+                )
             elif method == "ping":
                 result = {}
             else:

@@ -95,8 +95,14 @@ def _mcp_replay(root: Path, memory_root: str, require_recall_result: bool = True
         environment = os.environ.copy()
         # The replay validates the request metadata bridge itself, never an
         # inherited process scope left behind by another host.
-        for name in ("CODEX_THREAD_ID", "SUPER_BRAIN_SESSION_ID", "SUPER_BRAIN_WORKSPACE_KEY"):
+        for name in ("SUPER_BRAIN_LOCAL_SESSION_ID", "SUPER_BRAIN_SESSION_ID"):
             environment.pop(name, None)
+        # This subprocess is an offline protocol replay, never the Codex
+        # resident transport.  It may validate parsing and schemas but cannot
+        # create or satisfy a live MCP handshake.
+        environment["SUPER_BRAIN_MCP_OFFLINE_REPLAY"] = "1"
+        environment.pop("SUPER_BRAIN_MCP_TRANSPORT", None)
+        environment.pop("SUPER_BRAIN_MCP_REGISTRATION_EPOCH", None)
         completed = subprocess.run(
             [
                 sys.executable,
@@ -210,11 +216,11 @@ def _mcp_replay(root: Path, memory_root: str, require_recall_result: bool = True
             return None
         return value
 
-    metadata_evidence = nested_payload(5, 6, "brain_turn_metadata")
-    metadata_scope_ok = bool(metadata_evidence and metadata_evidence.get("code") != "H7_EVIDENCE_SCOPE_MISSING")
-    checks.append({"name": "brain_turn_metadata_scope", "ok": metadata_scope_ok})
+    metadata_evidence = nested_payload(5, 6, "brain_turn_metadata_ignored")
+    metadata_scope_ok = bool(metadata_evidence and metadata_evidence.get("code") == "H7_EVIDENCE_SCOPE_MISSING")
+    checks.append({"name": "brain_turn_metadata_ignored", "ok": metadata_scope_ok})
     if not metadata_scope_ok:
-        errors.append("brain_turn_metadata_scope")
+        errors.append("brain_turn_metadata_ignored")
 
     missing_evidence = nested_payload(6, 7, "brain_turn_missing_metadata")
     missing_scope_ok = bool(missing_evidence and missing_evidence.get("code") == "H7_EVIDENCE_SCOPE_MISSING")

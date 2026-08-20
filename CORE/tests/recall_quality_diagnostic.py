@@ -375,14 +375,14 @@ def main() -> int:
 
     old_workspace_key = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY")
     old_memory_home = os.environ.get("NEXSANDBASE_HOME")
-    old_thread_id = os.environ.get("CODEX_THREAD_ID")
+    old_thread_id = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
     old_session_id = os.environ.pop("SUPER_BRAIN_SESSION_ID", None)
     try:
         with tempfile.TemporaryDirectory(prefix="super-brain-recall-quality-") as directory:
             state_root = Path(directory) / "state"
             line_ids, graph_ids = write_fixture(state_root)
             os.environ["SUPER_BRAIN_WORKSPACE_KEY"] = WORKSPACE_KEY
-            os.environ["CODEX_THREAD_ID"] = THREAD_ID
+            os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = THREAD_ID
             core = BrainCore(ROOT, state_root / "shared")
             report = evaluate(core, line_ids, graph_ids, args.variants)
             gc.collect()
@@ -396,9 +396,9 @@ def main() -> int:
         else:
             os.environ["NEXSANDBASE_HOME"] = old_memory_home
         if old_thread_id is None:
-            os.environ.pop("CODEX_THREAD_ID", None)
+            os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
         else:
-            os.environ["CODEX_THREAD_ID"] = old_thread_id
+            os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = old_thread_id
         if old_session_id is not None:
             os.environ["SUPER_BRAIN_SESSION_ID"] = old_session_id
 

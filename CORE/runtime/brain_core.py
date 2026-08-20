@@ -8,7 +8,6 @@ import os
 import re
 import sqlite3
 from collections import Counter, deque
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,7 +23,12 @@ from brain_context import (
 from activation_receipt import read_valid as read_activation_receipt
 from continuation_policy import decide_turn_close
 from core_rule_registry import load_registry, public_projection as project_core_rules
+from mcp_runtime_identity import runtime_dependency_paths, runtime_identity
 from layout_paths import configured_state_root, state_root as resolve_state_root
+
+
+TURN_RUNTIME_CONTEXT_SNAPSHOT_KEY = "_turnRuntimeSnapshot"
+TURN_RUNTIME_CONTEXT_SNAPSHOT_SCHEMA = "super-brain.turn-runtime-context-snapshot.v1"
 
 
 TAG_RE = re.compile(r"\[[A-Z_]+\]")
@@ -116,45 +120,48 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-MCP_RUNTIME_IDENTITY_PATHS = (
-    "runtime/brain_mcp.py",
-    "runtime/brain_core.py",
-    "runtime/turn_runtime.py",
-    "runtime/project_knowledge.py",
-    "runtime/execution_assist.py",
-    "runtime/capability_source_registry.py",
-    "runtime/capability_shadow_eval.py",
-    "runtime/run_observability.py",
-    "runtime/core_rule_registry.py",
-    "capability-source-registry.json",
-    "capability-shadow-fixtures.json",
-    "capability-shadow-evaluation.json",
-    "super-brain-rules.json",
+def _mcp_runtime_identity(package_root: Path) -> str:
+    """Return the complete local behavior identity served by a resident MCP.
+
+    Identity compilation uses only a bounded in-process stamp cache. It never
+    creates runtime-state directories or leaves machine-local cache artifacts.
+    """
+    return runtime_identity(package_root)
+
+
+def _mcp_runtime_identity_paths(package_root: Path) -> tuple[str, ...]:
+    """Expose the compiled local dependency closure for regression coverage."""
+
+    return runtime_dependency_paths(package_root)
+
+
+MCP_RUNTIME_BINDING_SCHEMA = "super-brain.mcp-runtime-binding.v1"
+MCP_RUNTIME_TRANSPORT_ENV = "SUPER_BRAIN_MCP_TRANSPORT"
+MCP_RUNTIME_TRANSPORT_VALUE = "codex_registered_v1"
+MCP_RUNTIME_EPOCH_ENV = "SUPER_BRAIN_MCP_REGISTRATION_EPOCH"
+MCP_RUNTIME_BINDING_FIELDS = (
+    "schema",
+    "state",
+    "registrationEpoch",
+    "packageVersion",
+    "runtimeIdentity",
+    "packageRootHash",
+    "memoryRootHash",
+    "configuredAt",
+    "liveHandshake",
+    "rawPromptStored",
+    "rawTranscriptStored",
 )
 
 
-def _mcp_runtime_identity(package_root: Path) -> str:
-    """Return the source identity a long-lived H7 worker actually serves.
+def _mcp_binding_payload_hash(value: dict[str, Any]) -> str:
+    body = {key: value.get(key) for key in MCP_RUNTIME_BINDING_FIELDS}
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
-    Registration binds this same compact identity in the Codex MCP environment.
-    Keeping a startup copy lets a worker detect an in-place package update on
-    its next request instead of claiming that an older imported module is the
-    current control plane.
-    """
 
-    manifest = _read_json(package_root / "manifest.json")
-    version = str((manifest or {}).get("version", "")).strip() if isinstance(manifest, dict) else ""
-    if not version:
-        return ""
-    parts = ["version=" + version]
-    for relative_path in MCP_RUNTIME_IDENTITY_PATHS:
-        path = package_root / relative_path
-        try:
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError:
-            return ""
-        parts.append(relative_path + "=" + digest)
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+def _mcp_path_hash(path: Path) -> str:
+    normalized = str(path.expanduser().resolve()).rstrip("/\\").lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -432,13 +439,6 @@ class BrainCore:
         self._mcp_runtime_identity_startup = _mcp_runtime_identity(self.package_root)
         self._graph_cache_key: tuple[int, int] | None = None
         self._graph_cache: list[GraphEdge] = []
-        # A transport can serve more than one Desktop task over its lifetime.
-        # Request-scoped Host metadata therefore lives on the core only inside
-        # ``bind_host_scope`` and is always restored.
-        # It must never be copied into os.environ or durable state.
-        self._mcp_host_scope: tuple[str, str] | None = None
-        self._mcp_host_workspace_root: Path | None = None
-        self._mcp_host_scope_bound = False
 
     def core_rules(self, signals: Iterable[Any] = ()) -> dict[str, Any]:
         """Return a bounded rule projection without reading memory or storing signals."""
@@ -506,6 +506,135 @@ class BrainCore:
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
+
+    def _mcp_runtime_binding_path(self) -> Path:
+        return self.workspace / "runtime-state" / "mcp-runtime-binding.json"
+
+    def mcp_runtime_binding_status(
+        self,
+        runtime_identity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Validate the configured epoch and the live MCP handshake.
+
+        A config entry is only a desired binding.  ``current`` requires the
+        exact epoch, source identity, and transport marker from the running
+        MCP process plus a handshake written by that process.  Offline
+        protocol replays therefore cannot manufacture readiness.
+        """
+
+        binding = _read_json(self._mcp_runtime_binding_path())
+        runtime = runtime_identity if isinstance(runtime_identity, dict) else self.runtime_identity_status()
+        epoch = str(os.environ.get(MCP_RUNTIME_EPOCH_ENV, "")).strip()
+        configured_identity = str(os.environ.get("SUPER_BRAIN_RUNTIME_IDENTITY", "")).strip()
+        configured_root = str(os.environ.get("SUPER_BRAIN_PACKAGE_ROOT", "")).strip()
+        configured_transport = str(os.environ.get(MCP_RUNTIME_TRANSPORT_ENV, "")).strip()
+        try:
+            configured_root_matches = bool(configured_root) and Path(configured_root).expanduser().resolve() == self.package_root
+        except OSError:
+            configured_root_matches = False
+        source_identity = str(runtime.get("sourceIdentity", ""))
+        package_hash = _mcp_path_hash(self.package_root)
+        memory_hash = _mcp_path_hash(self.memory_base)
+        binding_epoch = str(binding.get("registrationEpoch", "")).strip() if isinstance(binding, dict) else ""
+        binding_identity = str(binding.get("runtimeIdentity", "")).strip() if isinstance(binding, dict) else ""
+        binding_hash_current = bool(
+            isinstance(binding, dict)
+            and str(binding.get("payloadHash", "")) == _mcp_binding_payload_hash(binding)
+        )
+        base_ok = bool(
+            isinstance(binding, dict)
+            and binding.get("schema") == MCP_RUNTIME_BINDING_SCHEMA
+            and binding_hash_current
+            and binding_epoch
+            and binding_identity
+            and binding_identity == source_identity
+            and str(binding.get("packageRootHash", "")) == package_hash
+            and str(binding.get("memoryRootHash", "")) == memory_hash
+            and runtime.get("state") == "current"
+            and configured_transport == MCP_RUNTIME_TRANSPORT_VALUE
+            and configured_root_matches
+            and configured_identity == source_identity
+            and epoch == binding_epoch
+        )
+        handshake = binding.get("liveHandshake") if isinstance(binding, dict) else None
+        live_ok = bool(
+            base_ok
+            and isinstance(handshake, dict)
+            and handshake.get("schema") == "super-brain.mcp-live-handshake.v1"
+            and str(handshake.get("registrationEpoch", "")) == binding_epoch
+            and str(handshake.get("runtimeIdentity", "")) == source_identity
+            and str(handshake.get("transport", "")) == "codex_registered_mcp_stdio"
+        )
+        if live_ok:
+            state, code = "current", "H7_MCP_LIVE_HANDSHAKE_CURRENT"
+        elif not base_ok:
+            state, code = "restart_required", "H7_MCP_RUNTIME_REBIND_REQUIRED"
+        else:
+            state, code = "restart_required", "H7_MCP_LIVE_HANDSHAKE_REQUIRED"
+        return {
+            "schema": "super-brain.mcp-runtime-binding-status.v1",
+            "state": state,
+            "code": code,
+            "registrationEpochHash": hashlib.sha256(binding_epoch.encode("utf-8")).hexdigest() if binding_epoch else "",
+            "runtimeIdentity": source_identity if live_ok else "",
+            "packageVersion": str(self.manifest.get("version", "")),
+            "liveHandshake": live_ok,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+
+    def record_mcp_live_handshake(self) -> dict[str, Any]:
+        """Commit a current handshake only from the real MCP process."""
+
+        if os.environ.get("SUPER_BRAIN_MCP_OFFLINE_REPLAY") == "1":
+            return {
+                "schema": "super-brain.mcp-runtime-binding-status.v1",
+                "state": "offline_replay",
+                "code": "H7_MCP_OFFLINE_REPLAY_NOT_LIVE",
+                "registrationEpochHash": "",
+                "runtimeIdentity": "",
+                "packageVersion": str(self.manifest.get("version", "")),
+                "liveHandshake": False,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        before = self.mcp_runtime_binding_status()
+        if before.get("state") != "restart_required" or before.get("code") != "H7_MCP_LIVE_HANDSHAKE_REQUIRED":
+            return before
+        path = self._mcp_runtime_binding_path()
+        binding = _read_json(path)
+        if not isinstance(binding, dict):
+            return before
+        epoch = str(binding.get("registrationEpoch", "")).strip()
+        identity = str(before.get("runtimeIdentity", ""))
+        # ``runtimeIdentity`` is intentionally blank for a non-current binding;
+        # use the source identity only after the full preflight succeeds.
+        runtime = self.runtime_identity_status()
+        identity = str(runtime.get("sourceIdentity", ""))
+        handshake = {
+            "schema": "super-brain.mcp-live-handshake.v1",
+            "registrationEpoch": epoch,
+            "runtimeIdentity": identity,
+            "transport": "codex_registered_mcp_stdio",
+            "checkedAt": datetime.now(timezone.utc).isoformat(),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+        binding["state"] = "current"
+        binding["liveHandshake"] = handshake
+        binding["payloadHash"] = _mcp_binding_payload_hash(binding)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        try:
+            temporary.write_text(json.dumps(binding, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return {**before, "state": "restart_required", "code": "H7_MCP_LIVE_HANDSHAKE_WRITE_FAILED"}
+        return self.mcp_runtime_binding_status()
 
     def _resolve_memory_root(self, supplied: str | Path | None) -> Path:
         if supplied:
@@ -958,14 +1087,8 @@ class BrainCore:
         return ()
 
     def _current_workspace_key(self) -> str:
-        if self._mcp_host_scope_bound:
-            return self._mcp_host_scope[0] if self._mcp_host_scope else ""
-        explicit = os.environ.get("SUPER_BRAIN_WORKSPACE_KEY", "").strip()
-        if explicit:
-            return explicit
-        # The status card is a derived, process-local projection and may have
-        # been written by a nested package directory.  It must never override
-        # the host's actual working directory for task/session scope.
+        # Scope is always derived from the current process cwd. No environment
+        # override or transport metadata may redirect a governed operation.
         try:
             source = os.path.abspath(os.getcwd()).rstrip("/\\").lower()
         except OSError:
@@ -975,68 +1098,20 @@ class BrainCore:
         return "ws-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
 
     def _current_session_key(self) -> str:
-        if self._mcp_host_scope_bound:
-            return self._session_key_from_host_thread(self._mcp_host_scope[1]) if self._mcp_host_scope else ""
-        candidate = os.environ.get("CODEX_THREAD_ID", "").strip() or os.environ.get("SUPER_BRAIN_SESSION_ID", "").strip()
-        return self._session_key_from_host_thread(candidate)
+        # The local runtime owns session identity.  Host-injected thread
+        # metadata is deliberately ignored so a stale desktop thread can
+        # never select or rebind an execution contract.
+        candidate = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID", "").strip()
+        return self._session_key_from_value(candidate)
 
     @staticmethod
-    def _session_key_from_host_thread(candidate: str) -> str:
+    def _session_key_from_value(candidate: str) -> str:
         value = str(candidate or "").strip()
         if not value:
             return ""
         if re.fullmatch(r"sid-[0-9a-f]{16,64}", value, re.IGNORECASE):
             return value.lower()
         return "sid-" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
-
-    @contextmanager
-    def bind_host_scope(self, scope: tuple[str, str] | None, *, workspace_root: str | Path | None = None):
-        """Bind one verified transport Host scope without process-global state.
-
-        A missing or malformed scope deliberately suppresses inherited cwd
-        and environment fallbacks for the duration of that request.  This is
-        the fail-closed boundary that prevents a long-lived worker or CLI
-        helper from attributing work to the wrong Desktop task.
-        """
-
-        normalized: tuple[str, str] | None = None
-        normalized_root: Path | None = None
-        if isinstance(scope, tuple) and len(scope) == 2:
-            workspace_key = str(scope[0] or "").strip().lower()
-            thread_id = str(scope[1] or "").strip()
-            if re.fullmatch(r"ws-[0-9a-f]{24}", workspace_key) and thread_id:
-                normalized = (workspace_key, thread_id)
-                if workspace_root is not None:
-                    try:
-                        candidate = Path(workspace_root).expanduser().resolve()
-                    except (OSError, ValueError):
-                        normalized = None
-                    else:
-                        if not candidate.is_dir() or (
-                            "ws-" + hashlib.sha256(str(candidate).rstrip("/\\").lower().encode("utf-8")).hexdigest()[:24]
-                        ) != workspace_key:
-                            normalized = None
-                        else:
-                            normalized_root = candidate
-        previous_scope = self._mcp_host_scope
-        previous_root = self._mcp_host_workspace_root
-        previous_bound = self._mcp_host_scope_bound
-        self._mcp_host_scope = normalized
-        self._mcp_host_workspace_root = normalized_root
-        self._mcp_host_scope_bound = True
-        try:
-            yield
-        finally:
-            self._mcp_host_scope = previous_scope
-            self._mcp_host_workspace_root = previous_root
-            self._mcp_host_scope_bound = previous_bound
-
-    @contextmanager
-    def bind_mcp_host_scope(self, scope: tuple[str, str] | None, *, workspace_root: str | Path | None = None):
-        """Compatibility alias for callers not yet migrated to ``bind_host_scope``."""
-
-        with self.bind_host_scope(scope, workspace_root=workspace_root):
-            yield
 
     def _workspace_context_pointer_path(self, workspace_key: str) -> Path | None:
         normalized = str(workspace_key or "").strip()
@@ -1129,6 +1204,20 @@ class BrainCore:
             and entry.get("wakeEligible", True) is not False
             and str(entry.get("packageVersion", "")) == package_version
         ]
+        # A hot index is a derived acceleration structure.  If a completion
+        # transaction was interrupted after the contract reached its strict
+        # terminal shape, the entry can still say ``wakeEligible=true``.  Do
+        # not let that stale projection compete with a runnable task.
+        entries = [
+            entry
+            for entry in entries
+            if not self._entry_is_structurally_completed_terminal(
+                entry,
+                workspace_key=workspace_key,
+                session_key=session_key,
+                package_version=package_version,
+            )
+        ]
         if len(entries) != 1:
             return None
         entry = entries[0]
@@ -1192,10 +1281,7 @@ class BrainCore:
         }
 
     def _context_workspace_key(self) -> str:
-        """Derive scope only from the real host cwd, never an inherited override."""
-
-        if self._mcp_host_scope_bound:
-            return self._mcp_host_scope[0] if self._mcp_host_scope else ""
+        """Derive scope only from the current process cwd."""
 
         try:
             source = os.path.abspath(os.getcwd()).rstrip("/\\").lower()
@@ -1204,19 +1290,12 @@ class BrainCore:
         return "ws-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:24] if source else ""
 
     def _context_project_root(self) -> Path | None:
-        """Return the verified host project root only for local proof rechecks.
+        """Return the current local project root for proof rechecks."""
 
-        The path is request-scoped for MCP and is never returned in a context,
-        receipt, telemetry event, or durable record.
-        """
-
-        if self._mcp_host_scope_bound:
-            root = self._mcp_host_workspace_root
-        else:
-            try:
-                root = Path.cwd().resolve()
-            except OSError:
-                root = None
+        try:
+            root = Path.cwd().resolve()
+        except OSError:
+            root = None
         if root is None or not root.is_dir():
             return None
         workspace_key = self._context_workspace_key()
@@ -1225,11 +1304,17 @@ class BrainCore:
         return root if workspace_key and workspace_key == expected_workspace_key else None
 
     def _context_session_key(self) -> str:
-        """Accept the actual Host thread id only; legacy session overrides may be stale."""
+        """Resolve one explicit process-local session.
 
-        if self._mcp_host_scope_bound:
-            return self._session_key_from_host_thread(self._mcp_host_scope[1]) if self._mcp_host_scope else ""
-        return self._session_key_from_host_thread(os.environ.get("CODEX_THREAD_ID", ""))
+        ``SUPER_BRAIN_LOCAL_SESSION_ID`` is the runtime identity. The older
+        ``SUPER_BRAIN_SESSION_ID`` remains recall-only
+        compatibility state and must not silently select an execution
+        contract.  This keeps local CLI/MCP operation possible without making
+        a stale legacy session override authoritative.
+        """
+
+        candidate = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID", "").strip()
+        return self._session_key_from_value(candidate)
 
     def _project_progress_status(self, contract: dict[str, Any]) -> dict[str, Any]:
         """Read and recheck the formal proof without exposing its raw body."""
@@ -1341,6 +1426,129 @@ class BrainCore:
         }
 
     @staticmethod
+    def _is_completed_terminal_contract(contract: dict[str, Any]) -> bool:
+        """Recognize a strict completed workline independently of hot-index flags.
+
+        The terminal lifecycle transaction normally projects ``wakeEligible``
+        as false.  A process interruption may leave that projection behind an
+        already-complete contract, however.  This predicate is intentionally
+        structural: no completed phase with pending work, a parent return, or
+        an incomplete canonical plan can be hidden by it.
+        """
+
+        if bool(contract.get("returnStack")):
+            return False
+        pending_steps = contract.get("pendingSteps")
+        if isinstance(pending_steps, list) and any(str(item).strip() for item in pending_steps):
+            return False
+        canonical_plan = contract.get("canonicalPlan")
+        items = canonical_plan.get("items") if isinstance(canonical_plan, dict) else None
+        if not isinstance(items, list) or not items:
+            return False
+        statuses = [str(item.get("status", "")) for item in items if isinstance(item, dict)]
+        if len(statuses) != len(items) or not all(status in {"completed", "cancelled"} for status in statuses):
+            return False
+
+        # Some older closeout transactions completed the canonical plan and
+        # deliberately left the human-readable phase name (for example
+        # ``R5 Stage 10`` or ``Stage 8 - ... completed``) instead of rewriting
+        # it to the literal ``Complete`` token.  Their ``No automatic action``
+        # projection is still terminal and must not become a cross-session
+        # rebind candidate.  Keep the explicit phase check for legacy cards
+        # that use a terminal token without a canonical plan, while accepting
+        # this structurally complete/no-auto shape as the equivalent terminal
+        # lifecycle state.
+        phase = str(contract.get("currentPhase", "")).strip().casefold()
+        if phase in {"complete", "completed", "done"}:
+            return True
+        next_action = str(contract.get("nextAction", "")).strip().casefold()
+        return next_action.startswith("no automatic action:")
+
+    @staticmethod
+    def _formal_phase_token(value: Any) -> str:
+        """Normalize the small formal phase vocabulary used by closeouts.
+
+        This intentionally stays local to the read-side terminal-finalization
+        guard so ``brain_core`` does not import the closeout dispatcher and
+        create a second lifecycle authority.
+        """
+
+        text = str(value or "").strip().casefold()
+        match = re.search(r"(?:^|[^a-z0-9])stage\s*(\d+(?:\.\d+)*)", text)
+        if match:
+            return "stage" + match.group(1)
+        match = re.search(r"(?:^|[^a-z0-9])r(\d+)\s*[- ]?\s*stage\s*(\d+(?:\.\d+)*)", text)
+        if match:
+            return "r" + match.group(1) + "-stage" + match.group(2)
+        return ""
+
+    @classmethod
+    def _terminal_phase_closeout_missing(cls, contract: dict[str, Any]) -> bool:
+        """Return whether a completed terminal card still lacks its own closeout.
+
+        A terminal contract with a current visible-progress receipt used to be
+        excluded from the one-shot H7 finalization selector.  When a prior
+        Set/aggregate write completed the canonical plan before publishing the
+        phase-closeout artifact, that left a real task with no legal repair
+        path.  Keep normal wake and ordinary continuation blocked, but allow
+        the explicit finalization path to select this exact card until the
+        closeout for its current formal phase exists.
+        """
+
+        phase = cls._formal_phase_token(contract.get("currentPhase"))
+        if not phase:
+            return False
+        closeouts = contract.get("phaseCloseouts")
+        if not isinstance(closeouts, list):
+            return True
+        revision = int(contract.get("revision", 0) or 0)
+        plan = contract.get("planReceipt") if isinstance(contract.get("planReceipt"), dict) else {}
+        fingerprint = str(contract.get("planFingerprint") or plan.get("planFingerprint") or "")
+        for closeout in closeouts:
+            if not isinstance(closeout, dict):
+                continue
+            closeout_phase = cls._formal_phase_token(closeout.get("phase")) or str(closeout.get("phase", "")).strip().casefold()
+            if (
+                closeout_phase == phase
+                and int(closeout.get("contractRevision", -1) or -1) == revision
+                and str(closeout.get("planFingerprint", "")) == fingerprint
+                and str(closeout.get("schema", "")) == "super-brain.phase-closeout.v4"
+            ):
+                return False
+        return True
+
+    def _entry_is_structurally_completed_terminal(
+        self,
+        entry: dict[str, Any],
+        *,
+        workspace_key: str,
+        session_key: str,
+        package_version: str,
+    ) -> bool:
+        """Return whether one active-looking index entry is terminal in authority.
+
+        This is read-only recovery isolation.  It never changes the stale
+        entry or promotes a completion; the normal completion transaction
+        remains responsible for terminalizing the lifecycle projection.
+        """
+
+        contract_name = Path(str(entry.get("contractFileName", ""))).name
+        if not contract_name:
+            return False
+        contract = _read_json(self.workspace / "runtime-state" / "execution-contracts" / contract_name)
+        return bool(
+            isinstance(contract, dict)
+            and str(contract.get("schema", "")) == "super-brain.execution-contract.v1"
+            and str(contract.get("status", "")) == "active"
+            and str(contract.get("taskId", "")) == str(entry.get("taskId", ""))
+            and str(contract.get("workspaceKey", "")).lower() == workspace_key.lower()
+            and str(contract.get("ownerSessionKey", "")).lower() == session_key
+            and str(contract.get("packageVersion", "")) == package_version
+            and contract.get("needsReconciliation") is not True
+            and self._is_completed_terminal_contract(contract)
+        )
+
+    @staticmethod
     def _is_terminal_finalization_contract(contract: dict[str, Any]) -> bool:
         """Allow one completed task back into H7 only for its final close.
 
@@ -1352,13 +1560,21 @@ class BrainCore:
         receipt, so it cannot revive an already-closed task for ordinary work.
         """
 
-        if str(contract.get("currentPhase", "")).strip().casefold() not in {"complete", "completed", "done"}:
-            return False
-        if bool(contract.get("returnStack")):
+        if not BrainCore._is_completed_terminal_contract(contract):
             return False
         if not str(contract.get("nextAction", "")).strip().casefold().startswith("no automatic action:"):
             return False
-        if isinstance(contract.get("visibleProgressReceipt"), dict) and contract.get("visibleProgressReceipt"):
+        # A current visible receipt normally means the finalization checkpoint
+        # already ran.  One interrupted route, however, can publish that
+        # receipt and terminalize the canonical plan before the formal phase
+        # closeout is persisted.  Keep that card available only to the
+        # explicit finalization selector until its matching closeout exists;
+        # ordinary wake/continuation still filters it out.
+        if (
+            isinstance(contract.get("visibleProgressReceipt"), dict)
+            and contract.get("visibleProgressReceipt")
+            and not BrainCore._terminal_phase_closeout_missing(contract)
+        ):
             return False
         proof = contract.get("projectProgressProof")
         # The final checkpoint is the one governed path allowed to repair a
@@ -1369,12 +1585,7 @@ class BrainCore:
         # ``allow_terminal_finalization=False`` and therefore never select it.
         if not isinstance(proof, dict) or str(proof.get("state", "")) not in {"current", "withheld"}:
             return False
-        canonical_plan = contract.get("canonicalPlan")
-        items = canonical_plan.get("items") if isinstance(canonical_plan, dict) else None
-        if not isinstance(items, list) or not items:
-            return False
-        statuses = [str(item.get("status", "")) for item in items if isinstance(item, dict)]
-        return len(statuses) == len(items) and all(status in {"completed", "cancelled"} for status in statuses)
+        return True
 
     def _read_context_contract(
         self,
@@ -1382,6 +1593,8 @@ class BrainCore:
         session_key: str,
         *,
         allow_terminal_finalization: bool = False,
+        allow_reconciliation_checkpoint: bool = False,
+        terminal_finalization_phase: str = "",
     ) -> tuple[dict[str, Any] | None, str]:
         """Read one unique current execution contract without touching SQLite or pointers."""
 
@@ -1408,15 +1621,24 @@ class BrainCore:
             # Missing legacy values remain eligible for compatibility.
             and str(entry.get("packageVersion", "")) == package_version
         ]
-        entries = [entry for entry in scoped_entries if entry.get("wakeEligible", True) is not False]
+        entries = [
+            entry
+            for entry in scoped_entries
+            if entry.get("wakeEligible", True) is not False
+            and not self._entry_is_structurally_completed_terminal(
+                entry,
+                workspace_key=workspace_key,
+                session_key=session_key,
+                package_version=package_version,
+            )
+        ]
         terminal_finalization = False
         if not entries:
             if not allow_terminal_finalization:
                 return None, "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT"
+            phase_hint = self._formal_phase_token(terminal_finalization_phase)
             terminal_entries: list[dict[str, Any]] = []
             for candidate in scoped_entries:
-                if candidate.get("wakeEligible", True) is not False:
-                    continue
                 if not self._context_timestamp_current(candidate.get("updatedAt", "")):
                     continue
                 contract_name = Path(str(candidate.get("contractFileName", ""))).name
@@ -1434,6 +1656,10 @@ class BrainCore:
                     and str(terminal_contract.get("ownerSessionKey", "")).lower() == session_key
                     and str(terminal_contract.get("packageVersion", "")) == package_version
                     and terminal_contract.get("needsReconciliation") is not True
+                    and (
+                        not phase_hint
+                        or self._formal_phase_token(terminal_contract.get("currentPhase")) == phase_hint
+                    )
                     and self._is_terminal_finalization_contract(terminal_contract)
                 ):
                     terminal_entries.append(candidate)
@@ -1483,7 +1709,8 @@ class BrainCore:
         hot_index_lagging = contract_revision_value > index_revision_value
         if contract_revision_value != index_revision_value and not hot_index_lagging:
             return None, "BRAIN_CONTEXT_CONTRACT_REVISION_MISMATCH"
-        if contract.get("needsReconciliation") is True:
+        reconciliation_checkpoint = contract.get("needsReconciliation") is True
+        if reconciliation_checkpoint and not allow_reconciliation_checkpoint:
             return None, "BRAIN_CONTEXT_RECONCILIATION_REQUIRED"
         if not self._context_timestamp_current(contract.get("updatedAt", "")):
             return None, "BRAIN_CONTEXT_CONTRACT_STALE_OR_FUTURE"
@@ -1505,6 +1732,15 @@ class BrainCore:
         # revisions behind an otherwise current, identity-matched contract.
         # Recover read-only from that strictly one-way condition; an index that
         # is ahead still fails closed because its contract may not have landed.
+        if reconciliation_checkpoint:
+            # A pending instruction normally makes this contract unavailable
+            # to every continuation path.  H7's explicit checkpoint is the
+            # sole exception: it needs the same scope-bound contract in order
+            # to bind the current instruction, project proof, and visible
+            # progress in one CAS transaction.  The caller is required to
+            # expose this as a checkpoint-only preflight; it is never a
+            # runnable ordinary context.
+            return contract, "BRAIN_CONTEXT_RECONCILIATION_CHECKPOINT_READY"
         if terminal_finalization:
             return contract, "BRAIN_CONTEXT_TERMINAL_FINALIZATION_READY"
         return contract, "BRAIN_CONTEXT_HOT_INDEX_LAGGING_FALLBACK" if hot_index_lagging else "BRAIN_CONTEXT_READY"
@@ -1552,233 +1788,6 @@ class BrainCore:
             return None
         return context
 
-    def _unique_rebind_candidate(self, workspace_key: str, session_key: str) -> tuple[dict[str, Any] | None, str]:
-        """Find one unique recent contract for an explicit H7 session recovery.
-
-        This is a bounded read of the execution-contract directory for the
-        current workspace only. It never chooses by summary, revision number,
-        memory, or a global pointer. The caller must still prove the exact
-        latest Host-visible assistant sentence before any session mutation.
-        """
-
-        contract_root = self.workspace / "runtime-state" / "execution-contracts"
-        package_version = str(self.manifest.get("version", ""))
-        candidates: list[dict[str, Any]] = []
-        try:
-            paths = list(contract_root.glob("*.json"))
-        except OSError:
-            return None, "BRAIN_CONTEXT_REBIND_CONTRACT_ROOT_UNAVAILABLE"
-        for path in paths:
-            contract = _read_json(path)
-            if (
-                not isinstance(contract, dict)
-                or contract.get("schema") != "super-brain.execution-contract.v1"
-                or str(contract.get("status", "")) != "active"
-                or str(contract.get("workspaceKey", "")).lower() != workspace_key.lower()
-                or str(contract.get("packageVersion", "")) != package_version
-                or str(contract.get("ownerSessionKey", "")).lower() == session_key.lower()
-                or not str(contract.get("taskId", ""))
-                or not str(contract.get("taskInstanceId", ""))
-                or contract.get("needsReconciliation") is True
-                or not self._context_timestamp_current(contract.get("updatedAt", ""))
-            ):
-                continue
-            candidates.append(contract)
-        if not candidates:
-            return None, "BRAIN_CONTEXT_REBIND_CANDIDATE_MISSING"
-        if len(candidates) != 1:
-            return None, "BRAIN_CONTEXT_REBIND_CANDIDATE_AMBIGUOUS"
-        return candidates[0], "BRAIN_CONTEXT_REBIND_CANDIDATE_UNIQUE"
-
-    def tail_first_task_mapping(self, host_thread_id: str) -> dict[str, Any]:
-        """Map one already-observed current visible tail to this workline.
-
-        This is deliberately a *read-only* preflight for normal continuity.
-        It runs before typed-memory selection, visible-progress validation, or
-        project-proof validation.  The visible tail establishes the current
-        continuation point; this helper only determines whether that point
-        belongs to one uniquely scoped active task and, if it does, which
-        phase/step the live contract currently records.  It never selects a
-        contract from message text, a summary, an old receipt, a state card,
-        or a revision ordering.
-
-        ``_contract`` is an internal convenience for ``turn_runtime`` and
-        must never be emitted in an H7 public result.
-        """
-
-        workspace_key = self._context_workspace_key()
-        session_key = self._context_session_key()
-        base: dict[str, Any] = {
-            "schema": "super-brain.tail-first-task-mapping.v1",
-            "source": "current_visible_assistant",
-            "visibleContextAvailable": True,
-            "stateCardUsed": False,
-            "workspaceKey": workspace_key,
-            "ownerSessionKey": session_key,
-            "rawPromptStored": False,
-            "rawTranscriptStored": False,
-        }
-        if not workspace_key or not session_key:
-            return {
-                **base,
-                "state": "unavailable",
-                "code": "H7_TAIL_FIRST_SCOPE_UNAVAILABLE",
-            }
-        if self._session_key_from_host_thread(host_thread_id) != session_key:
-            return {
-                **base,
-                "state": "unavailable",
-                "code": "H7_TAIL_FIRST_VISIBLE_SCOPE_MISMATCH",
-            }
-
-        contract, code = self._read_context_contract(workspace_key, session_key)
-        if contract is None and code in {
-            "BRAIN_CONTEXT_HOT_INDEX_MISSING",
-            "BRAIN_CONTEXT_HOT_INDEX_SCOPE_MISMATCH",
-            "BRAIN_CONTEXT_CONTRACT_REVISION_MISMATCH",
-        }:
-            # The hot index is an acceleration projection.  On a missing or
-            # incompatible index, inspect only the current workspace/session
-            # contract directory and accept a single exact scope match.  A
-            # missing index must never be silently mistaken for "no task".
-            contract_root = self.workspace / "runtime-state" / "execution-contracts"
-            package_version = str(self.manifest.get("version", ""))
-            candidates: list[dict[str, Any]] = []
-            try:
-                paths = list(contract_root.glob("*.json"))
-            except OSError:
-                paths = []
-            for path in paths:
-                candidate = _read_json(path)
-                if (
-                    not isinstance(candidate, dict)
-                    or candidate.get("schema") != "super-brain.execution-contract.v1"
-                    or str(candidate.get("status", "")) != "active"
-                    or str(candidate.get("workspaceKey", "")).lower() != workspace_key.lower()
-                    or str(candidate.get("ownerSessionKey", "")).lower() != session_key.lower()
-                    or str(candidate.get("packageVersion", "")) != package_version
-                    or not str(candidate.get("taskId", ""))
-                    or not str(candidate.get("taskInstanceId", ""))
-                ):
-                    continue
-                candidates.append(candidate)
-            if len(candidates) == 1:
-                candidate = candidates[0]
-                if candidate.get("needsReconciliation") is True:
-                    return {
-                        **base,
-                        "state": "withheld_reconcile",
-                        "code": "H7_TAIL_FIRST_TASK_RECONCILIATION_REQUIRED",
-                    }
-                if not self._context_timestamp_current(candidate.get("updatedAt", "")):
-                    return {
-                        **base,
-                        "state": "unavailable",
-                        "code": "H7_TAIL_FIRST_TASK_CONTRACT_STALE",
-                    }
-                contract = candidate
-                code = "H7_TAIL_FIRST_HOT_INDEX_REPAIR_REQUIRED"
-            elif len(candidates) > 1:
-                return {
-                    **base,
-                    "state": "unavailable",
-                    "code": "H7_TAIL_FIRST_TASK_AMBIGUOUS",
-                }
-            else:
-                # A verified cross-session/restart handover may later rebind
-                # exactly one *foreign* task, but this preflight must not
-                # pretend that a missing current-session index means there is
-                # no work.  It reports the one candidate without changing its
-                # owner; turn_runtime still requires the current visible v4
-                # tail, live proof, and the atomic H7 rebind transaction.
-                foreign_candidates: list[dict[str, Any]] = []
-                try:
-                    foreign_paths = list(contract_root.glob("*.json"))
-                except OSError:
-                    foreign_paths = []
-                for path in foreign_paths:
-                    candidate = _read_json(path)
-                    if (
-                        not isinstance(candidate, dict)
-                        or candidate.get("schema") != "super-brain.execution-contract.v1"
-                        or str(candidate.get("status", "")) != "active"
-                        or str(candidate.get("workspaceKey", "")).lower() != workspace_key.lower()
-                        or str(candidate.get("packageVersion", "")) != package_version
-                        or str(candidate.get("ownerSessionKey", "")).lower() == session_key.lower()
-                        or not str(candidate.get("taskId", ""))
-                        or not str(candidate.get("taskInstanceId", ""))
-                    ):
-                        continue
-                    foreign_candidates.append(candidate)
-                if len(foreign_candidates) == 1:
-                    candidate = foreign_candidates[0]
-                    return {
-                        **base,
-                        "state": "rebind_required",
-                        "code": "H7_TAIL_FIRST_SESSION_REBIND_REQUIRED",
-                        "taskIdHash": hashlib.sha256(str(candidate.get("taskId", "")).encode("utf-8")).hexdigest(),
-                        "taskInstanceId": str(candidate.get("taskInstanceId", "")),
-                        "contractRevision": int(candidate.get("revision", 0) or 0),
-                        "contractHash": context_canonical_hash(candidate),
-                        "currentPhase": str(candidate.get("currentPhase", "")),
-                        "currentStep": str(candidate.get("currentStep", "")),
-                        "nextAction": str(candidate.get("nextAction", "")),
-                        "_contract": candidate,
-                    }
-                if len(foreign_candidates) > 1:
-                    return {
-                        **base,
-                        "state": "unavailable",
-                        "code": "H7_TAIL_FIRST_REBIND_TASK_AMBIGUOUS",
-                    }
-                # No current-scope or foreign active contract exists.  The
-                # caller may still be in a governed Super Brain conversation,
-                # but there is no workline to resume.  Treat this as ordinary
-                # no-task continuity without allocating a card or consulting
-                # historical summaries; a real stale-index case above has an
-                # exact same-scope candidate and remains repair-required.
-                return {
-                    **base,
-                    "state": "ordinary_no_task",
-                    "code": "H7_TAIL_FIRST_NO_SCOPED_TASK",
-                }
-
-        if contract is None:
-            if code == "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT":
-                return {
-                    **base,
-                    "state": "ordinary_no_task",
-                    "code": "H7_TAIL_FIRST_NO_SCOPED_TASK",
-                }
-            return {
-                **base,
-                "state": "unavailable",
-                "code": "H7_TAIL_FIRST_TASK_MAPPING_UNAVAILABLE:" + str(code),
-            }
-        if contract.get("needsReconciliation") is True:
-            return {
-                **base,
-                "state": "withheld_reconcile",
-                "code": "H7_TAIL_FIRST_TASK_RECONCILIATION_REQUIRED",
-            }
-
-        task_id = str(contract.get("taskId", ""))
-        task_instance_id = str(contract.get("taskInstanceId", ""))
-        return {
-            **base,
-            "state": "mapped",
-            "code": "H7_TAIL_FIRST_TASK_MAPPED",
-            "taskIdHash": hashlib.sha256(task_id.encode("utf-8")).hexdigest(),
-            "taskInstanceId": task_instance_id,
-            "contractRevision": int(contract.get("revision", 0) or 0),
-            "contractHash": context_canonical_hash(contract),
-            "currentPhase": str(contract.get("currentPhase", "")),
-            "currentStep": str(contract.get("currentStep", "")),
-            "nextAction": str(contract.get("nextAction", "")),
-            "mappingReadCode": code,
-            "_contract": contract,
-        }
-
     @staticmethod
     def _context_memory_effect(entry: dict[str, Any]) -> dict[str, Any]:
         kind = str(entry["kind"])
@@ -1815,8 +1824,18 @@ class BrainCore:
         completion_evidence_present: bool = False,
         rule_signals: Iterable[Any] = (),
         terminal_finalization: bool = False,
+        reconciliation_checkpoint: bool = False,
+        turn_runtime_snapshot: bool = False,
+        terminal_finalization_phase: str = "",
     ) -> dict[str, Any]:
-        """Return a bounded, pure-read context packet for the current Desktop Host turn."""
+        """Return a bounded, pure-read context packet for the current local turn.
+
+        ``turn_runtime_snapshot`` is an internal, one-call optimization seam.
+        It carries the contract and its already-revalidated project-proof
+        status only from this call to ``turn_runtime.open_turn``. It is not a
+        cache or durable record, and the runtime removes it before any result
+        can reach an adapter.
+        """
 
         mode = str(memory_mode or "auto").lower()
         core_rules = self.core_rules(rule_signals)
@@ -1854,7 +1873,7 @@ class BrainCore:
         if not session_key:
             return {
                 "ok": True, "schema": "super-brain.context.v1", "available": False,
-                "code": "BRAIN_CONTEXT_THREAD_ID_MISSING", "memoryMode": mode,
+                "code": "BRAIN_CONTEXT_LOCAL_SESSION_MISSING", "memoryMode": mode,
                 "coreRules": core_rules,
                 "rawPromptStored": False, "rawTranscriptStored": False,
             }
@@ -1870,6 +1889,8 @@ class BrainCore:
             workspace_key,
             session_key,
             allow_terminal_finalization=terminal_finalization,
+            allow_reconciliation_checkpoint=reconciliation_checkpoint,
+            terminal_finalization_phase=terminal_finalization_phase,
         )
         if contract is None:
             return {
@@ -1975,11 +1996,14 @@ class BrainCore:
             user_control=user_control,
             completion_evidence_present=completion_evidence_present,
         )
-        return {
+        result = {
             "ok": True,
             "schema": "super-brain.context.v1",
             "available": True,
             "code": code,
+            "reconciliationCheckpointOnly": bool(
+                code == "BRAIN_CONTEXT_RECONCILIATION_CHECKPOINT_READY"
+            ),
             "memoryMode": mode,
             "scope": scope,
             "activation": activation,
@@ -1998,6 +2022,18 @@ class BrainCore:
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
+        if turn_runtime_snapshot:
+            # This object is private to the current Python call stack. It
+            # avoids only the immediately duplicated read by turn_runtime;
+            # it never reaches receipts, telemetry, memory, or public output.
+            result[TURN_RUNTIME_CONTEXT_SNAPSHOT_KEY] = {
+                "schema": TURN_RUNTIME_CONTEXT_SNAPSHOT_SCHEMA,
+                "contract": contract,
+                "contractHash": str(task.get("contractHash", "")),
+                "contractRevision": int(task.get("contractRevision", 0) or 0),
+                "projectProgressStatus": progress_status,
+            }
+        return result
 
     def _current_task_context(self) -> dict[str, Any] | None:
         contract_context = self._execution_contract_context()
@@ -2148,7 +2184,10 @@ class BrainCore:
             authoritative = False
             verification_status = "unverified"
             if kind == "status":
-                status = _read_json(path)
+                try:
+                    status = json.loads(raw)
+                except (UnicodeError, json.JSONDecodeError):
+                    status = None
                 if not isinstance(status, dict):
                     continue
                 snapshot_version = str(status.get("version", ""))
@@ -2168,7 +2207,10 @@ class BrainCore:
                 if status_query:
                     priority = 0
             elif kind == "runtime":
-                state = _read_json(path)
+                try:
+                    state = json.loads(raw)
+                except (UnicodeError, json.JSONDecodeError):
+                    state = None
                 if not isinstance(state, dict):
                     continue
                 state_version = str(state.get("version", ""))
@@ -2861,7 +2903,7 @@ class BrainCore:
     def _session_scope_allowed(self, candidate: Candidate, query: str, layer: str) -> bool:
         if layer != "session" or not candidate.session_key or self._is_cross_session_query(query):
             return True
-        current = os.environ.get("SUPER_BRAIN_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or ""
+        current = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID", "")
         return not current or candidate.session_key == self._scope_hash(current)
 
     @staticmethod
@@ -3580,6 +3622,10 @@ class BrainCore:
         )
         core_rules = self.core_rules()
         runtime_identity = self.runtime_identity_status(served_core_rules=core_rules)
+        # One fresh identity proof per status request is enough.  The binding
+        # check consumes that exact proof instead of stat/hash-scanning the
+        # 31-file MCP identity closure a second time.
+        mcp_runtime_binding = self.mcp_runtime_binding_status(runtime_identity=runtime_identity)
 
         # H7-only transport is a runtime invariant, not a historical status
         # hint. Keep the registration check narrow so unrelated Codex hooks
@@ -3721,6 +3767,7 @@ class BrainCore:
             "activation": activation,
             "coreRules": core_rules,
             "runtimeIdentity": runtime_identity,
+            "mcpRuntimeBinding": mcp_runtime_binding,
             "fullBrainActive": bool(
                 activation.get("state") == "full_brain_active"
                 and core_rules.get("status") == "current"

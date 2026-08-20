@@ -194,6 +194,12 @@ function Get-BootstrapSnapshotTargets {
   foreach ($memoryRoot in @($memoryRoots)) {
     $targets += Join-Path $memoryRoot '.memory-scope.json'
   }
+  # MCP config and its H7 epoch binding are one transaction.  A bootstrap
+  # failure after install-runtime must restore both, otherwise the next
+  # startup sees a new binding against an old config and reports a false
+  # stale/rebind loop.
+  $targets += Join-Path (Split-Path -Parent $CodexSkills) 'config.toml'
+  $targets += Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace\runtime-state\mcp-runtime-binding.json'
   $targets += Get-SuperBrainSharingPolicyPath $Root
   $coldRoot = Join-Path $env:USERPROFILE '.codex-cold-skills'
   if (Test-Path -LiteralPath $coldRoot) {

@@ -56,7 +56,7 @@ function New-CompactionRecoveryCheckpoint {
     $returnPointJson = if ($resume -and $resume.returnPoint) { $resume.returnPoint | ConvertTo-Json -Depth 8 -Compress } else { '' }
     $returnPointBase64 = if (-not [string]::IsNullOrWhiteSpace($returnPointJson)) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($returnPointJson)) } else { '' }
     $stateHash = Get-SuperBrainStableHash (([ordered]@{ taskId=$taskIdValue; workspaceKey=$workspaceKeyValue; instructionHash=$instructionHash; progressHash=$progressHash; contractRevision=$contractRevision; currentPhase=$currentPhase; currentStep=$currentStep; nextAction=$nextAction; returnPoint=$returnPointJson } | ConvertTo-Json -Depth 10 -Compress)) 64
-    $checkpointArgs = @('-Action','Write','-TaskId',$taskIdValue,'-WorkspaceKey',$workspaceKeyValue,'-SessionKey',(Get-SuperBrainHostSessionKey $SessionId),'-ContractRevision',[string]$contractRevision,'-StateHash',$stateHash,'-Source','session-compact.ps1','-Json')
+    $checkpointArgs = @('-Action','Write','-TaskId',$taskIdValue,'-WorkspaceKey',$workspaceKeyValue,'-SessionKey',(Get-SuperBrainLocalSessionKey $SessionId),'-ContractRevision',[string]$contractRevision,'-StateHash',$stateHash,'-Source','session-compact.ps1','-Json')
     if ($resolution -and -not [string]::IsNullOrWhiteSpace([string]$resolution.taskInstanceId)) { $checkpointArgs += @('-TaskInstanceId',[string]$resolution.taskInstanceId) }
     if (-not [string]::IsNullOrWhiteSpace($planFingerprint)) { $checkpointArgs += @('-PlanFingerprint',$planFingerprint) }
     if (-not [string]::IsNullOrWhiteSpace($instructionHash)) { $checkpointArgs += @('-LatestInstructionHash',$instructionHash) }
@@ -135,7 +135,7 @@ $checkpointHash = if ($checkpointRecord) { [string]$checkpointRecord.checkpointH
 $noteFingerprintPayload = [ordered]@{
   taskId = $taskIdValue
   workspaceKey = $workspaceKeyValue
-  sessionKey = Get-SuperBrainHostSessionKey $SessionId
+  sessionKey = Get-SuperBrainLocalSessionKey $SessionId
   title = Limit-CompactText $Title 160
   sourceHash = $sourceHash
   checkpointHash = $checkpointHash
@@ -165,7 +165,7 @@ if (-not $idempotent) {
     noteId = $noteId
     taskId = $taskIdValue
     workspaceKey = $workspaceKeyValue
-    sessionKey = Get-SuperBrainHostSessionKey $SessionId
+    sessionKey = Get-SuperBrainLocalSessionKey $SessionId
     title = Limit-CompactText $Title 160
     capturedAt = $capturedAt
     sourceHash = $sourceHash

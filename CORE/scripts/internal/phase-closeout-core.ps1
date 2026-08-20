@@ -7,7 +7,30 @@ function Get-SuperBrainPhaseCloseoutText([string]$Value,[int]$Max=160) {
 
 function Get-SuperBrainPhaseCloseoutHash([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
-  try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() } catch { return '' }
+  # Use the package's direct .NET implementation.  The closeout authority can
+  # run in a reduced Windows PowerShell worker where Get-FileHash's module is
+  # not loaded; a missing hash would incorrectly turn a valid H7 closeout into
+  # EXECUTION_CONTRACT_PHASE_CLOSEOUT_AUTHORITY_WRITE_FAILED.
+  try {
+    if (Get-Command Get-SuperBrainFileSha256 -ErrorAction SilentlyContinue) {
+      return ([string](Get-SuperBrainFileSha256 $Path)).ToLowerInvariant()
+    }
+    $stream = $null
+    $sha = $null
+    try {
+      $stream = [System.IO.File]::Open(
+        [System.IO.Path]::GetFullPath($Path),
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::ReadWrite
+      )
+      $sha = [System.Security.Cryptography.SHA256]::Create()
+      return (-join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })).ToLowerInvariant()
+    } finally {
+      if ($null -ne $sha) { $sha.Dispose() }
+      if ($null -ne $stream) { $stream.Dispose() }
+    }
+  } catch { return '' }
 }
 
 function Test-SuperBrainPhaseCloseoutSha256([string]$Value) {
@@ -215,12 +238,12 @@ function Invoke-SuperBrainPhaseCloseoutH7Evidence(
   if ([string]::IsNullOrWhiteSpace([string]$scope.ownerSessionKey)) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_H7_SESSION_REQUIRED'} }
   $python = Get-Command python -ErrorAction SilentlyContinue
   if (-not $python) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_H7_CLI_UNAVAILABLE'} }
-  $previousThread = $env:CODEX_THREAD_ID
+  $previousThread = $env:SUPER_BRAIN_LOCAL_SESSION_ID
   $previousState = $env:SUPER_BRAIN_STATE_ROOT
   $raw = @()
   $exitCode = 1
   try {
-    $env:CODEX_THREAD_ID = [string]$scope.ownerSessionKey
+  $env:SUPER_BRAIN_LOCAL_SESSION_ID = [string]$scope.ownerSessionKey
     $env:SUPER_BRAIN_STATE_ROOT = $MemoryBase
     Push-Location -LiteralPath $root.path
     $raw = @(& $python.Source -X utf8 (Join-Path $PackageRoot 'runtime\brain_cli.py') --package-root $PackageRoot --memory-root (Join-Path $MemoryBase 'shared') turn-runtime --phase evidence --memory-mode auto --turn-intent continuity --timeout-seconds 12 2>$null)
@@ -229,7 +252,7 @@ function Invoke-SuperBrainPhaseCloseoutH7Evidence(
     return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_H7_EVIDENCE_CLI_FAILED'}
   } finally {
     try { Pop-Location } catch {}
-    if ($null -eq $previousThread) { Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $previousThread }
+    if ($null -eq $previousThread) { Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $previousThread }
     if ($null -eq $previousState) { Remove-Item Env:\SUPER_BRAIN_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_STATE_ROOT = $previousState }
   }
   if ($exitCode -ne 0) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_H7_EVIDENCE_CLI_FAILED'} }
@@ -331,64 +354,135 @@ function Test-SuperBrainPhaseCloseoutH7Binding([object]$Binding,[object]$Current
   return [pscustomobject]@{ok=$true}
 }
 
-function Test-SuperBrainPhaseCloseoutHostStageReceipt(
-  [object]$Receipt,
+function Get-SuperBrainPhaseCloseoutAuthorityPath(
   [object]$PreviousContract,
+  [string]$WorkspaceRoot,
   [object]$Requirement,
   [object]$Current
 ) {
-  if (-not $Receipt -or -not $Receipt.PSObject.Properties['hostStageReceipt'] -or -not $Receipt.hostStageReceipt) {
-    return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_HOST_STAGE_RECEIPT_REQUIRED'}
+  if (-not $PreviousContract -or -not $Requirement -or -not $Current -or [string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+    return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_AUTHORITY_PATH_INVALID';path=''}
   }
-  $hostStage = $Receipt.hostStageReceipt
-  $expectedNames = @('schema','observationSource','taskId','workspaceKey','ownerSessionKey','phase','contractRevision','planFingerprint','scopeRef','visibleProgressPayloadHash','h7EntryReceiptHash','state','rawPromptStored','rawTranscriptStored')
-  $actualNames = @($hostStage.PSObject.Properties | ForEach-Object { [string]$_.Name } | Sort-Object)
-  $expectedNames = @($expectedNames | Sort-Object)
-  if ($actualNames.Count -ne $expectedNames.Count -or (Compare-Object $actualNames $expectedNames)) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_HOST_STAGE_RECEIPT_INVALID'} }
-  $planFingerprint = if ($PreviousContract -and $PreviousContract.PSObject.Properties['planReceipt'] -and $PreviousContract.planReceipt) { [string]$PreviousContract.planReceipt.planFingerprint } else { '' }
-  if (
-    [string]$hostStage.schema -ne 'super-brain.host-stage-receipt.v1' -or
-    [string]$hostStage.observationSource -ne 'codex_app_read_thread' -or
-    [string]$hostStage.taskId -ne [string]$PreviousContract.taskId -or
-    [string]$hostStage.workspaceKey -ne [string]$PreviousContract.workspaceKey -or
-    [string]$hostStage.ownerSessionKey -ne [string]$PreviousContract.ownerSessionKey -or
-    -not [string]::Equals([string]$hostStage.phase,[string]$Requirement.previousPhase,[StringComparison]::OrdinalIgnoreCase) -or
-    [int]$hostStage.contractRevision -ne [int]$PreviousContract.revision -or
-    [string]$hostStage.planFingerprint -ne $planFingerprint -or
-    [string]$hostStage.scopeRef -ne [string]$Current.scopeRef -or
-    [string]$hostStage.visibleProgressPayloadHash -ne [string]$Current.visibleProgressPayloadHash -or
-    (
-      [string]$hostStage.h7EntryReceiptHash -ne [string]$Current.entryReceiptHash -and
-      [string]$hostStage.h7EntryReceiptHash -notin @($Current.entryReceiptHistory)
-    ) -or
-    [string]$hostStage.state -ne 'observed' -or
-    $hostStage.rawPromptStored -ne $false -or
-    $hostStage.rawTranscriptStored -ne $false
-  ) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_HOST_STAGE_RECEIPT_MISMATCH'} }
-  foreach ($name in @('scopeRef','visibleProgressPayloadHash','h7EntryReceiptHash')) {
-    if (-not (Test-SuperBrainPhaseCloseoutSha256 ([string]$hostStage.$name))) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_HOST_STAGE_RECEIPT_INVALID'} }
+  try {
+    $evidenceRoot = [IO.Path]::GetFullPath((Join-Path $WorkspaceRoot 'runtime-state\phase-evidence'))
+    $phase = ([string]$Requirement.previousPhase -replace '[^A-Za-z0-9._-]+','-').Trim('-').ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($phase)) { throw 'phase_missing' }
+    $planFingerprint = if ($PreviousContract.PSObject.Properties['planReceipt'] -and $PreviousContract.planReceipt) { [string]$PreviousContract.planReceipt.planFingerprint } else { '' }
+    # The path is a deterministic opaque locator.  No caller chooses a file
+    # name, and the full task/session/plan/H7 binding is never exposed there.
+    $identity = @(
+      [string]$PreviousContract.taskId,
+      [string]$PreviousContract.workspaceKey,
+      [string]$PreviousContract.ownerSessionKey,
+      [string][int]$PreviousContract.revision,
+      $planFingerprint,
+      [string]$Requirement.previousPhase,
+      [string]$Current.visibleProgressPayloadHash
+    ) -join "`n"
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $identityHash = (($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($identity)) | ForEach-Object { $_.ToString('x2') }) -join '') } finally { $sha.Dispose() }
+    $path = Join-Path $evidenceRoot ('phase-closeout-v4-r' + [string][int]$PreviousContract.revision + '-' + $phase + '-' + $identityHash.Substring(0,24) + '.json')
+    if (-not (Test-SuperBrainPhaseCloseoutChildPath $evidenceRoot $path)) { throw 'path_escape' }
+    return [pscustomobject]@{ok=$true;code='PHASE_CLOSEOUT_AUTHORITY_PATH_READY';path=$path;evidenceRoot=$evidenceRoot;identityHash=$identityHash}
+  } catch {
+    return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_AUTHORITY_PATH_INVALID';path=''}
   }
-  return [pscustomobject]@{ok=$true;value=[pscustomobject]@{
-    schema='super-brain.host-stage-receipt.v1'
-    observationSource='codex_app_read_thread'
+}
+
+function Publish-SuperBrainPhaseCloseoutAuthorityReceipt([string]$Path,[object]$Receipt) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not $Receipt) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_AUTHORITY_WRITE_INVALID';path='';sha256=''} }
+  $directory = Split-Path -Parent $Path
+  try {
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { New-Item -ItemType Directory -Force -Path $directory | Out-Null }
+    return Invoke-SuperBrainFileLock $Path {
+      if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $existingHash = Get-SuperBrainPhaseCloseoutHash $Path
+        try { $existing = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop } catch { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_AUTHORITY_RECEIPT_COLLISION';path=$Path;sha256=$existingHash} }
+        $expected = $Receipt | ConvertTo-Json -Depth 12 -Compress
+        $actual = $existing | ConvertTo-Json -Depth 12 -Compress
+        if ($expected -ne $actual) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_AUTHORITY_RECEIPT_COLLISION';path=$Path;sha256=$existingHash} }
+        return [pscustomobject]@{ok=$true;code='PHASE_CLOSEOUT_AUTHORITY_RECEIPT_REPLAYED';path=$Path;sha256=$existingHash;replayed=$true}
+      }
+      $temporary = Join-Path $directory ('.phase-closeout-' + [guid]::NewGuid().ToString('n') + '.tmp')
+      try {
+        [IO.File]::WriteAllText($temporary,($Receipt | ConvertTo-Json -Depth 12 -Compress),[Text.UTF8Encoding]::new($false))
+        [IO.File]::Move($temporary,$Path)
+        $sha256 = Get-SuperBrainPhaseCloseoutHash $Path
+        if (-not (Test-SuperBrainPhaseCloseoutSha256 $sha256)) { throw 'receipt_hash_invalid' }
+        return [pscustomobject]@{ok=$true;code='PHASE_CLOSEOUT_AUTHORITY_RECEIPT_WRITTEN';path=$Path;sha256=$sha256;replayed=$false}
+      } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+      }
+    }
+  } catch {
+    return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_AUTHORITY_WRITE_FAILED';path=$Path;sha256=''}
+  }
+}
+
+function New-SuperBrainPhaseCloseoutAuthority(
+  [object]$PreviousContract,
+  [string]$WorkspaceRoot,
+  [string]$PackageRoot = '',
+  [string]$MemoryBase = '',
+  [string]$ProjectRoot = ''
+) {
+  if (-not $PreviousContract) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_CONTRACT_REQUIRED'} }
+  $phase = Get-SuperBrainFormalPhaseToken ([string]$PreviousContract.currentPhase)
+  if ([string]::IsNullOrWhiteSpace($phase)) { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_FORMAL_PHASE_REQUIRED'} }
+  if ((Get-SuperBrainPhaseEvidencePolicy $PreviousContract) -ne 'h7_current') { return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_EVIDENCE_POLICY_MISMATCH'} }
+  $requirement = [pscustomobject]@{ required=$true; previousPhase=$phase; nextPhase=''; sameLine=$true; phaseDirection='forward'; reason='formal_phase_closeout_authority' }
+  $current = Invoke-SuperBrainPhaseCloseoutH7Evidence $PreviousContract $WorkspaceRoot $PackageRoot $MemoryBase $ProjectRoot
+  if (-not $current.ok) { return $current }
+  $receipt = [pscustomobject]@{
+    schema='super-brain.phase-closeout-receipt.v4'
     taskId=[string]$PreviousContract.taskId
     workspaceKey=[string]$PreviousContract.workspaceKey
     ownerSessionKey=[string]$PreviousContract.ownerSessionKey
-    phase=[string]$Requirement.previousPhase
+    packageVersion=[string]$PreviousContract.packageVersion
+    phase=$phase
     contractRevision=[int]$PreviousContract.revision
-    planFingerprint=$planFingerprint
-    scopeRef=[string]$Current.scopeRef
-    visibleProgressPayloadHash=[string]$Current.visibleProgressPayloadHash
-    h7EntryReceiptHash=[string]$Current.entryReceiptHash
-    state='observed'
+    planFingerprint=if($PreviousContract.PSObject.Properties['planReceipt'] -and $PreviousContract.planReceipt){[string]$PreviousContract.planReceipt.planFingerprint}else{''}
+    phaseEvidencePolicy='h7_current'
+    decision='accepted'
+    h7=[pscustomobject]@{
+      mode='hookless_turn_runtime'
+      scopeRef=[string]$current.value.scopeRef
+      contractHash=[string]$current.value.contractHash
+      entryReceiptHash=[string]$current.value.entryReceiptHash
+      telemetryPayloadHash=[string]$current.value.telemetryPayloadHash
+      projectProgressPayloadHash=[string]$current.value.projectProgressPayloadHash
+      visibleProgressPayloadHash=[string]$current.value.visibleProgressPayloadHash
+    }
     rawPromptStored=$false
     rawTranscriptStored=$false
-  }}
+  }
+  $binding = Test-SuperBrainPhaseCloseoutH7Binding $receipt.h7 $current.value
+  if (-not $binding.ok) { return $binding }
+  $target = Get-SuperBrainPhaseCloseoutAuthorityPath $PreviousContract $WorkspaceRoot $requirement $current.value
+  if (-not $target.ok) { return $target }
+  $published = Publish-SuperBrainPhaseCloseoutAuthorityReceipt $target.path $receipt
+  if (-not $published.ok) { return $published }
+  return [pscustomobject]@{
+    ok=$true
+    code=[string]$published.code
+    receiptPath=[string]$published.path
+    path=[string]$published.path
+    receiptSha256=[string]$published.sha256
+    sha256=[string]$published.sha256
+    phase=$phase
+    revision=[int]$PreviousContract.revision
+    contractRevision=[int]$PreviousContract.revision
+    planFingerprint=if($PreviousContract.PSObject.Properties['planReceipt'] -and $PreviousContract.planReceipt){[string]$PreviousContract.planReceipt.planFingerprint}else{''}
+    replayed=[bool]$published.replayed
+    rawPromptStored=$false
+    rawTranscriptStored=$false
+  }
 }
 
 function Test-SuperBrainPhaseCloseoutRetiredReceipt([object]$Receipt) {
   if (-not $Receipt) { return $false }
-  if ([string]$Receipt.schema -eq 'super-brain.phase-closeout-receipt.v1') { return $true }
+  if ([string]$Receipt.schema -in @('super-brain.phase-closeout-receipt.v1','super-brain.phase-closeout-receipt.v2','super-brain.phase-closeout-receipt.v3','super-brain.phase-closeout.v1','super-brain.phase-closeout.v2','super-brain.phase-closeout.v3')) { return $true }
+  if ($Receipt.PSObject.Properties['hostStageReceipt']) { return $true }
   foreach ($name in @('realUserPath','syntheticNativePath','counterexample','promptHook','nativePromptHook','phaseBehaviorEvidence')) {
     if ($Receipt.PSObject.Properties[$name]) { return $true }
   }
@@ -413,8 +507,7 @@ function ConvertTo-SuperBrainPhaseCloseoutRecord(
   $expectedPlanFingerprint = if ($PreviousContract.PSObject.Properties['planReceipt'] -and $PreviousContract.planReceipt) { [string]$PreviousContract.planReceipt.planFingerprint } else { '' }
   $scope = New-SuperBrainPhaseCloseoutScope $PreviousContract $PackageVersion ([string]$Requirement.previousPhase)
   if (Test-SuperBrainPhaseCloseoutRetiredReceipt $Receipt) { return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_RETIRED_P7_EVIDENCE' } }
-  if ([string]$Receipt.schema -eq 'super-brain.phase-closeout-receipt.v2') { return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_HOST_STAGE_RECEIPT_REQUIRED' } }
-  if ([string]$Receipt.schema -ne 'super-brain.phase-closeout-receipt.v3') { return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_SCHEMA_INVALID' } }
+  if ([string]$Receipt.schema -ne 'super-brain.phase-closeout-receipt.v4') { return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_SCHEMA_INVALID' } }
   if ([string]$Receipt.taskId -ne $expectedTaskId -or [string]$Receipt.workspaceKey -ne $expectedWorkspaceKey -or [string]$Receipt.ownerSessionKey -ne $expectedSessionKey) { return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_SCOPE_MISMATCH' } }
   if ([string]$Receipt.packageVersion -ne $PackageVersion) { return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_VERSION_MISMATCH' } }
   if (-not [string]::Equals([string]$Receipt.phase,[string]$Requirement.previousPhase,[StringComparison]::OrdinalIgnoreCase)) { return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_PHASE_MISMATCH' } }
@@ -425,12 +518,10 @@ function ConvertTo-SuperBrainPhaseCloseoutRecord(
   if (-not $current.ok) { return $current }
   $binding = if ($Receipt.PSObject.Properties['h7']) { Test-SuperBrainPhaseCloseoutH7Binding $Receipt.h7 $current.value } else { [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_H7_BINDING_REQUIRED'} }
   if (-not $binding.ok) { return $binding }
-  $hostReceipt = Test-SuperBrainPhaseCloseoutHostStageReceipt $Receipt $PreviousContract $Requirement $current.value
-  if (-not $hostReceipt.ok) { return $hostReceipt }
   return [pscustomobject]@{
     ok=$true
     value=[pscustomobject]@{
-      schema='super-brain.phase-closeout.v3'
+      schema='super-brain.phase-closeout.v4'
       phase=[string]$Requirement.previousPhase
       nextPhase=[string]$Requirement.nextPhase
       taskId=$expectedTaskId
@@ -444,7 +535,6 @@ function ConvertTo-SuperBrainPhaseCloseoutRecord(
       receiptFileName=[IO.Path]::GetFileName($ReceiptPath)
       receiptSha256=(Get-SuperBrainPhaseCloseoutHash $ReceiptPath)
       h7=$current.value
-      hostStageReceipt=$hostReceipt.value
       verifiedAt=(Get-SuperBrainUtcTimestamp)
       rawPromptStored=$false
       rawTranscriptStored=$false
@@ -513,15 +603,12 @@ function Assert-SuperBrainPhaseCloseoutTransition(
   if ([string]$record.schema -eq 'super-brain.phase-closeout.v1' -or (Test-SuperBrainPhaseCloseoutRetiredReceipt $record)) {
     return [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_RETIRED_P7_EVIDENCE';requirement=$requirement}
   }
-  if ([string]$record.schema -eq 'super-brain.phase-closeout.v2') { return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_HOST_STAGE_RECEIPT_REQUIRED'; requirement=$requirement } }
-  if ([string]$record.schema -ne 'super-brain.phase-closeout.v3' -or [string]$record.taskId -ne [string]$PreviousContract.taskId -or [string]$record.workspaceKey -ne [string]$PreviousContract.workspaceKey -or [string]$record.ownerSessionKey -ne [string]$PreviousContract.ownerSessionKey -or [string]$record.packageVersion -ne $PackageVersion -or [string]$record.decision -ne 'accepted' -or [string]$record.phaseEvidencePolicy -ne 'h7_current' -or $record.rawPromptStored -ne $false -or $record.rawTranscriptStored -ne $false) {
+  if ([string]$record.schema -ne 'super-brain.phase-closeout.v4' -or [string]$record.taskId -ne [string]$PreviousContract.taskId -or [string]$record.workspaceKey -ne [string]$PreviousContract.workspaceKey -or [string]$record.ownerSessionKey -ne [string]$PreviousContract.ownerSessionKey -or [string]$record.packageVersion -ne $PackageVersion -or [string]$record.decision -ne 'accepted' -or [string]$record.phaseEvidencePolicy -ne 'h7_current' -or $record.rawPromptStored -ne $false -or $record.rawTranscriptStored -ne $false) {
     return [pscustomobject]@{ ok=$false; code='PHASE_CLOSEOUT_RECORD_INVALID'; requirement=$requirement }
   }
   $current = Invoke-SuperBrainPhaseCloseoutH7Evidence $PreviousContract $WorkspaceRoot $PackageRoot $MemoryBase $ProjectRoot
   if (-not $current.ok) { $current | Add-Member -NotePropertyName requirement -NotePropertyValue $requirement -Force; return $current }
   $binding = if ($record.PSObject.Properties['h7']) { Test-SuperBrainPhaseCloseoutH7Binding $record.h7 $current.value } else { [pscustomobject]@{ok=$false;code='PHASE_CLOSEOUT_H7_BINDING_REQUIRED'} }
   if (-not $binding.ok) { $binding | Add-Member -NotePropertyName requirement -NotePropertyValue $requirement -Force; return $binding }
-  $hostReceipt = Test-SuperBrainPhaseCloseoutHostStageReceipt $record $PreviousContract $requirement $current.value
-  if (-not $hostReceipt.ok) { $hostReceipt | Add-Member -NotePropertyName requirement -NotePropertyValue $requirement -Force; return $hostReceipt }
   return [pscustomobject]@{ ok=$true; requirement=$requirement; closeout=$record }
 }

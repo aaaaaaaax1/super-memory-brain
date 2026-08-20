@@ -1248,7 +1248,7 @@ def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(
     control.materialize_outbox()
 
     environment = os.environ.copy()
-    environment.update({"CODEX_THREAD_ID": thread_id, "SUPER_BRAIN_WORKSPACE_KEY": workspace_key})
+    environment.update({"SUPER_BRAIN_LOCAL_SESSION_ID": thread_id, "SUPER_BRAIN_WORKSPACE_KEY": workspace_key, "SUPER_BRAIN_MCP_OFFLINE_REPLAY": "1"})
 
     def call_recall(with_scope: bool = True) -> list[dict[str, object]]:
         arguments: dict[str, object] = {

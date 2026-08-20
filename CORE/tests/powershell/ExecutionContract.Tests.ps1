@@ -179,6 +179,35 @@ Describe 'Execution contract continuity' {
     $updated.value.needsReconciliation | Should Be $false
   }
 
+  It 'treats a serialized empty return stack as empty on the next mutation' {
+    $stateRoot = Join-Path $TestDrive 'empty-return-stack-next-mutation'
+    $workspaceKey = 'ws-empty-return-stack-20260819'
+    $taskId = 'task-empty-return-stack-next-mutation'
+
+    $initial = Invoke-Contract @(
+      '-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,
+      '-FocusId','empty-stack-focus','-InstructionMode','continue',
+      '-NextAction','publish the current checkpoint',
+      '-StateRoot',$stateRoot,'-Json'
+    )
+    $initial.exitCode | Should Be 0
+    @($initial.value.returnStack).Count | Should Be 0
+
+    $updated = Invoke-Contract @(
+      '-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,
+      '-FocusId','empty-stack-focus','-InstructionMode','continue',
+      '-NextAction','complete the closeout',
+      '-ExpectedRevision',[string]$initial.value.revision,
+      '-ExpectedPlanFingerprint',[string]$initial.value.planReceipt.planFingerprint,
+      '-TransitionId','empty-return-stack-next-mutation',
+      '-StateRoot',$stateRoot,'-Json'
+    )
+
+    $updated.exitCode | Should Be 0
+    @($updated.value.returnStack).Count | Should Be 0
+    $updated.value.nextAction | Should Be 'complete the closeout'
+  }
+
   It 'keeps singleton evidence and checklist entries inside the durable continuation receipt' {
     $stateRoot = Join-Path $TestDrive 'singleton-continuation-receipt'
     $workspaceKey = 'ws-singleton-continuation-20260728'
@@ -599,7 +628,8 @@ Describe 'Execution contract continuity' {
       '-CurrentPhase','mainline','-CurrentStep',$rootPending[0],'-NextAction',$rootPending[0],
       '-ChecklistUpdateMode','replace','-StateRoot',$stateRoot,'-Json','-H7FixtureSkipCheckpoint'
     )
-    $rootRaw = @(& $contractScript @rootArguments[0..($rootArguments.Count - 2)] -PendingSteps $rootPending -NoExit 2>&1)
+    $rootSetArguments = @($rootArguments[0..($rootArguments.Count - 2)])
+    $rootRaw = @(& $contractScript @rootSetArguments -PendingSteps $rootPending -NoExit 2>&1)
     $rootResult = (($rootRaw | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json
     $rootResult.ok | Should Be $true
     @($rootResult.pendingSteps) | Should Be $rootPending
@@ -1066,13 +1096,13 @@ Describe 'Execution contract continuity' {
     $created.value.ownerSessionKey | Should Match '^sid-[0-9a-f]{24}$'
     ($created.text.Contains('root-session-a')) | Should Be $false
 
-    $oldThreadId = $env:CODEX_THREAD_ID
+    $oldThreadId = $env:SUPER_BRAIN_LOCAL_SESSION_ID
     try {
-      Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue
+      Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue
       $missingKeySet = Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','session-owned-line','-NextAction','bypass without session key','-StateRoot',$stateRoot,'-Json')
       $missingKeyGet = Invoke-Contract @('-Action','Get','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-StateRoot',$stateRoot,'-Json')
     } finally {
-      if ($null -eq $oldThreadId) { Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $oldThreadId }
+      if ($null -eq $oldThreadId) { Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $oldThreadId }
     }
     $missingKeySet.exitCode | Should Be 1
     $missingKeySet.value.code | Should Be 'EXECUTION_CONTRACT_SESSION_REQUIRED'
@@ -1123,14 +1153,14 @@ Describe 'Execution contract continuity' {
 
     $resolved = Invoke-Contract @('-Action','Resolve','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey','new-root-session','-StateRoot',$stateRoot,'-Json')
     $guard = Invoke-Contract @('-Action','Guard','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey','new-root-session','-ProposedWorkId','legacy-line','-StateRoot',$stateRoot,'-Json')
-    $oldThreadId = $env:CODEX_THREAD_ID
+    $oldThreadId = $env:SUPER_BRAIN_LOCAL_SESSION_ID
     try {
-      Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue
+      Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue
       $noKeyResolve = Invoke-Contract @('-Action','Resolve','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-StateRoot',$stateRoot,'-Json')
       $noKeyGuard = Invoke-Contract @('-Action','Guard','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-ProposedWorkId','legacy-line','-StateRoot',$stateRoot,'-Json')
       $noKeyGet = Invoke-Contract @('-Action','Get','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-StateRoot',$stateRoot,'-Json')
     } finally {
-      if ($null -eq $oldThreadId) { Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $oldThreadId }
+      if ($null -eq $oldThreadId) { Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $oldThreadId }
     }
 
     $resolved.exitCode | Should Be 0
@@ -1294,12 +1324,12 @@ Describe 'Execution contract continuity' {
     $unboundResolve.value.actionAuthorization | Should Be 'withheld'
     $unboundResolve.text.Contains($visibleBypass) | Should Be $false
 
-    $oldThreadId = $env:CODEX_THREAD_ID
+    $oldThreadId = $env:SUPER_BRAIN_LOCAL_SESSION_ID
     try {
-      Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue
+      Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue
       $missingSession = Invoke-Contract @('-Action','Resolve','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-VisibleUserInstruction','continue owned line','-VisibleAssistantCommitment',$visibleBypass,'-StateRoot',$stateRoot,'-Json')
     } finally {
-      if ($null -eq $oldThreadId) { Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $oldThreadId }
+      if ($null -eq $oldThreadId) { Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $oldThreadId }
     }
     $missingSession.value.actionAuthorization | Should Be 'withheld'
     $missingSession.text.Contains($visibleBypass) | Should Be $false

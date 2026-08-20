@@ -8,7 +8,6 @@ introducing a worker, a second state store, or prompt persistence.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -21,8 +20,14 @@ from typing import Any
 
 from activation_receipt import canonical_hash, ensure_current
 from brain_context import canonical_hash as context_hash
-from brain_core import BrainCore, agent_identity
+from brain_core import (
+    TURN_RUNTIME_CONTEXT_SNAPSHOT_KEY,
+    TURN_RUNTIME_CONTEXT_SNAPSHOT_SCHEMA,
+    BrainCore,
+    agent_identity,
+)
 from capability_shadow_eval import shadow_gate_is_valid
+from continuation_policy import decide_turn_close
 from execution_assist import capability_route_receipt as execution_assist_capability_route_receipt
 from execution_assist import public_projection as public_execution_assist
 from execution_assist import project_knowledge_route_is_valid
@@ -33,7 +38,13 @@ from project_knowledge import receipt_is_valid as project_knowledge_receipt_is_v
 from project_knowledge import resolve_project_knowledge
 from run_observability import receipt_is_valid as run_observability_receipt_is_valid
 from run_observability import summarize_telemetry as summarize_run_observability
-from turn_close_dispatcher import _invoke_contract, dispatch_turn_close, record_progress_checkpoint
+from turn_close_dispatcher import (
+    _invoke_contract,
+    create_phase_closeout,
+    dispatch_turn_close,
+    is_formal_phase,
+    record_progress_checkpoint,
+)
 from turn_intent import public_projection as public_turn_intent
 from turn_intent import resolve_turn_intent
 
@@ -77,63 +88,7 @@ CAPABILITY_ROUTE_COMPATIBILITY_FIELDS = {
     "rawTranscriptStored",
     "payloadHash",
 }
-VISIBLE_TAIL_ASSERTION_SCHEMA_V2 = "super-brain.visible-tail-observation.v2"
-VISIBLE_TAIL_ASSERTION_SCHEMA_V3 = "super-brain.visible-tail-observation.v3"
-VISIBLE_TAIL_ASSERTION_SCHEMA_V4 = "super-brain.visible-tail-observation.v4"
-VISIBLE_TAIL_ASSERTION_PAYLOAD_PARSE_INVALID = "H7_VISIBLE_TAIL_ASSERTION_PAYLOAD_PARSE_INVALID"
-VISIBLE_TAIL_ASSERTION_FIELDS_V2 = {
-    "schema",
-    "observation_source",
-    "selection",
-    "host_thread_id",
-    "host_turn_id",
-    "host_message_id",
-    "message_phase",
-    "last_confirmed_sentence",
-    "source",
-    "raw_prompt_stored",
-    "raw_transcript_stored",
-}
-VISIBLE_TAIL_ASSERTION_FIELDS_V3 = VISIBLE_TAIL_ASSERTION_FIELDS_V2 | {"publication_kind"}
-VISIBLE_TAIL_ASSERTION_FIELDS_V4_BASE = VISIBLE_TAIL_ASSERTION_FIELDS_V3 | {"envelope_version"}
-VISIBLE_TAIL_ASSERTION_FIELDS_V4_DURABLE = VISIBLE_TAIL_ASSERTION_FIELDS_V4_BASE | {"h7_receipt_hash"}
-VISIBLE_TAIL_OBSERVATION_SOURCE = "codex_app_read_thread"
-VISIBLE_TAIL_OBSERVATION_SOURCES = {
-    VISIBLE_TAIL_OBSERVATION_SOURCE,
-    "codex_visible_context",
-}
-VISIBLE_TAIL_VISIBLE_CONTEXT_SOURCE = "codex_visible_context"
-# Normal same-workline tail observation.  It always means the newest actual
-# assistant message, never a backward scan for a nicer-looking old receipt.
-VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION = "current_visible_assistant"
-VISIBLE_TAIL_CONTINUATION_SELECTION = "latest_durable_assistant"
-# A mismatch-only diagnostic selector.  It cannot be used as the normal
-# visible-context path or as a silent repair input.
-VISIBLE_TAIL_AUTO_FINALIZE_SELECTION = "latest_assistant"
-VISIBLE_TAIL_CHECKPOINT_SELECTION = "latest_assistant"
-VISIBLE_TAIL_SELECTIONS = {
-    VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION,
-    VISIBLE_TAIL_CONTINUATION_SELECTION,
-    VISIBLE_TAIL_AUTO_FINALIZE_SELECTION,
-    VISIBLE_TAIL_CHECKPOINT_SELECTION,
-}
-VISIBLE_TAIL_HOST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
-VISIBLE_TAIL_MESSAGE_PHASES = {"commentary", "final"}
-VISIBLE_TAIL_PUBLICATION_KIND_DURABLE = "h7_durable_progress"
-VISIBLE_TAIL_PUBLICATION_KIND_LEGACY_WITHHELD = "legacy_h7_progress_withheld"
-VISIBLE_TAIL_PUBLICATION_KIND_UNCLASSIFIED = "unclassified_assistant_reply"
-VISIBLE_TAIL_ENVELOPE_VERSION_V4 = "v4"
-VISIBLE_TAIL_ENVELOPE_VERSION_LEGACY_V3 = "legacy_v3"
-VISIBLE_TAIL_ENVELOPE_VERSION_LEGACY_V2 = "legacy_v2"
-VISIBLE_TAIL_ENVELOPE_VERSION_NONE = "none"
-VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR = "durable_anchor"
-VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY = "display_only"
-VISIBLE_TAIL_ASSERTION_REQUIRED_INTENTS = {
-    "task_status",
-    "continuity",
-    "super_brain_issue_continuity",
-}
-RECOVERY_PRESENTATION_SCHEMA = "super-brain.recovery-presentation.v1"
+RECOVERY_PRESENTATION_SCHEMA = "super-brain.recovery-presentation.v3"
 RECOVERY_EVENTS = {
     "none",
     "compaction",
@@ -144,6 +99,11 @@ RECOVERY_EVENTS = {
     "user_correction",
     "parent_return",
 }
+
+# A close/checkpoint call may perform several internal ``open_turn`` reads.
+# Reuse is intentionally call-local and receipt-validated; no process/global
+# cache is allowed to become a continuation authority.
+ExecutionAssistBundle = tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, str]
 
 NORMAL_CONTINUITY_INTENTS = {
     "task_status",
@@ -184,416 +144,6 @@ def _strict_text(value: Any, *, maximum: int, pattern: re.Pattern[str]) -> str |
 
 def _strict_hash(value: Any) -> str | None:
     return _strict_text(value, maximum=64, pattern=CAPABILITY_SHA256_RE)
-
-
-def _strict_visible_text(value: Any, maximum: int) -> str | None:
-    if not isinstance(value, str) or not value or len(value) > maximum or value != value.strip():
-        return None
-    if "\n" in value or "\r" in value or any(ord(character) < 32 for character in value):
-        return None
-    return value
-
-
-def _normalize_visible_tail_assertion(value: Any) -> tuple[dict[str, Any] | None, str]:
-    """Validate one transient observation from Codex's current thread tail.
-
-    Raw Host ids are used only to prove the current scope and are never copied
-    into a receipt or telemetry event.  The public projection retains hashes.
-    """
-
-    if value is None:
-        return None, "H7_VISIBLE_TAIL_ASSERTION_REQUIRED"
-    if not isinstance(value, dict):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-    # ``host_visible_tail`` returns a transient helper result with one
-    # transport-status field (``ok: true``).  H7's durable input shape has no
-    # such field and remains exact-schema-only.  Accept this one wrapper only
-    # when it is an actual successful helper result, strip it once, and let the
-    # existing per-schema exact-field validation below reject every extra field.
-    # In particular, ``ok: false`` is never an observation and caller-invented
-    # fields cannot ride through the helper wrapper.
-    if "ok" in value:
-        if value.get("ok") is not True:
-            return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-        value = {key: item for key, item in value.items() if key != "ok"}
-    schema = str(value.get("schema", ""))
-    publication_kind = VISIBLE_TAIL_PUBLICATION_KIND_UNCLASSIFIED
-    envelope_version = VISIBLE_TAIL_ENVELOPE_VERSION_NONE
-    h7_receipt_hash = ""
-    if schema == VISIBLE_TAIL_ASSERTION_SCHEMA_V2:
-        if set(value) != VISIBLE_TAIL_ASSERTION_FIELDS_V2:
-            return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-        envelope_version = VISIBLE_TAIL_ENVELOPE_VERSION_LEGACY_V2
-    elif schema == VISIBLE_TAIL_ASSERTION_SCHEMA_V3:
-        if set(value) != VISIBLE_TAIL_ASSERTION_FIELDS_V3:
-            return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-        publication_kind = str(value.get("publication_kind", ""))
-        if publication_kind not in {
-            VISIBLE_TAIL_PUBLICATION_KIND_DURABLE,
-            VISIBLE_TAIL_PUBLICATION_KIND_UNCLASSIFIED,
-        }:
-            return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-        envelope_version = VISIBLE_TAIL_ENVELOPE_VERSION_LEGACY_V3
-    elif schema == VISIBLE_TAIL_ASSERTION_SCHEMA_V4:
-        publication_kind = str(value.get("publication_kind", ""))
-        envelope_version = str(value.get("envelope_version", ""))
-        if publication_kind == VISIBLE_TAIL_PUBLICATION_KIND_DURABLE:
-            if set(value) != VISIBLE_TAIL_ASSERTION_FIELDS_V4_DURABLE:
-                return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-            h7_receipt_hash = _strict_hash(value.get("h7_receipt_hash")) or ""
-            if envelope_version != VISIBLE_TAIL_ENVELOPE_VERSION_V4 or not h7_receipt_hash:
-                return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-        elif publication_kind in {
-            VISIBLE_TAIL_PUBLICATION_KIND_LEGACY_WITHHELD,
-            VISIBLE_TAIL_PUBLICATION_KIND_UNCLASSIFIED,
-        }:
-            if set(value) != VISIBLE_TAIL_ASSERTION_FIELDS_V4_BASE:
-                return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-            expected_version = (
-                VISIBLE_TAIL_ENVELOPE_VERSION_LEGACY_V3
-                if publication_kind == VISIBLE_TAIL_PUBLICATION_KIND_LEGACY_WITHHELD
-                else VISIBLE_TAIL_ENVELOPE_VERSION_NONE
-            )
-            if envelope_version != expected_version:
-                return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-        else:
-            return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-    else:
-        return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-    observation_source = str(value.get("observation_source", ""))
-    selection = str(value.get("selection", ""))
-    host_thread_id = _strict_text(value.get("host_thread_id"), maximum=200, pattern=VISIBLE_TAIL_HOST_ID_RE)
-    host_turn_id = _strict_text(value.get("host_turn_id"), maximum=200, pattern=VISIBLE_TAIL_HOST_ID_RE)
-    host_message_id = _strict_text(value.get("host_message_id"), maximum=200, pattern=VISIBLE_TAIL_HOST_ID_RE)
-    message_phase = str(value.get("message_phase", ""))
-    sentence = _strict_visible_text(value.get("last_confirmed_sentence"), 320)
-    source = str(value.get("source", ""))
-    if (
-        observation_source not in VISIBLE_TAIL_OBSERVATION_SOURCES
-        or selection not in VISIBLE_TAIL_SELECTIONS
-        or host_thread_id is None
-        or host_turn_id is None
-        or host_message_id is None
-        or message_phase not in VISIBLE_TAIL_MESSAGE_PHASES
-        or sentence is None
-        or source != "assistant_visible_reply"
-        or value.get("raw_prompt_stored") is not False
-        or value.get("raw_transcript_stored") is not False
-    ):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_INVALID"
-    normalized = {
-        "schema": schema,
-        "observationSource": observation_source,
-        "selection": selection,
-        "hostThreadId": host_thread_id,
-        "hostTurnId": host_turn_id,
-        "hostMessageId": host_message_id,
-        "messagePhase": message_phase,
-        "lastConfirmedSentence": sentence,
-        "source": source,
-        "publicationKind": publication_kind,
-        "envelopeVersion": envelope_version,
-        "h7ReceiptHash": h7_receipt_hash,
-        "rawPromptStored": False,
-        "rawTranscriptStored": False,
-    }
-    normalized["payloadHash"] = canonical_hash(normalized)
-    return normalized, "H7_VISIBLE_TAIL_ASSERTION_CURRENT"
-
-
-def _public_visible_tail_assertion(value: dict[str, Any] | None) -> dict[str, Any]:
-    assertion = value if isinstance(value, dict) else {}
-    if not assertion:
-        return {
-            "state": "withheld",
-            "code": "H7_VISIBLE_TAIL_ASSERTION_REQUIRED",
-            "rawPromptStored": False,
-            "rawTranscriptStored": False,
-        }
-    continuation_role = str(assertion.get("continuationRole", ""))
-    if continuation_role not in {
-        VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR,
-        VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY,
-    }:
-        continuation_role = (
-            VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR
-            if _is_v4_durable_progress(assertion)
-            else VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY
-        )
-    display_only = continuation_role == VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY
-    return {
-        "state": "observed_display_only" if display_only else "current",
-        "code": "H7_VISIBLE_TAIL_DISPLAY_ONLY_CURRENT" if display_only else "H7_VISIBLE_TAIL_ASSERTION_CURRENT",
-        "observationSource": str(assertion.get("observationSource", "")),
-        "selection": str(assertion.get("selection", "")),
-        "messagePhase": str(assertion.get("messagePhase", "")),
-        "publicationKind": str(assertion.get("publicationKind", "")),
-        "envelopeVersion": str(assertion.get("envelopeVersion", "")),
-        "continuationRole": continuation_role,
-        "nonAuthorizing": display_only,
-        "h7ReceiptHash": str(assertion.get("h7ReceiptHash", "")),
-        "hostThreadHash": hashlib.sha256(str(assertion.get("hostThreadId", "")).encode("utf-8")).hexdigest(),
-        "hostTurnHash": hashlib.sha256(str(assertion.get("hostTurnId", "")).encode("utf-8")).hexdigest(),
-        "hostMessageHash": hashlib.sha256(str(assertion.get("hostMessageId", "")).encode("utf-8")).hexdigest(),
-        "sentenceHash": hashlib.sha256(str(assertion.get("lastConfirmedSentence", "")).encode("utf-8")).hexdigest(),
-        "payloadHash": str(assertion.get("payloadHash", "")),
-        "rawPromptStored": False,
-        "rawTranscriptStored": False,
-    }
-
-
-def _is_v4_durable_progress(assertion: dict[str, Any]) -> bool:
-    """Return whether the Host observation is the strict, receipt-bound v4 envelope."""
-
-    return (
-        str(assertion.get("schema", "")) == VISIBLE_TAIL_ASSERTION_SCHEMA_V4
-        and str(assertion.get("publicationKind", "")) == VISIBLE_TAIL_PUBLICATION_KIND_DURABLE
-        and str(assertion.get("envelopeVersion", "")) == VISIBLE_TAIL_ENVELOPE_VERSION_V4
-        and _strict_hash(assertion.get("h7ReceiptHash")) is not None
-    )
-
-
-def _is_display_only_visible_tail(assertion: dict[str, Any]) -> bool:
-    """Return whether the latest current tail may be acknowledged, not promoted.
-
-    The Host must still prove that it observed this newest message.  An
-    unclassified message *or a retired loose-H7/v3-shaped marker* is visible
-    continuity evidence only when it is the current same-workline candidate.
-    Neither form has a v4 receipt binding, so neither may become an H7 progress
-    anchor, stage update, project proof, authorization, or contract mutation.
-    """
-
-    if (
-        str(assertion.get("schema", "")) != VISIBLE_TAIL_ASSERTION_SCHEMA_V4
-        or str(assertion.get("selection", "")) != VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION
-        or str(assertion.get("h7ReceiptHash", ""))
-    ):
-        return False
-    publication_kind = str(assertion.get("publicationKind", ""))
-    envelope_version = str(assertion.get("envelopeVersion", ""))
-    return (
-        publication_kind == VISIBLE_TAIL_PUBLICATION_KIND_UNCLASSIFIED
-        and envelope_version == VISIBLE_TAIL_ENVELOPE_VERSION_NONE
-    ) or (
-        publication_kind == VISIBLE_TAIL_PUBLICATION_KIND_LEGACY_WITHHELD
-        and envelope_version == VISIBLE_TAIL_ENVELOPE_VERSION_LEGACY_V3
-    )
-
-
-def _is_current_visible_tail(assertion: dict[str, Any]) -> bool:
-    """Return whether this is the exact newest same-workline Host candidate.
-
-    The normal continuation selector is independent from durability.  A
-    receipt-bound v4 message and ordinary/legacy visible prose can both be
-    the latest actual assistant reply; only the former can prove a formal
-    phase, completion, or high-impact action.  This small predicate keeps
-    that split explicit and prevents a stale contract receipt from deciding
-    what the user just saw.
-    """
-
-    return (
-        str(assertion.get("schema", "")) == VISIBLE_TAIL_ASSERTION_SCHEMA_V4
-        and str(assertion.get("selection", "")) == VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION
-        and str(assertion.get("publicationKind", ""))
-        in {
-            VISIBLE_TAIL_PUBLICATION_KIND_DURABLE,
-            VISIBLE_TAIL_PUBLICATION_KIND_LEGACY_WITHHELD,
-            VISIBLE_TAIL_PUBLICATION_KIND_UNCLASSIFIED,
-        }
-    )
-
-
-def _matches_current_visible_receipt(task: dict[str, Any], assertion: dict[str, Any]) -> bool:
-    """Bind a Host v4 envelope to H7's stable visible-progress receipt hash."""
-
-    visible = task.get("visibleProgress") if isinstance(task.get("visibleProgress"), dict) else {}
-    return (
-        _is_v4_durable_progress(assertion)
-        and str(assertion.get("h7ReceiptHash", "")) == str(visible.get("payloadHash", ""))
-        and bool(str(visible.get("payloadHash", "")))
-    )
-
-
-def _visible_tail_assertion_status(
-    core: BrainCore,
-    context: dict[str, Any],
-    assertion: dict[str, Any],
-    *,
-    allow_display_only: bool = False,
-) -> tuple[dict[str, Any] | None, str]:
-    task = context.get("task") if isinstance(context.get("task"), dict) else {}
-    selection = str(assertion.get("selection", ""))
-    if selection not in {
-        VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION,
-        VISIBLE_TAIL_CONTINUATION_SELECTION,
-        VISIBLE_TAIL_AUTO_FINALIZE_SELECTION,
-    }:
-        return None, "H7_VISIBLE_TAIL_ASSERTION_SELECTION_INVALID"
-    if not _visible_tail_assertion_matches_scope(core, context, assertion):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_SCOPE_MISMATCH"
-    # The newest ordinary assistant commentary is visible state, but not task
-    # progress.  On the uninterrupted same workline, acknowledge it as a
-    # display-only readback so H7 never silently walks backward to an older
-    # v4 receipt.  It intentionally cannot provide a sentence, phase, step,
-    # action, receipt binding, or authorization for the continuation.
-    if allow_display_only and _is_display_only_visible_tail(assertion):
-        bound = {
-            **assertion,
-            "continuationRole": VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY,
-            "currentPhase": str(task.get("currentPhase", "")),
-            "currentStep": str(task.get("currentStep", "")),
-            "nextAction": str(task.get("nextAction", "")),
-        }
-        bound["payloadHash"] = canonical_hash({key: value for key, value in bound.items() if key != "payloadHash"})
-        return bound, "H7_VISIBLE_TAIL_DISPLAY_ONLY_CURRENT"
-    # A normal anchor and the emergency fallback both begin with exactly the
-    # same durable publication contract.  The selector only determines which
-    # code path may use it; v2/v3/loose G1 text are observable for diagnosis
-    # but cannot become a normal anchor or an auto-finalization input.
-    if not _is_v4_durable_progress(assertion):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_V4_DURABLE_PROGRESS_REQUIRED"
-    if not _matches_current_visible_receipt(task, assertion):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_RECEIPT_HASH_MISMATCH"
-    if (
-        str(assertion.get("lastConfirmedSentence", "")) != str(task.get("lastConfirmedSentence", ""))
-        or str(assertion.get("source", "")) != str(task.get("lastConfirmedSource", ""))
-    ):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_MISMATCH"
-    bound = {
-        **assertion,
-        "continuationRole": VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR,
-        "currentPhase": str(task.get("currentPhase", "")),
-        "currentStep": str(task.get("currentStep", "")),
-        "nextAction": str(task.get("nextAction", "")),
-    }
-    bound["payloadHash"] = canonical_hash({key: value for key, value in bound.items() if key != "payloadHash"})
-    public = _public_visible_tail_assertion(bound)
-    visible = task.get("visibleProgress") if isinstance(task.get("visibleProgress"), dict) else {}
-    if str(public.get("sentenceHash", "")) != str(visible.get("sentenceHash", "")):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_MISMATCH"
-    return bound, "H7_VISIBLE_TAIL_ASSERTION_CURRENT"
-
-
-def _visible_tail_assertion_matches_scope(
-    core: BrainCore,
-    context: dict[str, Any],
-    assertion: dict[str, Any],
-) -> bool:
-    """Return whether a normalized Host observation belongs to this H7 scope.
-
-    This deliberately checks only Host/session ownership.  Text binding stays
-    separate so a newer observed reply can block a stale walk-back without
-    treating caller-provided stage fields as authoritative.
-    """
-
-    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
-    return core._session_key_from_host_thread(str(assertion.get("hostThreadId", ""))) == str(
-        scope.get("ownerSessionKey", "")
-    )
-
-
-def _auto_finalize_observed_visible_tail(
-    core: BrainCore,
-    context: dict[str, Any],
-    contract: dict[str, Any],
-    assertion: dict[str, Any],
-    *,
-    project_progress_status: dict[str, Any] | None = None,
-    user_control: str = "unknown",
-    timeout: float = 8.0,
-) -> tuple[dict[str, Any] | None, str]:
-    """Validate the emergency drift fallback without mutating H7 state.
-
-    A newer v4-looking message must block a walk-back to an older receipt, but
-    its text is not execution authority.  This function verifies enough to
-    distinguish a genuine scope-bound drift signal from an unrelated message,
-    then requires the explicit correction checkpoint and a fresh publication.
-    """
-
-    task = context.get("task") if isinstance(context.get("task"), dict) else {}
-    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
-    if str(assertion.get("selection", "")) != VISIBLE_TAIL_AUTO_FINALIZE_SELECTION:
-        return None, "H7_VISIBLE_TAIL_ASSERTION_SELECTION_INVALID"
-    if not _visible_tail_assertion_matches_scope(core, context, assertion):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_SCOPE_MISMATCH"
-    if not _is_v4_durable_progress(assertion):
-        return None, "H7_VISIBLE_TAIL_AUTOFINALIZE_V4_DURABLE_PUBLICATION_REQUIRED"
-    if not _matches_current_visible_receipt(task, assertion):
-        return None, "H7_VISIBLE_TAIL_AUTOFINALIZE_RECEIPT_HASH_MISMATCH"
-    if str(user_control or "unknown") in {"stop", "replace"}:
-        return None, "H7_VISIBLE_TAIL_ASSERTION_MISMATCH"
-    if (
-        str(assertion.get("lastConfirmedSentence", "")) == str(task.get("lastConfirmedSentence", ""))
-        and str(assertion.get("source", "")) == str(task.get("lastConfirmedSource", ""))
-    ):
-        return {
-            "state": "not_required",
-            "code": "H7_VISIBLE_TAIL_AUTOFINALIZE_NOT_REQUIRED",
-            "rawPromptStored": False,
-            "rawTranscriptStored": False,
-        }, "H7_VISIBLE_TAIL_AUTOFINALIZE_NOT_REQUIRED"
-
-    # A v4 envelope proves only that the Host observed a bounded assistant
-    # message after the *previous* H7 receipt.  It does not pre-authorize a
-    # different sentence.  Automatically writing that sentence would let an
-    # accidental or stale-but-well-formed envelope mutate the continuation
-    # anchor.  Detection remains useful as a fast fallback, but repair now
-    # requires the explicit H7 correction checkpoint, which rebinds the exact
-    # Host sentence and current project proof before a fresh v4 publication.
-    del core, contract, project_progress_status, scope, timeout
-    return None, "H7_VISIBLE_TAIL_EXPLICIT_RECONCILIATION_REQUIRED"
-
-
-def _checkpoint_visible_tail_assertion_status(
-    core: BrainCore,
-    context: dict[str, Any],
-    assertion: dict[str, Any],
-    progress_checkpoint: dict[str, Any] | None,
-    *,
-    allow_legacy_correction: bool = False,
-) -> tuple[dict[str, Any] | None, str]:
-    """Validate one post-publication correction before it can replace H7 state.
-
-    A normal checkpoint is prepared before its response is shown, so it cannot
-    carry a Host observation yet.  A repair after a visible-tail mismatch is
-    different: its candidate must be the actual latest Host observation and
-    must exactly match the sentence being written.  This prevents a model from
-    silently replacing a stale anchor with a guessed progress sentence.
-    """
-
-    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
-    if str(assertion.get("selection", "")) != VISIBLE_TAIL_CHECKPOINT_SELECTION:
-        return None, "H7_VISIBLE_TAIL_ASSERTION_SELECTION_INVALID"
-    if core._session_key_from_host_thread(str(assertion.get("hostThreadId", ""))) != str(scope.get("ownerSessionKey", "")):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_SCOPE_MISMATCH"
-    task = context.get("task") if isinstance(context.get("task"), dict) else {}
-    if _is_v4_durable_progress(assertion):
-        if not _matches_current_visible_receipt(task, assertion):
-            return None, "H7_VISIBLE_TAIL_ASSERTION_RECEIPT_HASH_MISMATCH"
-    elif not allow_legacy_correction:
-        return None, "H7_VISIBLE_TAIL_ASSERTION_V4_DURABLE_PROGRESS_REQUIRED"
-    checkpoint = progress_checkpoint if isinstance(progress_checkpoint, dict) else {}
-    sentence = _strict_visible_text(checkpoint.get("last_confirmed_sentence"), 320)
-    phase = _strict_visible_text(checkpoint.get("current_phase"), 120)
-    step = _strict_visible_text(checkpoint.get("current_step"), 220)
-    action = _strict_visible_text(checkpoint.get("next_action"), 360)
-    if (
-        sentence is None
-        or phase is None
-        or step is None
-        or action is None
-        or checkpoint.get("source") != "assistant_visible_reply"
-        or sentence != str(assertion.get("lastConfirmedSentence", ""))
-    ):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_CHECKPOINT_MISMATCH"
-    bound = {
-        **assertion,
-        "currentPhase": phase,
-        "currentStep": step,
-        "nextAction": action,
-    }
-    bound["payloadHash"] = canonical_hash({key: value for key, value in bound.items() if key != "payloadHash"})
-    return bound, "H7_VISIBLE_TAIL_ASSERTION_CURRENT"
 
 
 def _parent_return_state_card(
@@ -656,16 +206,11 @@ def _parent_return_state_card(
 
 
 def _recovery_presentation(
-    assertion: dict[str, Any] | None,
     recovery_event: str,
     parent_return_state_card: dict[str, Any] | None = None,
+    continuity_mapping: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Build the exact, event-bound first recovery line for the Host.
-
-    The full line is returned only in the transient runtime response.  The
-    durable H7 receipt stores hashes through ``_public_recovery_presentation``
-    so a compact progress sentence never becomes a prompt/transcript channel.
-    """
+    """Build one compact event-bound projection from local state only."""
 
     if recovery_event not in RECOVERY_EVENTS:
         return None, "H7_RECOVERY_EVENT_INVALID"
@@ -677,64 +222,67 @@ def _recovery_presentation(
             "event": recovery_event,
             "required": False,
             "openingLine": "",
+            "presentationKind": "suppressed",
+            "localOnly": True,
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
         return {**body, "payloadHash": canonical_hash(body)}, "H7_RECOVERY_PRESENTATION_SUPPRESSED"
-    display_only = False
     if recovery_event == "parent_return":
         card = parent_return_state_card if isinstance(parent_return_state_card, dict) else {}
         if str(card.get("state", "")) != "current":
             return None, "H7_PARENT_RETURN_STATE_CARD_REQUIRED"
         source = str(card.get("source", ""))
-        sentence = str(card.get("lastConfirmedSentence", ""))
         phase = str(card.get("currentPhase", ""))
         step = str(card.get("currentStep", ""))
         action = str(card.get("nextAction", ""))
+        mapped = card
     else:
-        if not isinstance(assertion, dict):
-            return None, "H7_VISIBLE_TAIL_ASSERTION_REQUIRED"
-        source = str(assertion.get("source", ""))
-        sentence = str(assertion.get("lastConfirmedSentence", ""))
-        phase = str(assertion.get("currentPhase", ""))
-        step = str(assertion.get("currentStep", ""))
-        action = str(assertion.get("nextAction", ""))
-        display_only = (
-            str(assertion.get("continuationRole", ""))
-            == VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY
-        )
+        mapped = continuity_mapping if isinstance(continuity_mapping, dict) else {}
+        if (
+            str(mapped.get("state", "")) != "local_contract_current"
+            or str(mapped.get("source", "")) != "scoped_local_contract"
+            or mapped.get("visibleContextAvailable") is not False
+            or mapped.get("stateCardUsed") is not False
+        ):
+            return None, "H7_LOCAL_CONTRACT_RECOVERY_REQUIRED"
+        source = "scoped_local_contract"
+        phase = str(mapped.get("currentPhase", ""))
+        step = str(mapped.get("currentStep", ""))
+        action = str(mapped.get("nextAction", ""))
+    phase = str(mapped.get("currentPhase") or phase)
+    step = str(mapped.get("currentStep") or step)
+    action = str(mapped.get("nextAction") or action)
+    if not phase or not step or not action:
+        return None, "H7_RECOVERY_MAPPED_PROGRESS_REQUIRED"
+    presentation_line = "\u672c\u5730\u6267\u884c\u5951\u7ea6\uff1a\u8fdb\u5ea6\uff1a{}\uff5c\u5f53\u524d\uff1a{}\uff5c\u4e0b\u4e00\u6b65\uff1a{}".format(
+        phase,
+        step,
+        action,
+    )
     body = {
         "schema": RECOVERY_PRESENTATION_SCHEMA,
-        # A boundary must acknowledge the current visible assistant tail even
-        # when it is ordinary prose.  That acknowledgement is explicitly
-        # non-authorizing: its sentence cannot replace the H7 durable
-        # progress receipt, phase, proof, or action.
-        "state": "display_only" if display_only else "current",
-        "code": (
-            "H7_RECOVERY_PRESENTATION_DISPLAY_ONLY_CURRENT"
-            if display_only
-            else "H7_RECOVERY_PRESENTATION_CURRENT"
-        ),
+        "state": "current",
+        "code": "H7_LOCAL_RECOVERY_PRESENTATION_CURRENT",
         "event": recovery_event,
         "required": True,
-        "openingLine": "已接上：" + sentence,
-        "lastConfirmedSentence": sentence,
+        "openingLine": presentation_line,
+        "presentationKind": "local_contract_projection",
         "source": source,
         "currentPhase": phase,
         "currentStep": step,
         "nextAction": action,
-        "nonAuthorizing": display_only,
-        "hostVisibleReadback": True,
+        "nonAuthorizing": True,
+        "localOnly": True,
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
-    return {**body, "payloadHash": canonical_hash(body)}, "H7_RECOVERY_PRESENTATION_CURRENT"
+    return {**body, "payloadHash": canonical_hash(body)}, "H7_LOCAL_RECOVERY_PRESENTATION_CURRENT"
 
 
 def _public_recovery_presentation(value: dict[str, Any] | None) -> dict[str, Any]:
     presentation = value if isinstance(value, dict) else {}
     opening_line = str(presentation.get("openingLine", ""))
-    sentence = str(presentation.get("lastConfirmedSentence", ""))
     return {
         "schema": RECOVERY_PRESENTATION_SCHEMA,
         "state": str(presentation.get("state", "withheld")),
@@ -742,9 +290,9 @@ def _public_recovery_presentation(value: dict[str, Any] | None) -> dict[str, Any
         "event": str(presentation.get("event", "")),
         "required": bool(presentation.get("required") is True),
         "nonAuthorizing": bool(presentation.get("nonAuthorizing") is True),
-        "hostVisibleReadback": bool(presentation.get("hostVisibleReadback") is True),
+        "localOnly": bool(presentation.get("localOnly") is True),
+        "presentationKind": str(presentation.get("presentationKind", "")),
         "openingLineHash": hashlib.sha256(opening_line.encode("utf-8")).hexdigest() if opening_line else "",
-        "sentenceHash": hashlib.sha256(sentence.encode("utf-8")).hexdigest() if sentence else "",
         "payloadHash": str(presentation.get("payloadHash", "")),
         "rawPromptStored": False,
         "rawTranscriptStored": False,
@@ -988,6 +536,30 @@ def _resolve_execution_assist_for_turn(
     return execution_assist, route_receipt, compatibility, "H7_EXECUTION_ASSIST_CURRENT"
 
 
+def _validated_execution_assist_bundle(value: Any) -> ExecutionAssistBundle | None:
+    """Accept only a receipt bundle produced earlier in this same call.
+
+    The bundle is an internal latency optimization, not caller-supplied
+    continuation state.  Every component is rechecked before reuse, and an
+    invalid value simply falls back to the normal resolver.
+    """
+
+    if not isinstance(value, (tuple, list)) or len(value) != 4:
+        return None
+    execution_assist, route_receipt, compatibility, code = value
+    if not isinstance(execution_assist, dict) or not execution_assist_receipt_is_valid(execution_assist):
+        return None
+    if not isinstance(route_receipt, dict) or not _capability_route_receipt_valid(route_receipt):
+        return None
+    if compatibility is not None and (
+        not isinstance(compatibility, dict) or not _external_capability_route_compatibility_valid(compatibility)
+    ):
+        return None
+    if not isinstance(code, str) or not code:
+        return None
+    return execution_assist, route_receipt, compatibility, code
+
+
 def _resolve_project_knowledge_for_turn(
     core: BrainCore,
     contract: dict[str, Any],
@@ -997,7 +569,7 @@ def _resolve_project_knowledge_for_turn(
     """Run the H7-native proof slice only after scope and proof are current.
 
     The execution-assist receipt contains no project path.  This bridge takes
-    the root exclusively from the already-bound Host scope and the focus files
+    the root exclusively from the already-bound local cwd scope and the focus files
     exclusively from the current H7 proof, so an ordinary continuation never
     turns into a tree scan or a user-controlled filesystem query.
     """
@@ -1060,130 +632,6 @@ def _telemetry_path(memory_base: Path, scope_ref: str) -> Path:
     return memory_base / "workspace" / "runtime-state" / "turn-runtime" / "telemetry" / f"{scope_ref}.json"
 
 
-def _visible_progress_observation(
-    context: dict[str, Any],
-    assertion: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Build one transient, non-authorizing visible-tail observation.
-
-    Normal same-workline continuity already has the current visible assistant
-    reply in hand.  Retaining a second durable readback card for every turn
-    made that synchronization artifact look like a competing continuation
-    authority.  The runtime receipt below is enough: it binds only hashes to
-    this one invocation and never writes a task/state card.
-    """
-
-    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
-    task = context.get("task") if isinstance(context.get("task"), dict) else {}
-    visible = task.get("visibleProgress") if isinstance(task.get("visibleProgress"), dict) else {}
-    scope_ref = str(scope.get("scopeRef", ""))
-    contract_hash = str(task.get("contractHash", ""))
-    visible_receipt_hash = str(visible.get("payloadHash", ""))
-    sentence_hash = str(visible.get("sentenceHash", ""))
-    try:
-        contract_revision = int(task.get("contractRevision", 0) or 0)
-    except (TypeError, ValueError):
-        return None
-    continuation_role = str(assertion.get("continuationRole", ""))
-    if continuation_role not in {
-        VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR,
-        VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY,
-    }:
-        return None
-    # A durable v4 anchor must carry the scope-bound visible-progress receipt
-    # and sentence hashes.  Ordinary current-tail prose is a different class:
-    # it is a transient, non-authorizing locator and remains valid while the
-    # durable receipt is withheld (for example immediately after entering a
-    # new stage).  Requiring the old durable hashes here would turn a correct
-    # display-only observation into an unrelated input-invalid blocker.
-    if (
-        not scope_ref
-        or not _strict_hash(contract_hash)
-        or contract_revision < 1
-        or (
-            continuation_role == VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR
-            and (
-                not _strict_hash(visible_receipt_hash)
-                or not _strict_hash(sentence_hash)
-            )
-        )
-    ):
-        return None
-    if continuation_role == VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR:
-        if str(assertion.get("lastConfirmedSentence", "")) != str(task.get("lastConfirmedSentence", "")):
-            return None
-    elif not _is_display_only_visible_tail(assertion):
-        return None
-    body = {
-        "schema": "super-brain.visible-progress-observation.v1",
-        "scopeRef": scope_ref,
-        "contractHash": contract_hash,
-        "contractRevision": contract_revision,
-        # ``visibleProgressReceiptHash`` / ``sentenceHash`` bind the durable
-        # task-progress authority.  A display-only tail is deliberately kept
-        # separate: it proves which *newest visible message* H7 observed but
-        # cannot make that ordinary prose look like the durable progress
-        # sentence in a readback consumer.
-        "visibleProgressReceiptHash": visible_receipt_hash,
-        "sentenceHash": sentence_hash,
-        "displaySentenceHash": (
-            hashlib.sha256(str(assertion.get("lastConfirmedSentence", "")).encode("utf-8")).hexdigest()
-            if continuation_role == VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY
-            else ""
-        ),
-        "hostThreadHash": hashlib.sha256(str(assertion.get("hostThreadId", "")).encode("utf-8")).hexdigest(),
-        "hostTurnHash": hashlib.sha256(str(assertion.get("hostTurnId", "")).encode("utf-8")).hexdigest(),
-        "hostMessageHash": hashlib.sha256(str(assertion.get("hostMessageId", "")).encode("utf-8")).hexdigest(),
-        "observationSource": str(assertion.get("observationSource", "")),
-        "selection": str(assertion.get("selection", "")),
-        "continuationRole": continuation_role,
-        "tailAssertionHash": str(assertion.get("payloadHash", "")),
-        "rawPromptStored": False,
-        "rawTranscriptStored": False,
-    }
-    if (
-        body["observationSource"] not in VISIBLE_TAIL_OBSERVATION_SOURCES
-        or body["selection"] not in VISIBLE_TAIL_SELECTIONS
-        or body["continuationRole"] not in {
-            VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR,
-            VISIBLE_TAIL_CONTINUATION_ROLE_DISPLAY_ONLY,
-        }
-        or not _strict_hash(str(body["tailAssertionHash"]))
-    ):
-        return None
-    body["payloadHash"] = canonical_hash(body)
-    return body
-
-
-def _public_visible_progress_observation(value: dict[str, Any] | None) -> dict[str, Any]:
-    observation = value if isinstance(value, dict) else {}
-    if not observation:
-        return {
-            "state": "withheld",
-            "code": "H7_VISIBLE_PROGRESS_OBSERVATION_REQUIRED",
-            "rawPromptStored": False,
-            "rawTranscriptStored": False,
-        }
-    return {
-        "schema": "super-brain.visible-progress-observation.v1",
-        "state": "observed",
-        "code": "H7_VISIBLE_PROGRESS_OBSERVATION_CURRENT",
-        "contractRevision": int(observation.get("contractRevision", 0) or 0),
-        "visibleProgressReceiptHash": str(observation.get("visibleProgressReceiptHash", "")),
-        "sentenceHash": str(observation.get("sentenceHash", "")),
-        "displaySentenceHash": str(observation.get("displaySentenceHash", "")),
-        "hostThreadHash": str(observation.get("hostThreadHash", "")),
-        "hostTurnHash": str(observation.get("hostTurnHash", "")),
-        "hostMessageHash": str(observation.get("hostMessageHash", "")),
-        "observationSource": str(observation.get("observationSource", "")),
-        "selection": str(observation.get("selection", "")),
-        "continuationRole": str(observation.get("continuationRole", "")),
-        "payloadHash": str(observation.get("payloadHash", "")),
-        "rawPromptStored": False,
-        "rawTranscriptStored": False,
-    }
-
-
 def _refs(typed_memory: Any) -> list[str]:
     if not isinstance(typed_memory, dict):
         return []
@@ -1202,7 +650,76 @@ def _refs(typed_memory: Any) -> list[str]:
     return result[:8]
 
 
-def _contract_binding(core: BrainCore, context: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+def _take_context_turn_runtime_snapshot(context: dict[str, Any]) -> dict[str, Any] | None:
+    """Take and validate the one-call private context snapshot.
+
+    The key is popped before any caller can return ``context`` publicly.  A
+    malformed or mismatched snapshot is only an optimization miss: the normal
+    fresh binding/proof path remains the safe fallback.
+    """
+
+    snapshot = context.pop(TURN_RUNTIME_CONTEXT_SNAPSHOT_KEY, None)
+    if not isinstance(snapshot, dict) or snapshot.get("schema") != TURN_RUNTIME_CONTEXT_SNAPSHOT_SCHEMA:
+        return None
+    contract = snapshot.get("contract")
+    task = context.get("task") if isinstance(context.get("task"), dict) else {}
+    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
+    progress_status = snapshot.get("projectProgressStatus")
+    project_progress = task.get("projectProgress") if isinstance(task.get("projectProgress"), dict) else {}
+    if not isinstance(contract, dict) or not isinstance(progress_status, dict):
+        return None
+    try:
+        contract_revision = int(contract.get("revision", -1))
+        snapshot_revision = int(snapshot.get("contractRevision", -2))
+        task_revision = int(task.get("contractRevision", -3))
+    except (TypeError, ValueError):
+        return None
+    contract_hash = context_hash(contract)
+    identity_matches = (
+        str(contract.get("taskId", "")) == str(task.get("taskId", ""))
+        and str(contract.get("taskInstanceId", "")) == str(task.get("taskInstanceId", ""))
+        and str(contract.get("workspaceKey", "")).lower() == str(scope.get("workspaceKey", "")).lower()
+        and str(contract.get("ownerSessionKey", "")).lower() == str(scope.get("ownerSessionKey", "")).lower()
+    )
+    proof_matches = (
+        str(project_progress.get("state", "")) == str(progress_status.get("state", ""))
+        and str(project_progress.get("payloadHash", "")) == str(progress_status.get("payloadHash", ""))
+    )
+    if (
+        not identity_matches
+        or contract_revision != snapshot_revision
+        or contract_revision != task_revision
+        or not contract_hash
+        or contract_hash != str(snapshot.get("contractHash", ""))
+        or contract_hash != str(task.get("contractHash", ""))
+        or not proof_matches
+    ):
+        return None
+    return {
+        "contract": contract,
+        "projectProgressStatus": progress_status,
+    }
+
+
+def _contract_binding(
+    core: BrainCore,
+    context: dict[str, Any],
+    *,
+    allow_reconciliation_checkpoint: bool = False,
+    private_context_snapshot: dict[str, Any] | None = None,
+    terminal_finalization_phase: str = "",
+) -> tuple[dict[str, Any] | None, str]:
+    # A private snapshot is issued only by this call's immediately preceding
+    # ``core.context`` read on the normal read-only continuity path.  All
+    # checkpoint, close, formal, recovery, and rebind paths leave it absent
+    # and retain the existing fresh authority read below.
+    snapshot_contract = (
+        private_context_snapshot.get("contract")
+        if isinstance(private_context_snapshot, dict)
+        else None
+    )
+    if isinstance(snapshot_contract, dict):
+        return snapshot_contract, "TURN_RUNTIME_CONTRACT_CURRENT_FROM_CONTEXT_SNAPSHOT"
     scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
     workspace = str(scope.get("workspaceKey", ""))
     session = str(scope.get("ownerSessionKey", ""))
@@ -1215,6 +732,8 @@ def _contract_binding(core: BrainCore, context: dict[str, Any]) -> tuple[dict[st
         workspace,
         session,
         allow_terminal_finalization=terminal_finalization,
+        allow_reconciliation_checkpoint=allow_reconciliation_checkpoint,
+        terminal_finalization_phase=terminal_finalization_phase,
     )
     if not isinstance(contract, dict):
         return None, code or "TURN_RUNTIME_CONTRACT_UNAVAILABLE"
@@ -1236,7 +755,7 @@ def _resolve_action_authorization(
 
     ``BrainCore.context`` is deliberately a read-side projection and keeps
     executable actions withheld.  A material memory/task-card write needs one
-    explicit authority read after current-tail mapping; otherwise activation
+    explicit authority read after local contract/proof binding; otherwise activation
     can silently disagree with the contract (the old hard-coded ``withheld``
     defect).  Only bounded identity/hash fields are retained.
     """
@@ -1333,106 +852,6 @@ def _resolve_action_authorization(
         "rawTranscriptStored": False,
     }
     return safe_resolution
-
-
-def _rebind_contract_to_current_host_session(
-    core: BrainCore,
-    contract: dict[str, Any],
-    assertion: dict[str, Any],
-    *,
-    timeout: float,
-) -> tuple[dict[str, Any] | None, str]:
-    """CAS-rebind one unique contract after exact visible-tail proof.
-
-    A new Codex task receives a new Host thread id. H7 may transfer the one
-    unique recent contract in the same workspace only when the current Host
-    tail proves the exact latest assistant progress and the old contract's
-    project proof is still current. No summary, global pointer, memory entry,
-    or caller-supplied phase/step/action participates.
-    """
-
-    current_session = core._context_session_key()
-    workspace_key = core._context_workspace_key()
-    old_session = str(contract.get("ownerSessionKey", ""))
-    if (
-        not current_session
-        or not workspace_key
-        or not old_session
-        or current_session == old_session
-        or str(contract.get("workspaceKey", "")).lower() != workspace_key.lower()
-        or core._session_key_from_host_thread(str(assertion.get("hostThreadId", ""))) != current_session
-        # Tail-first normalizes the exact newest v4 observation to
-        # current_visible_assistant before this boundary rebind.  Keep the
-        # legacy strict selector compatible, but never accept drift-only
-        # latest_assistant here.
-        or str(assertion.get("selection", "")) not in {
-            VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION,
-            VISIBLE_TAIL_CONTINUATION_SELECTION,
-        }
-        or not _is_v4_durable_progress(assertion)
-        or str(assertion.get("h7ReceiptHash", ""))
-        != str((contract.get("visibleProgressReceipt") or {}).get("payloadHash", ""))
-        or str(assertion.get("lastConfirmedSentence", "")) != str(contract.get("lastConfirmedSentence", ""))
-        or str(contract.get("lastConfirmedSource", "")) != "assistant_visible_reply"
-    ):
-        return None, "H7_SESSION_REBIND_VISIBLE_PROGRESS_MISMATCH"
-    progress_status = core._project_progress_status(contract)
-    if progress_status.get("current") is not True:
-        return None, "H7_SESSION_REBIND_PROJECT_PROOF_WITHHELD"
-    progress = {
-        "source": "assistant_visible_reply",
-        "last_confirmed_sentence": str(contract.get("lastConfirmedSentence", "")),
-        "current_phase": str(contract.get("currentPhase", "")),
-        "current_step": str(contract.get("currentStep", "")),
-        "next_action": str(contract.get("nextAction", "")),
-    }
-    progress_base64 = base64.b64encode(
-        json.dumps(progress, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    code, rebound = _invoke_contract(
-        core.package_root,
-        core.memory_base,
-        action="Set",
-        task_id=str(contract.get("taskId", "")),
-        workspace_key=workspace_key,
-        session_key=current_session,
-        timeout=timeout,
-        extra=[
-            "-RebindSession",
-            "-FocusId", str(contract.get("focusId", "")),
-            "-InstructionMode", str(contract.get("instructionMode", "continue")),
-            "-CurrentPhase", str(contract.get("currentPhase", "")),
-            "-CurrentStep", str(contract.get("currentStep", "")),
-            "-NextAction", str(contract.get("nextAction", "")),
-            "-ProgressCheckpointBase64", progress_base64,
-            "-ExpectedRevision", str(int(contract.get("revision", 0) or 0)),
-            "-ExpectedPlanFingerprint", str((contract.get("planReceipt") or {}).get("planFingerprint", "")),
-            "-TransitionId", "h7-session-rebind-" + hashlib.sha256(
-                (str(contract.get("taskId", "")) + "|" + old_session + "|" + current_session).encode("utf-8")
-            ).hexdigest()[:24],
-            "-Source", "turn-runtime:verified-visible-tail-session-rebind",
-        ],
-    )
-    if code != 0 or not isinstance(rebound, dict) or rebound.get("ok") is not True:
-        return None, str((rebound or {}).get("code", "H7_SESSION_REBIND_FAILED"))
-    if (
-        str(rebound.get("ownerSessionKey", "")) != current_session
-        or str(rebound.get("taskInstanceId", "")) != str(contract.get("taskInstanceId", ""))
-        or str(rebound.get("lastConfirmedSentence", "")) != progress["last_confirmed_sentence"]
-        or str((rebound.get("projectProgressProof") or {}).get("payloadHash", ""))
-        != str((contract.get("projectProgressProof") or {}).get("payloadHash", ""))
-        or _strict_hash(str((rebound.get("visibleProgressReceipt") or {}).get("payloadHash", ""))) is None
-        or str((rebound.get("visibleProgressReceipt") or {}).get("payloadHash", ""))
-        == str(assertion.get("h7ReceiptHash", ""))
-    ):
-        return None, "H7_SESSION_REBIND_RESULT_INVALID"
-    # The contract mutation must rebuild the derived current-session index in
-    # the same handover.  A valid contract without this projection used to
-    # strand H7 after a hot update until an unrelated retry happened.
-    indexed, index_code = core._read_context_contract(workspace_key, current_session)
-    if not isinstance(indexed, dict) or str(indexed.get("taskInstanceId", "")) != str(rebound.get("taskInstanceId", "")):
-        return None, "H7_SESSION_REBIND_HOT_INDEX_REBUILD_REQUIRED:" + str(index_code)
-    return rebound, "H7_SESSION_REBOUND"
 
 
 def _activation(
@@ -1559,7 +978,6 @@ def _receipt_body(
     project_knowledge: dict[str, Any] | None = None,
     capability_route_receipt: dict[str, Any] | None = None,
     capability_route_compatibility: dict[str, Any] | None = None,
-    visible_tail_assertion: dict[str, Any] | None = None,
     recovery_presentation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scope = context["scope"]
@@ -1638,8 +1056,6 @@ def _receipt_body(
         "rawTranscriptStored": False,
         "rawCompletionEvidenceStored": False,
     }
-    if isinstance(visible_tail_assertion, dict) and visible_tail_assertion.get("state") == "current":
-        body["visibleTailAssertion"] = visible_tail_assertion
     if isinstance(recovery_presentation, dict):
         body["recoveryPresentation"] = _public_recovery_presentation(recovery_presentation)
     if isinstance(execution_assist, dict):
@@ -1714,8 +1130,6 @@ def _record_telemetry(
         "visibleProgressState": str((receipt.get("visibleProgress") or {}).get("state", "withheld")),
         "visibleProgressHash": str((receipt.get("visibleProgress") or {}).get("payloadHash", "")),
         "visibleProgressSentenceHash": str((receipt.get("visibleProgress") or {}).get("sentenceHash", "")),
-        "visibleTailAssertionHash": str((receipt.get("visibleTailAssertion") or {}).get("payloadHash", "")),
-        "visibleTailHostMessageHash": str((receipt.get("visibleTailAssertion") or {}).get("hostMessageHash", "")),
         "continuationCode": str((receipt.get("continuation") or {}).get("code", "")),
         "rawPromptStored": False,
         "rawTranscriptStored": False,
@@ -1796,7 +1210,6 @@ def _public_receipt(value: dict[str, Any]) -> dict[str, Any]:
         "turnIntent": value.get("turnIntent") if isinstance(value.get("turnIntent"), dict) else {},
         "progressTruth": value.get("progressTruth") if isinstance(value.get("progressTruth"), dict) else {},
         "visibleProgress": value.get("visibleProgress") if isinstance(value.get("visibleProgress"), dict) else {},
-        "visibleTailAssertion": value.get("visibleTailAssertion") if isinstance(value.get("visibleTailAssertion"), dict) else {},
         "recoveryPresentation": value.get("recoveryPresentation") if isinstance(value.get("recoveryPresentation"), dict) else {},
         "continuation": value.get("continuation") if isinstance(value.get("continuation"), dict) else {},
     }
@@ -1990,24 +1403,33 @@ def _withheld(phase: str, context: dict[str, Any], code: str) -> dict[str, Any]:
     }
 
 
-def visible_tail_assertion_payload_parse_invalid(phase: str) -> dict[str, Any]:
-    """Return the stable fail-closed result for a malformed CLI tail payload.
+_RETIRED_HOST_TRANSPORT_FIELDS = frozenset(
+    {
+        "host_readback_projection",
+        "host_thread_payload",
+        "host_visible_context",
+        "visible_progress_assertion",
+    }
+)
 
-    Transport decoding is distinct from H7 observation-schema validation.  The
-    CLI uses this small public adapter so Windows argument quoting, malformed
-    Base64, non-object JSON, and mutually supplied encodings do not masquerade
-    as a validly transported but schema-invalid Host observation.
-    """
 
-    return _withheld(
-        str(phase or "open"),
-        {},
-        VISIBLE_TAIL_ASSERTION_PAYLOAD_PARSE_INVALID,
+def _retired_host_transport_result(phase: str, **values: Any) -> dict[str, Any] | None:
+    """Reject legacy Host payloads without inspecting or normalizing them."""
+
+    supplied = sorted(
+        field
+        for field in _RETIRED_HOST_TRANSPORT_FIELDS
+        if values.get(field) is not None
     )
+    if not supplied:
+        return None
+    result = _withheld(phase, {}, "H7_HOST_TRANSPORT_RETIRED")
+    result["retiredInputs"] = supplied
+    return result
 
 
-def _public_tail_first_mapping(mapping: dict[str, Any] | None) -> dict[str, Any]:
-    """Return a compact non-sensitive continuation mapping projection.
+def _public_continuity_mapping(mapping: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a compact non-sensitive local continuity projection.
 
     It makes the normal continuation decision observable without leaking the
     visible reply, raw task id, workspace path, or a private contract body.
@@ -2018,8 +1440,8 @@ def _public_tail_first_mapping(mapping: dict[str, Any] | None) -> dict[str, Any]
     source_state = str(value.get("state", "unavailable"))
     # ``BrainCore`` keeps the read-side state deliberately small.  The public
     # runtime projection spells out that a mapped record belongs to the active
-    # same workline, so callers do not mistake it for a task selected from the
-    # assistant message itself.
+    # local contract, so callers do not mistake it for a task selected from an
+    # external message or transport.
     state = "mapped_current_workline" if source_state == "mapped" else source_state
     project_progress_state = str(value.get("projectProgressState", value.get("projectProofState", "not_checked")))
     visible_progress_state = str(value.get("visibleProgressState", "not_checked"))
@@ -2031,8 +1453,8 @@ def _public_tail_first_mapping(mapping: dict[str, Any] | None) -> dict[str, Any]
     result = {
         "schema": "super-brain.continuity-mapping.v1",
         "state": state,
-        "code": str(value.get("code", "H7_TAIL_FIRST_MAPPING_REQUIRED")),
-        "source": str(value.get("source", "current_visible_assistant")),
+        "code": str(value.get("code", "H7_LOCAL_CONTRACT_MAPPING_REQUIRED")),
+        "source": str(value.get("source", "scoped_local_contract")),
         "visibleContextAvailable": bool(value.get("visibleContextAvailable") is True),
         "stateCardUsed": bool(value.get("stateCardUsed") is True),
         "taskIdHash": str(value.get("taskIdHash", "")),
@@ -2059,43 +1481,19 @@ def _public_tail_first_mapping(mapping: dict[str, Any] | None) -> dict[str, Any]
     return result
 
 
-def _withheld_tail_first_mapping(
+def _withheld_continuity_mapping(
     context: dict[str, Any],
     code: str,
     mapping: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Return one fail-closed result without hiding tail-first diagnostics."""
+    """Return one fail-closed result with local mapping diagnostics."""
 
-    public_mapping = _public_tail_first_mapping(mapping)
+    public_mapping = _public_continuity_mapping(mapping)
     projected_context = dict(context) if isinstance(context, dict) else {}
     projected_context["continuityMapping"] = public_mapping
     result = _withheld("open", projected_context, code)
     result["continuityMapping"] = public_mapping
     return result
-
-
-def _same_workline_assertion(
-    assertion: dict[str, Any] | None,
-) -> tuple[dict[str, Any] | None, str]:
-    """Canonicalize the one current-tail selector used by normal recovery.
-
-    Earlier H7 adapters named strict classification of the *same newest* item
-    ``latest_durable_assistant``.  It is safe to retain that wire shape only
-    when it is a strict v4 observation, then canonicalize it to
-    ``current_visible_assistant`` before task mapping.  ``latest_assistant``
-    remains drift-diagnosis-only and cannot enter this path.
-    """
-
-    if not isinstance(assertion, dict):
-        return None, "H7_VISIBLE_TAIL_ASSERTION_REQUIRED"
-    selection = str(assertion.get("selection", ""))
-    if selection == VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION:
-        return assertion, "H7_VISIBLE_TAIL_ASSERTION_CURRENT"
-    if selection == VISIBLE_TAIL_CONTINUATION_SELECTION and _is_v4_durable_progress(assertion):
-        current = {**assertion, "selection": VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION}
-        current["payloadHash"] = canonical_hash({key: value for key, value in current.items() if key != "payloadHash"})
-        return current, "H7_VISIBLE_TAIL_LEGACY_SELECTOR_CANONICALIZED"
-    return None, "H7_VISIBLE_TAIL_CURRENT_ASSISTANT_REQUIRED"
 
 
 def _is_nonblocking_continuity_intent(intent: dict[str, Any]) -> bool:
@@ -2127,7 +1525,7 @@ def _ordinary_no_task_open(
 
     A Super Brain route may participate in ordinary conversation and correctly
     continue it without inventing a task.  This result creates no execution
-    contract, visible-tail card, telemetry, task card, or memory body.  It
+    contract, local progress card, telemetry, task card, or memory body.  It
     does retain the ordinary H7 activation receipt: the brain is active, but
     there is no workline state to resume.
     """
@@ -2171,7 +1569,7 @@ def _ordinary_no_task_open(
             "rawTranscriptStored": False,
         },
         "activation": activation,
-        "continuityMapping": _public_tail_first_mapping(
+        "continuityMapping": _public_continuity_mapping(
             {
                 **mapping,
                 "projectProgressState": "not_applicable",
@@ -2199,16 +1597,16 @@ def _ordinary_no_task_open(
     return result
 
 
-def _direct_host_path(phase: str, intent: dict[str, Any]) -> dict[str, Any]:
+def _direct_local_path(phase: str, intent: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True,
         "schema": SCHEMA,
         "mode": MODE,
         "phase": phase,
         "available": False,
-        "code": "TURN_INTENT_DIRECT_HOST_PATH",
+        "code": "TURN_INTENT_DIRECT_PATH",
         "turnIntent": public_turn_intent(intent),
-        "continuityMapping": _public_tail_first_mapping(
+        "continuityMapping": _public_continuity_mapping(
             {
                 "state": "ordinary_no_task",
                 "source": "none",
@@ -2227,43 +1625,152 @@ def _direct_host_path(phase: str, intent: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _current_contract_policy_resolution(contract: dict[str, Any]) -> dict[str, Any]:
+    """Build the same bounded no-mutation policy input as ``BrainCore``.
+
+    This never grants a mutation.  It exists solely for the strict
+    ``continue_current_turn`` fast close below, where the authority would
+    otherwise launch PowerShell just to return a pure policy result.
+    """
+
+    canonical_plan = contract.get("canonicalPlan") if isinstance(contract.get("canonicalPlan"), dict) else {}
+    items = canonical_plan.get("items") if isinstance(canonical_plan.get("items"), list) else []
+    statuses = [str(item.get("status", "")) for item in items if isinstance(item, dict)]
+    canonical_summary = (
+        {
+            "itemCount": len(items),
+            "completedCount": sum(status == "completed" for status in statuses),
+            "pendingCount": sum(status in {"pending", "in_progress"} for status in statuses),
+            "cancelledCount": sum(status == "cancelled" for status in statuses),
+        }
+        if items and len(statuses) == len(items)
+        else {}
+    )
+    return {
+        "ok": True,
+        "actionAuthorization": "allowed",
+        "claimAllowed": True,
+        "needsConfirmation": False,
+        "blockers": list(contract.get("blockers", []) or []),
+        "nextAction": str(contract.get("nextAction", "")),
+        "currentPhase": str(contract.get("currentPhase", "")),
+        "canonicalPlan": canonical_summary,
+        "canResumeParent": bool(contract.get("returnStack")),
+    }
+
+
+def _policy_only_fast_close(
+    context: dict[str, Any],
+    contract: dict[str, Any],
+    progress_status: dict[str, Any],
+    close_intent: dict[str, Any],
+    *,
+    turn_outcome: str,
+    user_control: str,
+    completion_evidence_present: bool,
+    checkpoint_present: bool,
+) -> dict[str, Any] | None:
+    """Return a safe in-process close policy, or ``None`` for full authority.
+
+    The guard is intentionally narrower than a generic close.  It allows only
+    an ordinary, non-terminal, non-formal no-op close after the current
+    contract and proof have just been re-read in this call.  Every mutation,
+    parent return, checkpoint, formal closeout, stale proof, or ambiguity
+    remains on the existing PowerShell authority path.
+    """
+
+    if checkpoint_present or completion_evidence_present:
+        return None
+    if user_control != "none" or turn_outcome not in {"ephemeral_insertion", "active_work_progressed"}:
+        return None
+    if contract.get("needsReconciliation") is True or is_formal_phase(str(contract.get("currentPhase", ""))):
+        return None
+    if progress_status.get("current") is not True:
+        return None
+    task = context.get("task") if isinstance(context.get("task"), dict) else {}
+    visible = task.get("visibleProgress") if isinstance(task.get("visibleProgress"), dict) else {}
+    if visible.get("state") != "current" or visible.get("continuationEligible") is not True:
+        return None
+    if close_intent.get("governed") is not True:
+        return None
+    policy = decide_turn_close(
+        _current_contract_policy_resolution(contract),
+        turn_outcome=turn_outcome,
+        user_control=user_control,
+        completion_evidence_present=False,
+    )
+    return policy if policy.get("decision") == "continue_current_turn" else None
+
+
 def open_turn(
     core: BrainCore,
     *,
     memory_mode: str = "auto",
     record_telemetry: bool = True,
+    persist_receipt: bool = True,
     turn_intent: str = "direct",
     recovery_event: str = "none",
     execution_assist_request: Any = None,
     capability_route_receipt: Any = None,
-    visible_progress_assertion: Any = None,
-    require_visible_tail_assertion: bool = True,
+    _execution_assist_bundle: Any = None,
     user_control: str = "unknown",
     execution_apply_phase: str = "planning",
     allow_terminal_finalization: bool = False,
+    allow_reconciliation_checkpoint: bool = False,
+    terminal_finalization_phase: str = "",
+    return_private_bundle: bool = False,
     timeout: float = 8.0,
+    **legacy_transport: Any,
 ) -> dict[str, Any]:
     """Build one scope-bound memory/continuity packet and receipt.
 
     The context projection is still the source of truth; this function merely
     binds that projection to a governed activation and a bounded receipt.
+
+    Internal preflights may need an ephemeral receipt while verifying a later
+    checkpoint or close transition.  Those calls must not replace the last
+    persisted open receipt unless they also record matching telemetry: doing so
+    would make otherwise-current H7 evidence look torn after a rejected
+    preflight.
     """
+
+    retired = _retired_host_transport_result("open", **legacy_transport)
+    if retired is not None:
+        return retired
+    if any(value is not None for value in legacy_transport.values()):
+        return _withheld("open", {}, "TURN_RUNTIME_ARGUMENTS_INVALID")
 
     started_at = time.perf_counter()
     intent = resolve_turn_intent(turn_intent, memory_mode=memory_mode)
     if intent.get("ok") is not True:
         return _withheld("open", {"turnIntent": public_turn_intent(intent)}, str(intent.get("code", "TURN_INTENT_INVALID")))
     if intent.get("governed") is not True:
-        return _direct_host_path("open", intent)
-    execution_assist, normalized_capability_route_receipt, capability_route_compatibility, execution_assist_code = (
-        _resolve_execution_assist_for_turn(
-            core,
-            intent,
-            execution_assist_request,
-            capability_route_receipt,
-            apply_phase=execution_apply_phase,
+        return _direct_local_path("open", intent)
+    # A telemetry event is evidence for a durable H7 entry.  Writing one for
+    # an ephemeral preflight receipt would recreate the exact split-brain
+    # state this runtime is designed to reject: telemetry points at an entry
+    # that cannot be read back from ``receipts/<scope>/open.json``.
+    if record_telemetry and not persist_receipt:
+        return _withheld(
+            "open",
+            {"turnIntent": public_turn_intent(intent)},
+            "H7_OPEN_TELEMETRY_WITHOUT_PERSISTED_ENTRY_FORBIDDEN",
         )
-    )
+    reused_execution_assist = _validated_execution_assist_bundle(_execution_assist_bundle)
+    if reused_execution_assist is not None:
+        execution_assist, normalized_capability_route_receipt, capability_route_compatibility, execution_assist_code = (
+            reused_execution_assist
+        )
+    else:
+        execution_assist, normalized_capability_route_receipt, capability_route_compatibility, execution_assist_code = (
+            _resolve_execution_assist_for_turn(
+                core,
+                intent,
+                execution_assist_request,
+                capability_route_receipt,
+                apply_phase=execution_apply_phase,
+            )
+        )
     if execution_assist is None or normalized_capability_route_receipt is None:
         return _withheld(
             "open",
@@ -2273,99 +1780,26 @@ def open_turn(
     normalized_recovery_event = str(recovery_event or "none")
     if normalized_recovery_event not in RECOVERY_EVENTS:
         return _withheld("open", {"turnIntent": public_turn_intent(intent)}, "H7_RECOVERY_EVENT_INVALID")
-    normalized_visible_tail_assertion: dict[str, str] | None = None
-    visible_tail_assertion_code = ""
-    if visible_progress_assertion is not None:
-        normalized_visible_tail_assertion, visible_tail_assertion_code = _normalize_visible_tail_assertion(
-            visible_progress_assertion
-        )
-        if normalized_visible_tail_assertion is None:
-            return _withheld("open", {"turnIntent": public_turn_intent(intent)}, visible_tail_assertion_code)
-    # Tail-first normal continuation -------------------------------------------------
+    # Local-only continuity ---------------------------------------------------------
     #
-    # The newest visible assistant reply answers only "where do we resume?".
-    # Before old H7 context/proof/receipt data may influence an action, map that
-    # exact current Host tail to one scoped task and its live contract step.
-    # This keeps a stale contract from winning merely because it was checked
-    # earlier than the message the user actually saw.
+    # External transport is permanently retired.  The current cwd/session scope,
+    # execution contract, project proof, and local progress receipt are the
+    # only continuity inputs.  Legacy Host fields were rejected above before
+    # normalization, so this branch cannot accidentally reintroduce a tail
+    # parser or a retrying bridge.
     normal_continuity = str(intent.get("kind", "")) in NORMAL_CONTINUITY_INTENTS
-    tail_first_mapping: dict[str, Any] | None = None
-    if normalized_recovery_event != "parent_return" and normal_continuity:
-        if require_visible_tail_assertion and normalized_visible_tail_assertion is None:
-            # Every same-workline continuation begins with the current visible
-            # assistant tail.  A process-local cache, prior receipt, contract,
-            # or rule/proof hash cannot bypass that locator, including within
-            # one long-lived H7 process.  This keeps a newer plain or drifted
-            # visible reply from being followed by stale unseen progress.
-            return _withheld_tail_first_mapping(
-                {"turnIntent": public_turn_intent(intent)},
-                "H7_VISIBLE_TAIL_ASSERTION_REQUIRED",
-                {
-                    "state": "unavailable",
-                    "code": "H7_VISIBLE_TAIL_ASSERTION_REQUIRED",
-                    "source": "current_visible_assistant",
-                    "visibleContextAvailable": False,
-                    "stateCardUsed": False,
-                },
-            )
-        if normalized_visible_tail_assertion is not None:
-            # `latest_assistant` is not a normal selector.  It means the
-            # controller has already detected a visible-tail drift and is
-            # deliberately entering the emergency fallback.  Map the current
-            # scoped task for diagnosis (so an old action cannot be repeated),
-            # but require an explicit H7 checkpoint/replay before it can
-            # continue.  Never canonicalize it into normal continuation.
-            if str(normalized_visible_tail_assertion.get("selection", "")) == VISIBLE_TAIL_AUTO_FINALIZE_SELECTION:
-                drift_mapping = core.tail_first_task_mapping(
-                    str(normalized_visible_tail_assertion.get("hostThreadId", ""))
-                )
-                if str(drift_mapping.get("state", "")) == "mapped":
-                    drift_mapping = {**drift_mapping, "duplicateActionBlocked": True}
-                return _withheld_tail_first_mapping(
-                    {"turnIntent": public_turn_intent(intent)},
-                    "H7_VISIBLE_TAIL_EXPLICIT_RECONCILIATION_REQUIRED",
-                    drift_mapping,
-                )
-            normalized_visible_tail_assertion, tail_selector_code = _same_workline_assertion(normalized_visible_tail_assertion)
-            if normalized_visible_tail_assertion is None:
-                return _withheld_tail_first_mapping(
-                    {"turnIntent": public_turn_intent(intent)},
-                    tail_selector_code,
-                    {
-                        "state": "unavailable",
-                        "code": tail_selector_code,
-                        "source": "current_visible_assistant",
-                        "visibleContextAvailable": True,
-                        "stateCardUsed": False,
-                    },
-                )
-            tail_first_mapping = core.tail_first_task_mapping(
-                str(normalized_visible_tail_assertion.get("hostThreadId", ""))
-            )
-            mapping_state = str(tail_first_mapping.get("state", "unavailable"))
-            if mapping_state == "ordinary_no_task":
-                return _ordinary_no_task_open(
-                    core,
-                    intent=intent,
-                    mapping=tail_first_mapping,
-                    normalized_recovery_event=normalized_recovery_event,
-                )
-            if mapping_state == "rebind_required":
-                # Do not turn a cross-session candidate into an ordinary
-                # current task.  The existing strict CAS rebind below will
-                # prove identity, exact v4 visibility, and project proof.
-                pass
-            elif mapping_state != "mapped":
-                return _withheld_tail_first_mapping(
-                    {"turnIntent": public_turn_intent(intent)},
-                    str(tail_first_mapping.get("code", "H7_TAIL_FIRST_TASK_MAPPING_UNAVAILABLE")),
-                    tail_first_mapping,
-                )
-    elif normalized_recovery_event != "parent_return" and normalized_visible_tail_assertion is not None:
-        # Checkpoint/close may carry the drift-only ``latest_assistant``
-        # observation used to bind an exact corrective checkpoint.  It is not
-        # a normal continuation selector, so leave it untouched here.
-        pass
+    # A normal read-only continuation asks ``core.context`` for the exact local
+    # contract and proof once. The private snapshot is call-local and avoids a
+    # duplicate read/hash cycle without becoming durable authority.
+    normal_context_snapshot_requested = (
+        str(intent.get("kind", "")) in {"continuity", "task_status"}
+        and normalized_recovery_event == "none"
+        and record_telemetry is True
+        and persist_receipt is True
+        and not allow_terminal_finalization
+        and not allow_reconciliation_checkpoint
+    )
+    continuity_mapping: dict[str, Any] | None = None
     effective_memory_mode = str(intent.get("memoryMode", memory_mode))
     governed_rule_signals = tuple(
         dict.fromkeys(
@@ -2385,73 +1819,89 @@ def open_turn(
         False,
         governed_rule_signals,
         terminal_finalization=allow_terminal_finalization,
+        reconciliation_checkpoint=allow_reconciliation_checkpoint,
+        turn_runtime_snapshot=normal_context_snapshot_requested,
+        terminal_finalization_phase=terminal_finalization_phase,
     )
-    session_rebind: dict[str, Any] | None = None
+    # Remove private contract/proof data before any branch can return the
+    # public context. A malformed snapshot simply falls back to the fresh
+    # binding path; it never changes the governed result.
+    private_context_snapshot = (
+        _take_context_turn_runtime_snapshot(context)
+        if isinstance(context, dict)
+        else None
+    )
     if (
         isinstance(context, dict)
         and context.get("ok") is True
         and context.get("available") is not True
-        and str(context.get("code", "")) == "BRAIN_CONTEXT_HOT_INDEX_MISSING"
-        and isinstance(tail_first_mapping, dict)
-        and str(tail_first_mapping.get("state", "")) == "rebind_required"
-        and normalized_visible_tail_assertion is not None
-        and normalized_recovery_event in {"restart", "model_switch", "cross_session", "pause_resume", "user_correction", "compaction"}
+        and str(context.get("code", "")) == "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT"
+        and normal_continuity
     ):
-        candidate = tail_first_mapping.get("_contract") if isinstance(tail_first_mapping.get("_contract"), dict) else None
-        if candidate is None:
-            return _withheld("open", context, "H7_TAIL_FIRST_SESSION_REBIND_CANDIDATE_REQUIRED")
-        rebound, rebind_code = _rebind_contract_to_current_host_session(
+        return _ordinary_no_task_open(
             core,
-            candidate,
-            normalized_visible_tail_assertion,
-            timeout=timeout,
-        )
-        if rebound is None:
-            return _withheld("open", context, rebind_code)
-        session_rebind = {
-            "state": "rebound",
-            "code": rebind_code,
-            "taskIdHash": hashlib.sha256(str(rebound.get("taskId", "")).encode("utf-8")).hexdigest(),
-            "taskInstanceId": str(rebound.get("taskInstanceId", "")),
-            "revision": int(rebound.get("revision", 0) or 0),
-            "rawPromptStored": False,
-            "rawTranscriptStored": False,
-        }
-        context = core.context(
-            effective_memory_mode,
-            "unknown",
-            "unknown",
-            False,
-            governed_rule_signals,
+            intent=intent,
+            mapping={
+                "state": "ordinary_no_task",
+                "code": "H7_LOCAL_SCOPE_NO_ACTIVE_TASK",
+                "source": "scoped_local_contract",
+                "visibleContextAvailable": False,
+                "stateCardUsed": False,
+                "workspaceKey": core._context_workspace_key(),
+                "ownerSessionKey": core._context_session_key(),
+            },
+            normalized_recovery_event=normalized_recovery_event,
         )
     if not isinstance(context, dict) or context.get("ok") is not True or context.get("available") is not True:
-        return _withheld_tail_first_mapping(
+        return _withheld_continuity_mapping(
             context if isinstance(context, dict) else {},
             str((context or {}).get("code", "TURN_RUNTIME_CONTEXT_INVALID")),
-            tail_first_mapping,
+            continuity_mapping,
         )
     context["turnIntent"] = public_turn_intent(intent)
     context["executionAssist"] = public_execution_assist(execution_assist)
     if capability_route_compatibility is not None:
         context["capabilityRouteCompatibility"] = capability_route_compatibility
-    contract, contract_code = _contract_binding(core, context)
+    contract, contract_code = _contract_binding(
+        core,
+        context,
+        allow_reconciliation_checkpoint=allow_reconciliation_checkpoint,
+        private_context_snapshot=private_context_snapshot,
+        terminal_finalization_phase=terminal_finalization_phase,
+    )
     if contract is None:
-        return _withheld_tail_first_mapping(context, contract_code, tail_first_mapping)
-    if isinstance(tail_first_mapping, dict) and str(tail_first_mapping.get("state", "")) == "mapped":
-        if (
-            str(tail_first_mapping.get("contractHash", "")) != context_hash(contract)
-            or str(tail_first_mapping.get("taskInstanceId", "")) != str(contract.get("taskInstanceId", ""))
-        ):
-            mapping = {**tail_first_mapping, "duplicateActionBlocked": True}
-            return _withheld_tail_first_mapping(context, "H7_TAIL_FIRST_TASK_MAPPING_CHANGED", mapping)
-    progress_status = core._project_progress_status(contract)
+        return _withheld_continuity_mapping(context, contract_code, continuity_mapping)
+    if context.get("reconciliationCheckpointOnly") is True:
+        # A pending instruction is never an ordinary runnable context.  The
+        # explicit checkpoint caller receives this exact, scope-bound packet
+        # only long enough to atomically bind its current instruction, proof,
+        # and progress through the existing CAS authority below.
+        return _withheld(
+            "open",
+            context,
+            "H7_RECONCILIATION_CHECKPOINT_REQUIRED",
+        )
+    snapshot_contract = (
+        private_context_snapshot.get("contract")
+        if isinstance(private_context_snapshot, dict)
+        else None
+    )
+    snapshot_progress_status = (
+        private_context_snapshot.get("projectProgressStatus")
+        if isinstance(private_context_snapshot, dict)
+        else None
+    )
+    progress_status = (
+        snapshot_progress_status
+        if contract is snapshot_contract and isinstance(snapshot_progress_status, dict)
+        else core._project_progress_status(contract)
+    )
     strict_open = str(intent.get("kind", "")) in FORMAL_OPEN_INTENTS
-    # `checkpoint_turn` opens internally with `require_visible_tail_assertion`
-    # disabled so it can reconcile/write the exact checkpoint itself.  That is
-    # still a formal mutation preflight, not a normal display-only
-    # continuation, therefore it must retain the durable visible-progress
-    # gates that trigger the existing H7 reconciliation path.
-    strict_state_preflight = strict_open or not require_visible_tail_assertion
+    # Formal opens and non-continuation turns retain the strict local proof
+    # gates; ordinary local continuity may report stale proof for repair.
+    strict_state_preflight = strict_open or (
+        not normal_continuity and normalized_recovery_event == "none"
+    )
     if strict_state_preflight and intent.get("projectEvidenceRequired") is True and progress_status.get("current") is not True:
         return _withheld("open", context, "H7_PROJECT_PROGRESS_WITHHELD")
     visible_progress_status = (
@@ -2459,56 +1909,9 @@ def open_turn(
         if isinstance(context.get("task"), dict)
         else {}
     )
-    # A plain current reply is allowed to locate the current workline while
-    # H7 silently reports stale proof as diagnostic-only state.  A strict v4
-    # reply is different: it asserts that this exact visible sentence is the
-    # durable, scope-bound progress publication.  If the contract's own
-    # visible-progress receipt or project proof no longer validates, letting a
-    # normal continuity open succeed would expose that stale v4 claim as a
-    # usable anchor despite its broken phase/step/action/proof binding.
-    #
-    # Keep this gate deliberately narrow.  It does not promote a plain tail,
-    # does not inspect an older anchor, and does not mutate the contract.  It
-    # only fail-closes a *current strict-v4* candidate whose durable binding is
-    # already known to be invalid, leaving the explicit H7 checkpoint/replay
-    # route as the sole repair path.
-    strict_current_v4_tail = (
-        normal_continuity
-        and isinstance(normalized_visible_tail_assertion, dict)
-        and str(normalized_visible_tail_assertion.get("selection", ""))
-        == VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION
-        and _is_v4_durable_progress(normalized_visible_tail_assertion)
-    )
-    if strict_current_v4_tail and (
-        progress_status.get("current") is not True
-        or not isinstance(visible_progress_status, dict)
-        or visible_progress_status.get("state") != "current"
-        or visible_progress_status.get("continuationEligible") is not True
-    ):
-        strict_mapping = (
-            {
-                **tail_first_mapping,
-                "projectProgressState": str(progress_status.get("state", "withheld")),
-                "visibleProgressState": str((visible_progress_status or {}).get("state", "withheld")),
-                "stageAdvanceAllowed": False,
-                "duplicateActionBlocked": True,
-            }
-            if isinstance(tail_first_mapping, dict)
-            else tail_first_mapping
-        )
-        return _withheld_tail_first_mapping(
-            context,
-            "H7_VISIBLE_PROGRESS_RECEIPT_MISMATCH",
-            strict_mapping,
-        )
-    display_only_tail_supplied = (
-        isinstance(normalized_visible_tail_assertion, dict)
-        and _is_display_only_visible_tail(normalized_visible_tail_assertion)
-        and normal_continuity
-    )
     if strict_state_preflight and (
-        (not isinstance(visible_progress_status, dict) or visible_progress_status.get("state") != "current")
-        and not display_only_tail_supplied
+        not isinstance(visible_progress_status, dict)
+        or visible_progress_status.get("state") != "current"
     ):
         return _withheld(
             "open",
@@ -2518,7 +1921,6 @@ def open_turn(
     if strict_state_preflight and (
         isinstance(visible_progress_status, dict)
         and visible_progress_status.get("continuationEligible") is not True
-        and not display_only_tail_supplied
     ):
         # ``user_attested_visible_reply`` is deliberately a one-way
         # reconciliation bridge: it can repair a missing/stale anchor, but
@@ -2526,62 +1928,8 @@ def open_turn(
         # checkpoint must be sourced from the exact assistant-visible progress
         # sentence that will be shown to the user.
         return _withheld("open", context, "H7_VISIBLE_PROGRESS_ASSISTANT_REPLY_REQUIRED")
-    # Mapping is produced after the current tail and before H7 context.  Add
-    # the background validation result only now.  A normal continuity/status
-    # turn remains available when those checks are stale, but cannot use that
-    # fact to advance a stage, repeat an old action, or make a progress claim.
-    if isinstance(tail_first_mapping, dict):
-        mapping = {
-            **tail_first_mapping,
-            "projectProgressState": str(progress_status.get("state", "withheld")),
-            "visibleProgressState": str((visible_progress_status or {}).get("state", "withheld")),
-            "stageAdvanceAllowed": bool(
-                strict_open
-                and progress_status.get("current") is True
-                and isinstance(visible_progress_status, dict)
-                and visible_progress_status.get("state") == "current"
-                and visible_progress_status.get("continuationEligible") is True
-            ),
-            # Any normal continuation begins diagnostic/read-only until a
-            # separate checkpoint supplies fresh proof.  This is the direct
-            # duplicate-action guard requested for drift handling.
-            "duplicateActionBlocked": _is_nonblocking_continuity_intent(intent),
-        }
-        tail_first_mapping = mapping
-        context["continuityMapping"] = _public_tail_first_mapping(mapping)
-    if session_rebind is not None:
-        # A cross-session rebind changes the scope-bound visible-progress
-        # receipt hash.  The old-thread v4 envelope is sufficient to prove
-        # the one CAS transfer, but it must never be reused as the new
-        # session's normal anchor.  Rebuild activation now, expose only the
-        # new receipt hash, and require the Host to publish the exact same
-        # H7 sentence in a fresh v4 envelope before continuation.
-        rebound_activation, rebound_activation_code, _ = _activation(
-            core,
-            context,
-            contract,
-            effective_memory_mode,
-        )
-        capabilities = rebound_activation.get("capabilities") if isinstance(rebound_activation.get("capabilities"), dict) else {}
-        if (
-            rebound_activation.get("activationState") != "full_brain_active"
-            or capabilities.get("coreReady") is not True
-        ):
-            return _withheld("open", context, "H7_SESSION_REBIND_ACTIVATION_REBUILD_REQUIRED")
-        session_rebind["activationReceiptHash"] = str(rebound_activation.get("receiptHash", ""))
-        session_rebind["visibleProgressReceiptHash"] = str(visible_progress_status.get("payloadHash", ""))
-        session_rebind["republishRequired"] = True
-        withheld = _withheld("open", context, "H7_SESSION_REBOUND_REPUBLISH_REQUIRED")
-        withheld["sessionRebind"] = session_rebind
-        return withheld
-    # The current visible assistant message is always read first on the same
-    # workline: ordinary continuation, compaction/restart recovery, and a
-    # pause followed by continue all require it.  A plain latest message is a
-    # display-only fact: it cannot change the durable progress, phase, proof,
-    # or authorization, but it also must not make H7 walk backward to an old
-    # v4 anchor.  ``parent_return`` is the one bounded exception because its
-    # visible tail belongs to the completed child line; H7 selects the
-    # already-approved parent through its current state card instead.
+    # A verified parent return may use its existing state card. Every other
+    # continuity/recovery projection is built from the current local contract.
     parent_return_state_card: dict[str, Any] | None = None
     if normalized_recovery_event == "parent_return":
         parent_return_state_card, parent_return_code = _parent_return_state_card(context, contract)
@@ -2589,9 +1937,9 @@ def open_turn(
             return _withheld("open", context, parent_return_code)
         # This is the sole legal state-card selector.  It maps the already
         # approved parent after a verified ResumeParent transition; normal
-        # same-workline continuation never allows a card to displace the
-        # current visible assistant tail.
-        tail_first_mapping = {
+        # Local continuation never allows an unrelated card to displace the
+        # current contract.
+        continuity_mapping = {
             "state": "mapped_parent_return",
             "code": parent_return_code,
             "source": "verified_parent_return",
@@ -2609,7 +1957,7 @@ def open_turn(
             "stageAdvanceAllowed": False,
             "duplicateActionBlocked": True,
         }
-        context["continuityMapping"] = _public_tail_first_mapping(tail_first_mapping)
+        context["continuityMapping"] = _public_continuity_mapping(continuity_mapping)
         context["parentReturnStateCard"] = {
             "state": "current",
             "code": parent_return_code,
@@ -2617,112 +1965,51 @@ def open_turn(
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
-    assertion_required = (
-        require_visible_tail_assertion
-        and normalized_recovery_event != "parent_return"
-        and (
-        str(intent.get("kind", "")) in VISIBLE_TAIL_ASSERTION_REQUIRED_INTENTS
-        or normalized_recovery_event != "none"
-        )
-    )
-    if assertion_required and normalized_visible_tail_assertion is None:
-        return _withheld("open", context, "H7_VISIBLE_TAIL_ASSERTION_REQUIRED")
-    visible_tail_assertion: dict[str, Any] | None = None
-    public_visible_tail_assertion: dict[str, Any] | None = None
-    visible_progress_observation: dict[str, Any] | None = None
-    if normalized_visible_tail_assertion is not None and normalized_recovery_event != "parent_return":
-        visible_tail_assertion, visible_tail_assertion_code = _visible_tail_assertion_status(
-            core,
-            context,
-            normalized_visible_tail_assertion,
-            # A same-workline tail is always first-class visible evidence.
-            # At a recovery boundary normal prose remains display-only rather
-            # than becoming an implicit old-v4 fallback or an avoidable
-            # blocker.  Only a genuine recovery presentation requires a
-            # durable anchor; below it is suppressed for this observation.
-            allow_display_only=True,
-        )
-        if visible_tail_assertion is None:
-            # A newer Host-visible assistant reply is not an excuse to walk
-            # back to the old receipt.  The fallback is detection-only: it
-            # returns an explicit reconciliation requirement and never writes
-            # a sentence, phase, step, action, or proof by itself.
-            if (
-                visible_tail_assertion_code == "H7_VISIBLE_TAIL_ASSERTION_MISMATCH"
-                and str(normalized_visible_tail_assertion.get("selection", ""))
-                == VISIBLE_TAIL_AUTO_FINALIZE_SELECTION
-            ):
-                _unused_finalization, auto_code = _auto_finalize_observed_visible_tail(
-                    core,
-                    context,
-                    contract,
-                    normalized_visible_tail_assertion,
-                    project_progress_status=progress_status,
-                    user_control=user_control,
-                    timeout=timeout,
-                )
-                return _withheld("open", context, auto_code)
-            else:
-                return _withheld("open", context, visible_tail_assertion_code)
-        public_visible_tail_assertion = _public_visible_tail_assertion(visible_tail_assertion)
-        context["visibleTailAssertion"] = public_visible_tail_assertion
-        # A v4 tail has made an exact, receipt-bound claim about the task's
-        # phase/step/action and project proof.  Validate that claim *after*
-        # binding the current observed tail, so sentence/source drift keeps
-        # its more specific tail-mismatch error while phase/step/action/proof
-        # drift cannot escape as TURN_RUNTIME_OPEN_READY.  Plain/legacy tails
-        # remain display-only: they locate the current workline for diagnosis
-        # but do not turn an older published receipt into a continuation.
-        if (
-            normal_continuity
-            and str(visible_tail_assertion.get("continuationRole", ""))
-            == VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR
-            and (
-                not isinstance(visible_progress_status, dict)
-                or visible_progress_status.get("state") != "current"
-                or visible_progress_status.get("continuationEligible") is not True
-            )
-        ):
-            mapping = {
-                **(tail_first_mapping or {}),
-                "projectProgressState": str(progress_status.get("state", "withheld")),
-                "visibleProgressState": str((visible_progress_status or {}).get("state", "withheld")),
-                "stageAdvanceAllowed": False,
-                "duplicateActionBlocked": True,
-            }
-            return _withheld_tail_first_mapping(
-                context,
-                str((visible_progress_status or {}).get("code", "H7_VISIBLE_PROGRESS_RECEIPT_MISMATCH")),
-                mapping,
-            )
-        if (
-            normal_continuity
-            and str(visible_tail_assertion.get("continuationRole", ""))
-            == VISIBLE_TAIL_CONTINUATION_ROLE_ANCHOR
-            and progress_status.get("current") is not True
-        ):
-            mapping = {
-                **(tail_first_mapping or {}),
-                "projectProgressState": str(progress_status.get("state", "withheld")),
-                "visibleProgressState": str((visible_progress_status or {}).get("state", "withheld")),
-                "stageAdvanceAllowed": False,
-                "duplicateActionBlocked": True,
-            }
-            return _withheld_tail_first_mapping(context, "H7_PROJECT_PROGRESS_WITHHELD", mapping)
-        # The current visible tail has already been observed by the Host.  Bind
-        # its compact hashes only to this runtime receipt; normal continuation
-        # must not create or rewrite a persistent state/readback card.
-        visible_progress_observation = _visible_progress_observation(
-            context,
-            visible_tail_assertion,
-        )
-        if visible_progress_observation is None:
-            return _withheld("open", context, "H7_VISIBLE_PROGRESS_OBSERVATION_INPUT_INVALID")
-        context["visibleProgressObservation"] = _public_visible_progress_observation(visible_progress_observation)
+    elif normal_continuity or normalized_recovery_event != "none":
+        # Local continuity/recovery is a projection of the one validated local
+        # contract and its current project/visible-progress proof.  It does
+        # not read a summary, old memory, an unrelated state card, or an
+        # external locator, and
+        # the presentation itself never authorizes an action.
+        continuity_mapping = {
+            "state": "local_contract_current",
+            "code": "H7_LOCAL_CONTRACT_RECOVERY_CURRENT",
+            "source": "scoped_local_contract",
+            "visibleContextAvailable": False,
+            "stateCardUsed": False,
+            "taskIdHash": hashlib.sha256(str(contract.get("taskId", "")).encode("utf-8")).hexdigest(),
+            "taskInstanceId": str(contract.get("taskInstanceId", "")),
+            "contractRevision": int(contract.get("revision", 0) or 0),
+            "contractHash": context_hash(contract),
+            "currentPhase": str(contract.get("currentPhase", "")),
+            "currentStep": str(contract.get("currentStep", "")),
+            "nextAction": str(contract.get("nextAction", "")),
+            "projectProgressState": str(progress_status.get("state", "withheld")),
+            "visibleProgressState": str((visible_progress_status or {}).get("state", "withheld")),
+            "stageAdvanceAllowed": False,
+            "duplicateActionBlocked": True,
+        }
+        context["continuityMapping"] = _public_continuity_mapping(continuity_mapping)
+    elif continuity_mapping is None:
+        # This is a fresh governed issue, not a failed continuation lookup.
+        # Make that distinction explicit instead of projecting an invented
+        # continuation failure merely because no active task was selected.
+        continuity_mapping = {
+            "state": "not_requested",
+            "code": "H7_LOCAL_CONTRACT_MAPPING_NOT_REQUESTED",
+            "source": "none",
+            "visibleContextAvailable": False,
+            "stateCardUsed": False,
+            "projectProgressState": "not_checked",
+            "visibleProgressState": "not_checked",
+            "stageAdvanceAllowed": False,
+            "duplicateActionBlocked": False,
+        }
+        context["continuityMapping"] = _public_continuity_mapping(continuity_mapping)
     recovery_presentation, recovery_presentation_code = _recovery_presentation(
-        visible_tail_assertion,
         normalized_recovery_event,
         parent_return_state_card,
+        continuity_mapping,
     )
     if recovery_presentation is None:
         return _withheld("open", context, recovery_presentation_code)
@@ -2778,11 +2065,7 @@ def open_turn(
         "visibleProgressState": str(visible_progress_status.get("state", "withheld")),
         "visibleProgressHash": str(visible_progress_status.get("payloadHash", "")),
         "visibleProgressSentenceHash": str(visible_progress_status.get("sentenceHash", "")),
-        "visibleTailAssertionHash": str((public_visible_tail_assertion or {}).get("payloadHash", "")),
-        "visibleTailHostMessageHash": str((public_visible_tail_assertion or {}).get("hostMessageHash", "")),
-        "visibleProgressObservationHash": str((visible_progress_observation or {}).get("payloadHash", "")),
         "parentReturnStateCardHash": str((parent_return_state_card or {}).get("payloadHash", "")),
-        "autoVisibleTailFinalizationHash": "",
         "recoveryEvent": normalized_recovery_event,
         "recoveryPresentationHash": str(recovery_presentation.get("payloadHash", "")),
         "capabilityRouteHash": str((normalized_capability_route_receipt or {}).get("routeHash", "")),
@@ -2805,11 +2088,17 @@ def open_turn(
         project_knowledge=public_project_knowledge(project_knowledge),
         capability_route_receipt=normalized_capability_route_receipt,
         capability_route_compatibility=capability_route_compatibility,
-        visible_tail_assertion=public_visible_tail_assertion,
         recovery_presentation=recovery_presentation,
     )
     scope_ref = str(context["scope"].get("scopeRef", ""))
-    receipt, reused = _write_receipt(core.memory_base, scope_ref, "open", body)
+    if persist_receipt:
+        receipt, reused = _write_receipt(core.memory_base, scope_ref, "open", body)
+    else:
+        receipt = dict(body)
+        binding_hash = str(receipt.get("bindingHash", ""))
+        receipt["receiptId"] = f"tr-open-{binding_hash[:24]}"
+        receipt["receiptHash"] = canonical_hash(receipt)
+        reused = False
     telemetry: dict[str, Any] | None = None
     telemetry_reused = True
     if record_telemetry:
@@ -2819,7 +2108,7 @@ def open_turn(
             receipt,
             runtime_duration_ms=round((time.perf_counter() - started_at) * 1000),
         )
-    return {
+    result = {
         "ok": True,
         "schema": SCHEMA,
         "mode": MODE,
@@ -2829,10 +2118,7 @@ def open_turn(
         "context": context,
         "activation": _public_receipt(receipt)["activation"],
         "runtimeReceipt": _public_receipt(receipt),
-        "continuityMapping": _public_tail_first_mapping(tail_first_mapping),
-        "visibleTailAssertion": public_visible_tail_assertion or {},
-        "autoVisibleTailFinalization": {},
-        "sessionRebind": session_rebind or {},
+        "continuityMapping": _public_continuity_mapping(continuity_mapping),
         "recoveryPresentation": recovery_presentation,
         "projectKnowledge": public_project_knowledge(project_knowledge),
         "receiptReused": reused,
@@ -2847,6 +2133,21 @@ def open_turn(
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
+    if return_private_bundle:
+        # Same-call-only handoff for ``close_turn``.  This is deliberately
+        # opt-in, never persisted, and never returned by the MCP/CLI-facing
+        # open path.  A no-op close can then publish its close receipt from
+        # the exact pre-dispatch proof instead of re-reading and re-hashing an
+        # unchanged contract/project slice.
+        result["_privateCloseBundle"] = {
+            "contract": contract,
+            "progressStatus": progress_status,
+            "projectKnowledge": project_knowledge,
+            "activation": activation,
+            "activationCode": activation_code,
+            "memoryRefs": refs,
+        }
+    return result
 
 
 def checkpoint_turn(
@@ -2855,12 +2156,13 @@ def checkpoint_turn(
     memory_mode: str = "auto",
     progress_checkpoint: dict[str, Any] | None = None,
     project_progress_proof: dict[str, Any] | None = None,
-    visible_progress_assertion: Any = None,
     transition_id: str = "",
     timeout: float = 8.0,
     turn_intent: str = "continuity",
     execution_assist_request: Any = None,
     capability_route_receipt: Any = None,
+    latest_user_instruction: str | None = None,
+    **legacy_transport: Any,
 ) -> dict[str, Any]:
     """Persist one latest-assistant-progress checkpoint through H7 authority.
 
@@ -2869,34 +2171,44 @@ def checkpoint_turn(
     material progress update so the next governed turn can recover it exactly.
     """
 
+    retired = _retired_host_transport_result("checkpoint", **legacy_transport)
+    if retired is not None:
+        return retired
+    if any(value is not None for value in legacy_transport.values()):
+        return _withheld("checkpoint", {}, "TURN_RUNTIME_ARGUMENTS_INVALID")
+
     requested_intent = resolve_turn_intent(turn_intent, memory_mode=memory_mode)
     checkpoint_intent_code = _progress_checkpoint_intent_guard(progress_checkpoint, requested_intent)
     if checkpoint_intent_code:
         return _withheld("checkpoint", {}, checkpoint_intent_code)
 
-    normalized_checkpoint_tail: dict[str, Any] | None = None
-    if visible_progress_assertion is not None:
-        normalized_checkpoint_tail, visible_tail_assertion_code = _normalize_visible_tail_assertion(
-            visible_progress_assertion
-        )
-        if normalized_checkpoint_tail is None:
-            return _withheld("checkpoint", {"turnIntent": public_turn_intent(requested_intent)}, visible_tail_assertion_code)
+    checkpoint_phase = str(progress_checkpoint.get("current_phase", "")).strip() if isinstance(progress_checkpoint, dict) else ""
+    checkpoint_next_action = str(progress_checkpoint.get("next_action", "")).strip() if isinstance(progress_checkpoint, dict) else ""
     terminal_finalization_checkpoint = (
         isinstance(progress_checkpoint, dict)
         and str(progress_checkpoint.get("source", "")) == "assistant_visible_reply"
-        and str(progress_checkpoint.get("current_phase", "")).strip().casefold()
-        in {"complete", "completed", "done"}
+        and (
+            checkpoint_phase.casefold() in {"complete", "completed", "done"}
+            or (
+                is_formal_phase(checkpoint_phase)
+                and checkpoint_next_action
+                and not checkpoint_next_action.casefold().startswith("no automatic action:")
+            )
+        )
     )
     opened = open_turn(
         core,
         memory_mode=memory_mode,
         record_telemetry=False,
+        persist_receipt=False,
         turn_intent=turn_intent,
         execution_assist_request=execution_assist_request,
         capability_route_receipt=capability_route_receipt,
         execution_apply_phase="execution",
-        require_visible_tail_assertion=False,
         allow_terminal_finalization=terminal_finalization_checkpoint,
+        allow_reconciliation_checkpoint=True,
+        terminal_finalization_phase=checkpoint_phase,
+        return_private_bundle=True,
     )
     checkpoint_reconcile = False
     checkpoint_reconcile_code = ""
@@ -2916,10 +2228,35 @@ def checkpoint_turn(
             "H7_VISIBLE_PROGRESS_RECEIPT_PROJECT_PROOF_MISMATCH",
             "H7_VISIBLE_PROGRESS_ASSISTANT_REPLY_REQUIRED",
         }
+        reconciliation_checkpoint_required = open_code == "H7_RECONCILIATION_CHECKPOINT_REQUIRED"
         if (
-            (open_code != "H7_PROJECT_PROGRESS_WITHHELD" and not repairable_visible_anchor)
+            reconciliation_checkpoint_required
+            and (
+                progress_checkpoint is None
+                or project_progress_proof is None
+                or not isinstance(latest_user_instruction, str)
+                or not latest_user_instruction.strip()
+            )
+        ):
+            return _withheld(
+                "checkpoint",
+                opened.get("context") if isinstance(opened.get("context"), dict) else {},
+                "H7_RECONCILIATION_CHECKPOINT_INPUT_REQUIRED",
+            )
+        if (
+            (
+                open_code != "H7_PROJECT_PROGRESS_WITHHELD"
+                and not repairable_visible_anchor
+                and not reconciliation_checkpoint_required
+            )
             or progress_checkpoint is None
-            or (open_code == "H7_PROJECT_PROGRESS_WITHHELD" and project_progress_proof is None)
+            or (
+                open_code in {
+                    "H7_PROJECT_PROGRESS_WITHHELD",
+                    "H7_RECONCILIATION_CHECKPOINT_REQUIRED",
+                }
+                and project_progress_proof is None
+            )
         ):
             return _withheld(
                 "checkpoint",
@@ -2945,9 +2282,26 @@ def checkpoint_turn(
             )
         ):
             return _withheld("checkpoint", context, "H7_PROGRESS_CHECKPOINT_RECONCILIATION_CONTEXT_INVALID")
-        contract, contract_code = _contract_binding(core, context)
+        contract, contract_code = _contract_binding(
+            core,
+            context,
+            allow_reconciliation_checkpoint=reconciliation_checkpoint_required,
+            terminal_finalization_phase=checkpoint_phase,
+        )
         if contract is None:
             return _withheld("checkpoint", context, contract_code)
+        if (
+            reconciliation_checkpoint_required
+            and (
+                contract.get("needsReconciliation") is not True
+                or not str(contract.get("focusId", "")).strip()
+            )
+        ):
+            return _withheld(
+                "checkpoint",
+                context,
+                "H7_RECONCILIATION_CHECKPOINT_CONTEXT_INVALID",
+            )
         activation, _, _ = _activation(core, context, contract, str(intent.get("memoryMode", memory_mode)))
         capabilities = activation.get("capabilities") if isinstance(activation.get("capabilities"), dict) else {}
         if (
@@ -2958,41 +2312,23 @@ def checkpoint_turn(
             return _withheld("checkpoint", context, "H7_PROGRESS_CHECKPOINT_RECONCILIATION_ACTIVATION_WITHHELD")
         checkpoint_reconcile = True
         checkpoint_reconcile_code = (
-            "H7_PROJECT_PROGRESS_REFRESH_READY"
-            if open_code == "H7_PROJECT_PROGRESS_WITHHELD"
-            else "H7_VISIBLE_PROGRESS_RECEIPT_RECONCILED_READY"
+            "H7_RECONCILIATION_CHECKPOINT_READY"
+            if reconciliation_checkpoint_required
+            else (
+                "H7_PROJECT_PROGRESS_REFRESH_READY"
+                if open_code == "H7_PROJECT_PROGRESS_WITHHELD"
+                else "H7_VISIBLE_PROGRESS_RECEIPT_RECONCILED_READY"
+            )
         )
     context = opened["context"]
-    checkpoint_tail_assertion: dict[str, Any] | None = None
-    if normalized_checkpoint_tail is not None:
-        # Checkpoint reconciliation is a drift-repair path.  It must preserve
-        # the historical diagnostic selector until the checkpoint verifier
-        # compares its exact observed sentence with the proposed progress;
-        # only normal open() canonicalizes legacy strict-v4 selection to the
-        # current-tail selector.
-        checkpoint_tail_input = normalized_checkpoint_tail
-        if str(checkpoint_tail_input.get("selection", "")) == VISIBLE_TAIL_CURRENT_VISIBLE_SELECTION:
-            checkpoint_tail_input = {
-                **checkpoint_tail_input,
-                "selection": VISIBLE_TAIL_CHECKPOINT_SELECTION,
-            }
-            checkpoint_tail_input["payloadHash"] = canonical_hash(
-                {key: value for key, value in checkpoint_tail_input.items() if key != "payloadHash"}
-            )
-        checkpoint_tail_assertion, visible_tail_assertion_code = _checkpoint_visible_tail_assertion_status(
-            core,
-            context,
-            checkpoint_tail_input,
-            progress_checkpoint,
-            allow_legacy_correction=str(requested_intent.get("kind", "")) in {
-                "user_correction",
-                "super_brain_issue_continuity",
-            },
-        )
-        if checkpoint_tail_assertion is None:
-            return _withheld("checkpoint", context, visible_tail_assertion_code)
     scope = context["scope"]
     task = context["task"]
+    private_open_bundle = opened.get("_privateCloseBundle")
+    current_contract = (
+        private_open_bundle.get("contract")
+        if isinstance(private_open_bundle, dict) and isinstance(private_open_bundle.get("contract"), dict)
+        else None
+    )
     checkpoint = record_progress_checkpoint(
         core.package_root,
         core.memory_base,
@@ -3001,7 +2337,9 @@ def checkpoint_turn(
         session_key=str(scope.get("ownerSessionKey", "")),
         progress_checkpoint=progress_checkpoint,
         project_progress_proof=project_progress_proof,
+        latest_user_instruction=latest_user_instruction,
         project_root=core._context_project_root(),
+        current_contract=current_contract,
         transition_id=transition_id,
         timeout=timeout,
     )
@@ -3024,7 +2362,6 @@ def checkpoint_turn(
         execution_assist_request=execution_assist_request,
         capability_route_receipt=capability_route_receipt,
         execution_apply_phase="execution",
-        require_visible_tail_assertion=False,
     )
     if refreshed.get("available") is not True:
         refreshed_code = str(refreshed.get("code", "H7_PROGRESS_CHECKPOINT_REOPEN_FAILED"))
@@ -3044,7 +2381,6 @@ def checkpoint_turn(
                 "code": refreshed_code,
                 "context": refreshed.get("context") if isinstance(refreshed.get("context"), dict) else context,
                 "checkpoint": checkpoint,
-                "visibleTailAssertion": _public_visible_tail_assertion(checkpoint_tail_assertion) if checkpoint_tail_assertion else {},
                 "runtimeReceipt": refreshed.get("runtimeReceipt"),
                 "receiptReused": bool(refreshed.get("receiptReused")),
                 "telemetry": refreshed.get("telemetry") if isinstance(refreshed.get("telemetry"), dict) else {},
@@ -3067,7 +2403,6 @@ def checkpoint_turn(
         "code": checkpoint_reconcile_code if checkpoint_reconcile else "H7_PROGRESS_CHECKPOINT_READY",
         "context": refreshed["context"],
         "checkpoint": checkpoint,
-        "visibleTailAssertion": _public_visible_tail_assertion(checkpoint_tail_assertion) if checkpoint_tail_assertion else {},
         "runtimeReceipt": refreshed.get("runtimeReceipt"),
         "receiptReused": bool(refreshed.get("receiptReused")),
         "telemetry": refreshed.get("telemetry") if isinstance(refreshed.get("telemetry"), dict) else {},
@@ -3092,9 +2427,16 @@ def close_turn(
     turn_intent: str = "direct",
     execution_assist_request: Any = None,
     capability_route_receipt: Any = None,
-    visible_progress_assertion: Any = None,
+    latest_user_instruction: str | None = None,
+    **legacy_transport: Any,
 ) -> dict[str, Any]:
     """Close a governed turn and execute a safe parent-resume transition."""
+
+    retired = _retired_host_transport_result("close", **legacy_transport)
+    if retired is not None:
+        return retired
+    if any(value is not None for value in legacy_transport.values()):
+        return _withheld("close", {}, "TURN_RUNTIME_ARGUMENTS_INVALID")
 
     started_at = time.perf_counter()
     close_intent = resolve_turn_intent(turn_intent, memory_mode=memory_mode)
@@ -3125,16 +2467,18 @@ def close_turn(
         core,
         memory_mode=memory_mode,
         record_telemetry=False,
+        persist_receipt=False,
         turn_intent=turn_intent,
         execution_assist_request=execution_assist_request,
         capability_route_receipt=capability_route_receipt,
-        visible_progress_assertion=visible_progress_assertion,
+        _execution_assist_bundle=(
+            execution_assist,
+            normalized_capability_route_receipt,
+            capability_route_compatibility,
+            execution_assist_code,
+        ),
         execution_apply_phase="verification",
-    )
-    entry_visible_tail_assertion = (
-        opened.get("visibleTailAssertion")
-        if isinstance(opened.get("visibleTailAssertion"), dict)
-        else {}
+        return_private_bundle=True,
     )
     if opened.get("available") is not True:
         # A close carrying the exact current checkpoint may perform the same
@@ -3151,6 +2495,7 @@ def close_turn(
                 turn_intent=turn_intent,
                 execution_assist_request=execution_assist_request,
                 capability_route_receipt=capability_route_receipt,
+                latest_user_instruction=latest_user_instruction,
             )
             if migrated.get("available") is not True:
                 return _withheld(
@@ -3180,7 +2525,14 @@ def close_turn(
             session_key=str(initial_scope.get("ownerSessionKey", "")),
             progress_checkpoint=progress_checkpoint,
             project_progress_proof=project_progress_proof,
+            latest_user_instruction=latest_user_instruction,
             project_root=core._context_project_root(),
+            current_contract=(
+                opened.get("_privateCloseBundle", {}).get("contract")
+                if isinstance(opened.get("_privateCloseBundle"), dict)
+                and isinstance(opened.get("_privateCloseBundle", {}).get("contract"), dict)
+                else None
+            ),
             transition_id=checkpoint_transition_id,
             timeout=timeout,
         )
@@ -3194,11 +2546,18 @@ def close_turn(
             core,
             memory_mode=memory_mode,
             record_telemetry=False,
+            persist_receipt=False,
             turn_intent=turn_intent,
             execution_assist_request=execution_assist_request,
             capability_route_receipt=capability_route_receipt,
+            _execution_assist_bundle=(
+                execution_assist,
+                normalized_capability_route_receipt,
+                capability_route_compatibility,
+                execution_assist_code,
+            ),
             execution_apply_phase="verification",
-            require_visible_tail_assertion=False,
+            return_private_bundle=True,
         )
         if opened.get("available") is not True:
             return _withheld(
@@ -3212,45 +2571,208 @@ def close_turn(
     evidence = _compact(completion_evidence_ref)
     evidence_hash = hashlib.sha256(evidence.encode("utf-8")).hexdigest() if evidence else ""
     safe_evidence_ref = f"turn-runtime:{evidence_hash[:32]}" if evidence_hash else ""
-    dispatched = dispatch_turn_close(
-        core.package_root,
-        core.memory_base,
-        task_id=str(task.get("taskId", "")),
-        workspace_key=str(scope.get("workspaceKey", "")),
-        session_key=str(scope.get("ownerSessionKey", "")),
-        turn_outcome=turn_outcome,
-        user_control=user_control,
-        completion_evidence_ref=safe_evidence_ref,
-        transition_id=close_transition_id,
-        timeout=timeout,
-    )
-    post_open = open_turn(
-        core,
-        memory_mode=memory_mode,
-        record_telemetry=False,
-        turn_intent=turn_intent,
-        execution_assist_request=execution_assist_request,
-        capability_route_receipt=capability_route_receipt,
-        execution_apply_phase="verification",
-        require_visible_tail_assertion=False,
-    )
-    post_context = post_open.get("context") if isinstance(post_open.get("context"), dict) else context
-    post_contract, contract_code = _contract_binding(core, post_context)
-    if post_contract is None:
-        return _withheld("close", post_context, contract_code)
-    post_progress_status = core._project_progress_status(post_contract)
-    if close_intent.get("projectEvidenceRequired") is True and post_progress_status.get("current") is not True:
-        return _withheld("close", post_context, "H7_PROJECT_PROGRESS_WITHHELD")
-    post_project_knowledge, post_project_knowledge_code = _resolve_project_knowledge_for_turn(
-        core,
-        post_contract,
-        post_progress_status,
-        execution_assist,
-    )
-    if post_project_knowledge is None:
-        return _withheld("close", post_context, post_project_knowledge_code or "H7_PROJECT_KNOWLEDGE_WITHHELD")
+    # Routine active-work closes are often policy-only: after a verified
+    # preflight, they simply say "continue this turn" and do not touch the
+    # contract.  Re-check the same contract/proof once in-process to close the
+    # race window, then avoid launching PowerShell solely to compute that pure
+    # policy.  Any mismatch falls through to the authoritative dispatcher.
+    dispatched: dict[str, Any] | None = None
+    preflight_bundle = opened.get("_privateCloseBundle")
+    if isinstance(preflight_bundle, dict):
+        fresh_contract, fresh_contract_code = _contract_binding(core, context)
+        current_task = context.get("task") if isinstance(context.get("task"), dict) else {}
+        if (
+            isinstance(fresh_contract, dict)
+            and context_hash(fresh_contract) == str(current_task.get("contractHash", ""))
+        ):
+            fresh_progress_status = core._project_progress_status(fresh_contract)
+            fast_policy = _policy_only_fast_close(
+                context,
+                fresh_contract,
+                fresh_progress_status,
+                close_intent,
+                turn_outcome=turn_outcome,
+                user_control=user_control,
+                completion_evidence_present=bool(evidence),
+                checkpoint_present=checkpoint is not None,
+            )
+            if fast_policy is not None:
+                # The final in-process re-read becomes the only reuse source
+                # for the later close receipt.  It is still stack-local and
+                # discarded before the result leaves ``close_turn``.
+                preflight_bundle["contract"] = fresh_contract
+                preflight_bundle["progressStatus"] = fresh_progress_status
+                dispatched = {
+                    "ok": True,
+                    "schema": "super-brain.turn-close-dispatch.v1",
+                    "code": "TURN_CLOSE_DISPATCH_POLICY_ONLY",
+                    "stateMutated": False,
+                    "policy": fast_policy,
+                    "resolution": _current_contract_policy_resolution(fresh_contract),
+                    "transition": None,
+                    "contractCode": "H7_CLOSE_POLICY_CURRENT_PRECHECK",
+                    "contractReason": "",
+                    "fastPath": "current_verified_policy_only",
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                }
+    if dispatched is None:
+        dispatched = dispatch_turn_close(
+            core.package_root,
+            core.memory_base,
+            task_id=str(task.get("taskId", "")),
+            workspace_key=str(scope.get("workspaceKey", "")),
+            session_key=str(scope.get("ownerSessionKey", "")),
+            turn_outcome=turn_outcome,
+            user_control=user_control,
+            completion_evidence_ref=safe_evidence_ref,
+            transition_id=close_transition_id,
+            timeout=timeout,
+        )
+    if dispatched.get("ok") is not True:
+        # Never report a failed authority transaction as an available close.
+        # Preserve the bounded dispatch projection so the caller can
+        # reconcile a possible partial commit instead of blindly retrying.
+        failed = _withheld(
+            "close",
+            context,
+            str(dispatched.get("code", "H7_CLOSE_DISPATCH_FAILED")),
+        )
+        failed["dispatch"] = {
+            "code": str(dispatched.get("code", "")),
+            "contractCode": str(dispatched.get("contractCode", "")),
+            "contractReason": str(dispatched.get("contractReason", "")),
+            "stateMutated": bool(dispatched.get("stateMutated") is True),
+        }
+        failed["operationState"] = "partially_committed" if dispatched.get("stateMutated") is True else "failed"
+        failed["retrySafe"] = dispatched.get("stateMutated") is not True
+        return failed
+    # A policy-only close has already run the authority Resolve but did not
+    # mutate its contract.  Re-opening it used to repeat the entire context,
+    # proof, project-knowledge, activation, receipt, and telemetry pipeline
+    # for exactly the same state.  Reuse only the pre-dispatch, stack-local
+    # bundle in this branch.  Any real transition (including an idempotent
+    # CloseTurn replay) keeps the fresh post-dispatch read below.
+    post_open: dict[str, Any] | None = None
+    post_context = context
+    post_contract: dict[str, Any] | None = None
+    post_progress_status: dict[str, Any] | None = None
+    post_project_knowledge: dict[str, Any] | None = None
+    post_activation: dict[str, Any] | None = None
+    activation_code = ""
+    refs: list[Any] = []
+    preflight_bundle = opened.get("_privateCloseBundle")
+    reuse_preflight_bundle = dispatched.get("stateMutated") is not True and isinstance(preflight_bundle, dict)
+    if reuse_preflight_bundle:
+        candidate_contract = preflight_bundle.get("contract")
+        candidate_progress = preflight_bundle.get("progressStatus")
+        candidate_knowledge = preflight_bundle.get("projectKnowledge")
+        candidate_activation = preflight_bundle.get("activation")
+        candidate_activation_code = preflight_bundle.get("activationCode")
+        candidate_refs = preflight_bundle.get("memoryRefs")
+        if (
+            isinstance(candidate_contract, dict)
+            and isinstance(candidate_progress, dict)
+            and isinstance(candidate_knowledge, dict)
+            and project_knowledge_receipt_is_valid(candidate_knowledge)
+            and isinstance(candidate_activation, dict)
+            and isinstance(candidate_activation_code, str)
+            and isinstance(candidate_refs, list)
+        ):
+            post_contract = candidate_contract
+            post_progress_status = candidate_progress
+            post_project_knowledge = candidate_knowledge
+            post_activation = candidate_activation
+            activation_code = candidate_activation_code
+            refs = candidate_refs
+        else:
+            reuse_preflight_bundle = False
+    if not reuse_preflight_bundle:
+        # Dispatch changed state (or a private bundle was unavailable), so a
+        # new live read is mandatory.  The already-validated execution-assist
+        # bundle remains valid only inside this same call and avoids a second
+        # cold registry/shadow-evaluation pass.
+        post_open = open_turn(
+            core,
+            memory_mode=memory_mode,
+            record_telemetry=True,
+            persist_receipt=True,
+            turn_intent=turn_intent,
+            execution_assist_request=execution_assist_request,
+            capability_route_receipt=capability_route_receipt,
+            _execution_assist_bundle=(
+                execution_assist,
+                normalized_capability_route_receipt,
+                capability_route_compatibility,
+                execution_assist_code,
+            ),
+            execution_apply_phase="verification",
+        )
+        post_context = post_open.get("context") if isinstance(post_open.get("context"), dict) else context
+        if post_open.get("available") is not True:
+            # The contract may already be committed.  Surface that fact and
+            # force a targeted reconciliation rather than returning a generic
+            # close failure that encourages an unsafe blind retry.
+            withheld = _withheld("close", post_context, "H7_POST_DISPATCH_OBSERVATION_REQUIRED")
+            withheld["dispatch"] = {
+                "code": str(dispatched.get("code", "")),
+                "contractCode": str(dispatched.get("contractCode", "")),
+                "contractReason": str(dispatched.get("contractReason", "")),
+                "stateMutated": bool(dispatched.get("stateMutated") is True),
+            }
+            withheld["postDispatchObservation"] = {
+                "state": "withheld",
+                "code": str(post_open.get("code", "H7_POST_DISPATCH_OPEN_WITHHELD")),
+                "retry": "reconcile_current_contract",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+            return withheld
+        post_contract, contract_code = _contract_binding(core, post_context)
+        if post_contract is None:
+            return _withheld("close", post_context, contract_code)
+        post_progress_status = core._project_progress_status(post_contract)
+        if close_intent.get("projectEvidenceRequired") is True and post_progress_status.get("current") is not True:
+            return _withheld("close", post_context, "H7_PROJECT_PROGRESS_WITHHELD")
+        # ``post_open`` has already resolved the proof-bound project slice for
+        # the post-dispatch contract.  Re-running the same resolver here added
+        # a full proof-file read/hash cycle without changing authorization.
+        post_project_knowledge = post_open.get("projectKnowledge")
+        if not isinstance(post_project_knowledge, dict) or not project_knowledge_receipt_is_valid(post_project_knowledge):
+            return _withheld("close", post_context, "H7_PROJECT_KNOWLEDGE_POST_OPEN_RECEIPT_INVALID")
+        post_context["projectKnowledge"] = post_project_knowledge
+        post_activation, activation_code, refs = _activation(core, post_context, post_contract, memory_mode)
+    assert isinstance(post_contract, dict)
+    assert isinstance(post_progress_status, dict)
+    assert isinstance(post_project_knowledge, dict)
+    assert isinstance(post_activation, dict)
     post_context["projectKnowledge"] = public_project_knowledge(post_project_knowledge)
-    post_activation, activation_code, refs = _activation(core, post_context, post_contract, memory_mode)
+    phase_closeout: dict[str, Any] = {
+        "state": "not_applicable",
+        "code": "H7_PHASE_CLOSEOUT_NOT_APPLICABLE",
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    # A formal closeout is now entirely local and H7-owned.  The authority
+    # reloads the current execution contract, current project proof, current
+    # visible-progress receipt, activation receipt, and telemetry bindings
+    # under the same CAS scope.  Host readback is permanently retired.
+    if is_formal_phase((post_context.get("task") or {}).get("currentPhase", "")):
+        current_task = post_context.get("task") if isinstance(post_context.get("task"), dict) else {}
+        plan_receipt = post_contract.get("planReceipt") if isinstance(post_contract.get("planReceipt"), dict) else {}
+        phase_closeout = create_phase_closeout(
+            core.package_root,
+            core.memory_base,
+            task_id=str(current_task.get("taskId", "")),
+            workspace_key=str((post_context.get("scope") or {}).get("workspaceKey", "")),
+            session_key=str((post_context.get("scope") or {}).get("ownerSessionKey", "")),
+            project_root=core._context_project_root(),
+            expected_revision=int(post_contract.get("revision", 0) or 0),
+            expected_plan_fingerprint=str(
+                post_contract.get("planFingerprint") or plan_receipt.get("planFingerprint") or ""
+            ),
+            timeout=timeout,
+        )
     policy = dispatched.get("policy") if isinstance(dispatched.get("policy"), dict) else {}
     transition = dispatched.get("transition") if isinstance(dispatched.get("transition"), dict) else None
     binding = {
@@ -3275,8 +2797,6 @@ def close_turn(
         "visibleProgressState": str(((post_context.get("task") or {}).get("visibleProgress") or {}).get("state", "withheld")),
         "visibleProgressHash": str(((post_context.get("task") or {}).get("visibleProgress") or {}).get("payloadHash", "")),
         "visibleProgressSentenceHash": str(((post_context.get("task") or {}).get("visibleProgress") or {}).get("sentenceHash", "")),
-        "visibleTailAssertionHash": str(entry_visible_tail_assertion.get("payloadHash", "")),
-        "visibleTailHostMessageHash": str(entry_visible_tail_assertion.get("hostMessageHash", "")),
         "capabilityRouteHash": str((normalized_capability_route_receipt or {}).get("routeHash", "")),
         "capabilitySelectionHash": str((normalized_capability_route_receipt or {}).get("selectionHash", "")),
         "capabilityRouteCompatibilityHash": str((capability_route_compatibility or {}).get("payloadHash", "")),
@@ -3298,7 +2818,6 @@ def close_turn(
         project_knowledge=public_project_knowledge(post_project_knowledge),
         capability_route_receipt=normalized_capability_route_receipt,
         capability_route_compatibility=capability_route_compatibility,
-        visible_tail_assertion=entry_visible_tail_assertion,
     )
     scope_ref = str(post_context["scope"].get("scopeRef", ""))
     receipt, reused = _write_receipt(core.memory_base, scope_ref, "close", body)
@@ -3328,6 +2847,7 @@ def close_turn(
         },
         "runtimeReceipt": _public_receipt(receipt),
         "projectKnowledge": public_project_knowledge(post_project_knowledge),
+        "phaseCloseout": phase_closeout,
         "receiptReused": reused,
         "telemetry": {
             "path": str(_telemetry_path(core.memory_base, scope_ref)),
@@ -3527,10 +3047,16 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
 def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str, Any]:
     """Small public interface used by CLI and MCP adapters."""
 
-    # External continuation state cannot prove that the current visible
-    # assistant tail was read.  Reject the retired field explicitly instead of
-    # silently dropping it or letting an old contract masquerade as current
-    # visible progress.
+    retired = _retired_host_transport_result(
+        phase if isinstance(phase, str) and phase else "open",
+        **{key: kwargs.get(key) for key in _RETIRED_HOST_TRANSPORT_FIELDS if key in kwargs},
+    )
+    if retired is not None:
+        return retired
+
+    # External continuation state cannot prove the current local contract.
+    # Reject the retired field explicitly instead of silently dropping it or
+    # letting an old contract masquerade as current progress.
     if "continuation_capsule" in kwargs:
         return _withheld(
             str(phase or "open"),
@@ -3546,7 +3072,6 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
             recovery_event=str(kwargs.get("recovery_event", "none")),
             execution_assist_request=kwargs.get("execution_assist_request"),
             capability_route_receipt=kwargs.get("capability_route_receipt"),
-            visible_progress_assertion=kwargs.get("visible_progress_assertion"),
             user_control=str(kwargs.get("user_control", "unknown")),
             timeout=float(kwargs.get("timeout", 8.0)),
         )
@@ -3564,7 +3089,11 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
             turn_intent=str(kwargs.get("turn_intent", kwargs.get("intent", "direct"))),
             execution_assist_request=kwargs.get("execution_assist_request"),
             capability_route_receipt=kwargs.get("capability_route_receipt"),
-            visible_progress_assertion=kwargs.get("visible_progress_assertion"),
+            latest_user_instruction=(
+                kwargs.get("latest_user_instruction")
+                if isinstance(kwargs.get("latest_user_instruction"), str)
+                else None
+            ),
         )
     if phase == "checkpoint":
         return checkpoint_turn(
@@ -3572,12 +3101,16 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
             memory_mode=str(kwargs.get("memory_mode", "auto")),
             progress_checkpoint=kwargs.get("progress_checkpoint") if isinstance(kwargs.get("progress_checkpoint"), dict) else None,
             project_progress_proof=kwargs.get("project_progress_proof") if isinstance(kwargs.get("project_progress_proof"), dict) else None,
-            visible_progress_assertion=kwargs.get("visible_progress_assertion"),
             transition_id=str(kwargs.get("transition_id", "")),
             timeout=float(kwargs.get("timeout", 8.0)),
             turn_intent=str(kwargs.get("turn_intent", kwargs.get("intent", "continuity"))),
             execution_assist_request=kwargs.get("execution_assist_request"),
             capability_route_receipt=kwargs.get("capability_route_receipt"),
+            latest_user_instruction=(
+                kwargs.get("latest_user_instruction")
+                if isinstance(kwargs.get("latest_user_instruction"), str)
+                else None
+            ),
         )
     if phase == "evidence":
         return read_evidence(core)

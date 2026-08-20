@@ -4,12 +4,14 @@ param(
   [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Text,
   [switch]$AllowActiveCheckpoint,
+  [switch]$Full,
   [switch]$Json
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 
 $ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
 
 function Convert-BrainJson([object[]]$Output, [string]$ScriptName) {
   $jsonStart = -1
@@ -23,7 +25,52 @@ function Convert-BrainJson([object[]]$Output, [string]$ScriptName) {
 $inputText = (($Text -join ' ').Trim())
 $result = $null
 switch ($Command) {
-  'status' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'health-summary.ps1') -Json -AllowActiveCheckpoint:$AllowActiveCheckpoint 6>$null) 'health-summary.ps1' }
+  'status' {
+    if ($Full) {
+      $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'health-summary.ps1') -Json -AllowActiveCheckpoint:$AllowActiveCheckpoint 6>$null) 'health-summary.ps1'
+      $result | Add-Member -NotePropertyName diagnosticMode -NotePropertyValue 'full' -Force
+    } else {
+      # Fast status is deliberately a narrow runtime/configuration snapshot.
+      # The previous default launched dashboard, doctor, smart-next, and
+      # extension verification (multiple nested PowerShell processes) on every
+      # status request.  Keep that comprehensive cold diagnostic behind
+      # ``status -Full``/``doctor`` so a normal status probe stays responsive.
+      $memoryRoot = Get-SuperBrainActiveMemoryRoot $Root
+      $runtimeCli = Join-Path $Root 'runtime\brain_cli.py'
+      $runtime = Convert-BrainJson @(& python $runtimeCli --package-root $Root --memory-root $memoryRoot status 6>$null) 'runtime/brain_cli.py status'
+      $runtimeStatus = $runtime
+      $version = if ($runtimeStatus) { [string]$runtimeStatus.version } else { '' }
+      $ready = [bool]($runtimeStatus -and $runtimeStatus.coreAvailable)
+      $result = [pscustomobject]@{
+        # Keep the historical status exit semantics focused on local runtime
+        # readiness.  Static MCP registration is reported separately below;
+        # an unregistered/stale host transport must not turn a fast health
+        # probe into a false command failure.
+        ok = [bool]($runtimeStatus -and $runtimeStatus.ok)
+        checkedAt = if ($runtimeStatus -and $runtimeStatus.updatedAt) { [string]$runtimeStatus.updatedAt } else { Get-SuperBrainUtcTimestamp }
+        version = $version
+        ready = $ready
+        coreAvailable = [bool]($runtimeStatus -and $runtimeStatus.coreAvailable)
+        retiredTransportGuard = if ($runtimeStatus) { $runtimeStatus.retiredTransportGuard } else { $null }
+        runtimeIdentity = if ($runtimeStatus) { $runtimeStatus.runtimeIdentity } else { $null }
+        mcpRuntimeBinding = if ($runtimeStatus) { $runtimeStatus.mcpRuntimeBinding } else { $null }
+        liveMcpHandshake = if ($runtimeStatus) { $runtimeStatus.liveMcpHandshake } else { $null }
+        risks = @()
+        riskSummary = [pscustomobject]@{ state='not_run'; code='H7_FULL_DIAGNOSTIC_NOT_RUN'; count=0 }
+        lockHealth = [pscustomobject]@{ state='not_run'; code='H7_FULL_DIAGNOSTIC_NOT_RUN' }
+        toolHealth = [pscustomobject]@{ state='not_run'; code='H7_FULL_DIAGNOSTIC_NOT_RUN' }
+        extensions = [pscustomobject]@{ state='not_run'; code='H7_FULL_DIAGNOSTIC_NOT_RUN'; ok=$null; extensionCount=$null; skillCount=$null; collisionCount=$null }
+        nextAction = 'Run scripts\\brain.ps1 status -Full only when a complete diagnostic is needed.'
+        recentTask = $null
+        diagnosticMode = 'hot'
+        fullDiagnostic = [pscustomobject]@{ state='not_run'; code='H7_FULL_DIAGNOSTIC_NOT_RUN'; freshness='unknown'; command='scripts\\brain.ps1 status -Full' }
+        runtimeStatus = $runtime
+        mcpStaticOk = $null
+        mcpExecutionState = 'live_probe_not_run'
+        mcpStaticConfig = [pscustomobject]@{ state='not_checked'; reason='fast_status_does_not_spawn_codex_mcp_probe' }
+      }
+    }
+  }
   'next' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'smart-next.ps1') $inputText -Json 6>$null) 'smart-next.ps1' }
   'intent' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'intent-router.ps1') -Text $inputText -Json 6>$null) 'intent-router.ps1' }
   'repository' { $result = Convert-BrainJson @(& (Join-Path $PSScriptRoot 'release-readiness.ps1') -Json 6>$null) 'release-readiness.ps1' }
@@ -50,7 +97,7 @@ switch ($Command) {
     $result = [pscustomobject]@{
       ok = $true
       commands = @('status','next','intent','repository','scorecard','dispatch','optimize','technology','ci','skills','capability','extensions','help')
-      examples = @('scripts\brain.ps1 status','scripts\brain.ps1 next continue','scripts\brain.ps1 intent repository','scripts\brain.ps1 repository','scripts\brain.ps1 optimize','scripts\brain.ps1 technology','scripts\brain.ps1 technology database','scripts\brain.ps1 skills','scripts\brain.ps1 skills browser','scripts\brain.ps1 capability browser-act','scripts\brain.ps1 extensions')
+      examples = @('scripts\brain.ps1 status','scripts\brain.ps1 status -Full','scripts\brain.ps1 next continue','scripts\brain.ps1 intent repository','scripts\brain.ps1 repository','scripts\brain.ps1 optimize','scripts\brain.ps1 technology','scripts\brain.ps1 technology database','scripts\brain.ps1 skills','scripts\brain.ps1 skills browser','scripts\brain.ps1 capability browser-act','scripts\brain.ps1 extensions')
       guard = 'Skills are visible for inspection but ORC still routes by intent/capability; do not force manual skill menu usage.'
     }
   }

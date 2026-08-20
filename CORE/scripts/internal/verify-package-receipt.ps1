@@ -7,6 +7,18 @@ function Get-VerifyPackageResultHash([object]$Result) {
   return Get-SuperBrainStableHash ($canonical | ConvertTo-Json -Depth 16 -Compress) 64
 }
 
+function ConvertFrom-VerifyPackageJson([string]$Json) {
+  if ([string]::IsNullOrWhiteSpace($Json)) { throw 'VERIFY_PACKAGE_JSON_REQUIRED' }
+  # PowerShell 7 parses ISO-8601 strings into local DateTime values by
+  # default, while Windows PowerShell keeps them as strings. Preserve the
+  # wire representation so receipt hashes remain stable across hosts.
+  $convertFromJson = Get-Command ConvertFrom-Json -ErrorAction Stop
+  if ($convertFromJson.Parameters.ContainsKey('DateKind')) {
+    return $Json | ConvertFrom-Json -DateKind String -ErrorAction Stop
+  }
+  return $Json | ConvertFrom-Json -ErrorAction Stop
+}
+
 function New-VerifyPackageReceiptCheck([bool]$Ok,[string]$Error,[object]$Receipt=$null,[string]$ReceiptText='') {
   return [pscustomobject]@{
     ok = $Ok
@@ -43,7 +55,7 @@ function Test-VerifyPackageResultReceipt([string]$ReceiptPath,[string]$ExpectedR
     if ([string]::IsNullOrWhiteSpace($receiptText)) {
       return New-VerifyPackageReceiptCheck $false 'VERIFY_PACKAGE_RESULT_INVALID'
     }
-    $receipt = $receiptText | ConvertFrom-Json -ErrorAction Stop
+    $receipt = ConvertFrom-VerifyPackageJson $receiptText
   } catch {
     return New-VerifyPackageReceiptCheck $false 'VERIFY_PACKAGE_RESULT_INVALID'
   }

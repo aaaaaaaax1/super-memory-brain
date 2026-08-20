@@ -5,8 +5,6 @@ param(
   [string]$MemoryRoot = '',
   [switch]$RepairMcp,
   [switch]$Force,
-  [ValidateRange(1,1440)]
-  [int]$McpProbeMaxAgeMinutes = 60,
   [switch]$FailOnNotReady,
   [switch]$Json
 )
@@ -82,21 +80,13 @@ function Test-McpBinding([object]$Registered) {
   $registeredPackage = Get-McpTransportValue $Registered 'SUPER_BRAIN_PACKAGE_ROOT'
   $registeredMemory = Get-McpTransportValue $Registered 'NEXSANDBASE_HOME'
   $registeredIdentity = Get-McpTransportValue $Registered 'SUPER_BRAIN_RUNTIME_IDENTITY'
+  $registeredTransport = Get-McpTransportValue $Registered 'SUPER_BRAIN_MCP_TRANSPORT'
   $packageArg = Get-McpTransportValue $Registered '--package-root'
   $memoryArg = Get-McpTransportValue $Registered '--memory-root'
-  return ((Same-Path $registeredPackage $Root) -and (Same-Path $packageArg $Root) -and (Same-Path $registeredMemory $MemoryRoot) -and (Same-Path $memoryArg $MemoryRoot) -and ([string]$registeredIdentity -eq [string]$mcpRuntimeIdentity))
+  return ((Same-Path $registeredPackage $Root) -and (Same-Path $packageArg $Root) -and (Same-Path $registeredMemory $MemoryRoot) -and (Same-Path $memoryArg $MemoryRoot) -and ([string]$registeredIdentity -eq [string]$mcpRuntimeIdentity) -and ([string]$registeredTransport -eq 'codex_registered_v1'))
 }
 
-function Test-FreshMcpFunctionalProbe([object]$Previous) {
-  if (-not $Previous -or $Previous.mcpFunctionalOk -ne $true -or [string]::IsNullOrWhiteSpace([string]$Previous.mcpFunctionalCheckedAt)) { return $false }
-  try {
-    return ([datetime]::Parse([string]$Previous.mcpFunctionalCheckedAt).AddMinutes($McpProbeMaxAgeMinutes) -ge (Get-Date))
-  } catch {
-    return $false
-  }
-}
-
-function Invoke-McpFunctionalProbe {
+function Invoke-McpProtocolReplay {
   $runtimeEval = Join-Path $PSScriptRoot 'runtime-eval.ps1'
   $checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
   if (-not (Test-Path -LiteralPath $runtimeEval)) {
@@ -139,31 +129,36 @@ $sourceSkillPath = Join-Path $Root 'super-memory-brain\SKILL.md'
 $entrySkillHash = if (Test-Path -LiteralPath $entrySkillPath -PathType Leaf) { (Get-FileHash -LiteralPath $entrySkillPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
 $sourceSkillHash = if (Test-Path -LiteralPath $sourceSkillPath -PathType Leaf) { (Get-FileHash -LiteralPath $sourceSkillPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
 $entrySkillFresh = -not [string]::IsNullOrWhiteSpace($entrySkillHash) -and $entrySkillHash -eq $sourceSkillHash
-$entrySkillOk = $entrySkillFresh -and (Same-Path $packageMarker $Root) -and (Same-Path $memoryMarker $MemoryRoot)
-$entrySkillState = if (-not (Test-Path -LiteralPath $entrySkillPath -PathType Leaf)) { 'missing' } elseif (-not $entrySkillFresh) { 'stale' } elseif (-not (Same-Path $packageMarker $Root) -or -not (Same-Path $memoryMarker $MemoryRoot)) { 'marker_mismatch' } else { 'ready' }
+$startupRoute = Test-SuperBrainGlobalStartup $CodexSkills
+$startupRouteReady = [bool]$startupRoute.ok
+$entrySkillPhysicalOk = $entrySkillFresh -and (Same-Path $packageMarker $Root) -and (Same-Path $memoryMarker $MemoryRoot)
+$entrySkillOk = $entrySkillPhysicalOk -and $startupRouteReady
+$entrySkillState = if (-not (Test-Path -LiteralPath $entrySkillPath -PathType Leaf)) { 'missing' } elseif (-not $entrySkillFresh) { 'stale' } elseif (-not (Same-Path $packageMarker $Root) -or -not (Same-Path $memoryMarker $MemoryRoot)) { 'marker_mismatch' } elseif (-not $startupRouteReady) { 'startup_route_missing_or_stale' } else { 'ready' }
 $codexPath = Resolve-CodexCli
 $mcpProbe = Invoke-CodexJson $codexPath @('mcp','get','super-memory-brain','--json')
 $registered = $mcpProbe.value
-$mcpBindingOk = Test-McpBinding $registered
+$mcpConfigBindingOk = Test-McpBinding $registered
+$runtimeBindingPath = Join-Path $workspace 'runtime-state\mcp-runtime-binding.json'
+$runtimeBinding = Read-JsonFile $runtimeBindingPath
+$registeredEpoch = Get-McpTransportValue $registered 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
+$mcpEpochMatches = ($runtimeBinding -and [string]$runtimeBinding.schema -eq 'super-brain.mcp-runtime-binding.v1' -and [string]$runtimeBinding.state -in @('restart_required','current') -and [string]$runtimeBinding.registrationEpoch -eq [string]$registeredEpoch -and [string]$runtimeBinding.runtimeIdentity -eq [string]$mcpRuntimeIdentity)
+$mcpBindingOk = ($mcpConfigBindingOk -and $mcpEpochMatches)
+$liveHandshake = if ($runtimeBinding -and $runtimeBinding.liveHandshake) { $runtimeBinding.liveHandshake } else { $null }
+$mcpLiveHandshakeVerified = ($mcpBindingOk -and $liveHandshake -and [string]$liveHandshake.schema -eq 'super-brain.mcp-live-handshake.v1' -and [string]$liveHandshake.registrationEpoch -eq [string]$registeredEpoch -and [string]$liveHandshake.runtimeIdentity -eq [string]$mcpRuntimeIdentity -and [string]$liveHandshake.transport -eq 'codex_registered_mcp_stdio')
 $repairAttempted = $false
 $repairResult = $null
 $cacheUsed = $false
-$previous = Read-JsonFile $statePath
-$cacheIdentityMatches = ($previous -and [string]$previous.version -eq [string]$manifest.version -and [string]$previous.mcpRuntimeIdentity -eq [string]$mcpRuntimeIdentity -and (Same-Path ([string]$previous.packageRoot) $Root) -and (Same-Path ([string]$previous.memoryRoot) $MemoryRoot))
-$mcpFunctionalProbe = $null
-$mcpFunctionalOk = $false
-$mcpFunctionalCheckedAt = ''
-if ($mcpBindingOk -and -not $Force -and $cacheIdentityMatches -and (Test-FreshMcpFunctionalProbe $previous)) {
-  $cacheUsed = $true
-  $mcpFunctionalOk = $true
-  $mcpFunctionalCheckedAt = [string]$previous.mcpFunctionalCheckedAt
-} elseif ($mcpBindingOk) {
-  $mcpFunctionalProbe = Invoke-McpFunctionalProbe
-  $mcpFunctionalOk = [bool]$mcpFunctionalProbe.ok
-  $mcpFunctionalCheckedAt = [string]$mcpFunctionalProbe.checkedAt
-}
+$mcpProtocolReplay = $null
+if ($mcpBindingOk -and $Force) { $mcpProtocolReplay = Invoke-McpProtocolReplay }
 
-if ((-not $mcpBindingOk -or -not $mcpFunctionalOk) -and $RepairMcp) {
+# A temporary stdio replay validates the package protocol only.  It cannot
+# prove which MCP process Codex has resident.  Only the registration-epoch
+# handshake may make the live transport ready; the replay remains diagnostic.
+$mcpFunctionalOk = [bool]$mcpLiveHandshakeVerified
+$mcpFunctionalCheckedAt = if ($mcpLiveHandshakeVerified) { [string]$liveHandshake.checkedAt } else { '' }
+$mcpLiveHandshakeState = if ($mcpLiveHandshakeVerified) { 'current' } elseif ($mcpBindingOk) { 'not_observed_restart_required' } else { 'configuration_missing_or_stale' }
+
+if (-not $mcpBindingOk -and $RepairMcp) {
   $repairAttempted = $true
   $runtimeScript = Join-Path $PSScriptRoot 'install-runtime.ps1'
   $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimeScript -CodexHome $CodexHome -MemoryRoot $MemoryRoot -Json 2>&1)
@@ -174,12 +169,17 @@ if ((-not $mcpBindingOk -or -not $mcpFunctionalOk) -and $RepairMcp) {
   if (-not $repairResult) { $repairResult = [pscustomobject]@{ ok=($repairCode -eq 0); error='MCP_REPAIR_OUTPUT_INVALID' } }
   $mcpProbe = Invoke-CodexJson (Resolve-CodexCli) @('mcp','get','super-memory-brain','--json')
   $registered = $mcpProbe.value
-  $mcpBindingOk = Test-McpBinding $registered
+  $mcpConfigBindingOk = Test-McpBinding $registered
+  $runtimeBinding = Read-JsonFile $runtimeBindingPath
+  $registeredEpoch = Get-McpTransportValue $registered 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
+  $mcpEpochMatches = ($runtimeBinding -and [string]$runtimeBinding.schema -eq 'super-brain.mcp-runtime-binding.v1' -and [string]$runtimeBinding.state -in @('restart_required','current') -and [string]$runtimeBinding.registrationEpoch -eq [string]$registeredEpoch -and [string]$runtimeBinding.runtimeIdentity -eq [string]$mcpRuntimeIdentity)
+  $mcpBindingOk = ($mcpConfigBindingOk -and $mcpEpochMatches)
+  $liveHandshake = if ($runtimeBinding -and $runtimeBinding.liveHandshake) { $runtimeBinding.liveHandshake } else { $null }
+  $mcpLiveHandshakeVerified = ($mcpBindingOk -and $liveHandshake -and [string]$liveHandshake.schema -eq 'super-brain.mcp-live-handshake.v1' -and [string]$liveHandshake.registrationEpoch -eq [string]$registeredEpoch -and [string]$liveHandshake.runtimeIdentity -eq [string]$mcpRuntimeIdentity -and [string]$liveHandshake.transport -eq 'codex_registered_mcp_stdio')
   if ($mcpBindingOk) {
-    $mcpFunctionalProbe = Invoke-McpFunctionalProbe
-    $mcpFunctionalOk = [bool]$mcpFunctionalProbe.ok
-    $mcpFunctionalCheckedAt = [string]$mcpFunctionalProbe.checkedAt
-    $cacheUsed = $false
+    $mcpFunctionalOk = [bool]$mcpLiveHandshakeVerified
+    $mcpFunctionalCheckedAt = if ($mcpLiveHandshakeVerified) { [string]$liveHandshake.checkedAt } else { '' }
+    $mcpLiveHandshakeState = if ($mcpLiveHandshakeVerified) { 'current' } else { 'not_observed_restart_required' }
   }
 }
 
@@ -200,10 +200,10 @@ if (Test-Path -LiteralPath $activationRuntime) {
   $activationProbeCode = 'ACTIVATION_RUNTIME_MISSING'
 }
 $activationCoreReady = ($activation -and $activation.receiptHash -and $activation.capabilities -and $activation.capabilities.coreReady -eq $true -and $activation.activationState -eq 'full_brain_active')
-$readiness = Get-SuperBrainRuntimeReadiness -EntryAdapterReady $entrySkillOk -MemoryRootReady $memoryRootExists -McpBindingReady $mcpBindingOk -McpFunctionalReady $mcpFunctionalOk -ActivationCoreReady $activationCoreReady -CliRuntimeReady $activationCoreReady
+$readiness = Get-SuperBrainRuntimeReadiness -EntryAdapterReady $entrySkillOk -MemoryRootReady $memoryRootExists -McpBindingReady $mcpBindingOk -McpLiveHandshakeReady $mcpLiveHandshakeVerified -ActivationCoreReady $activationCoreReady -CliRuntimeReady $activationCoreReady
 $ok = [bool]($readiness.coreRuntimeReady -and $entrySkillOk)
-$needsNewTask = [bool]($repairAttempted -and $repairResult -and $repairResult.ok -eq $true -and $mcpFunctionalOk)
-$action = if (-not $entrySkillOk) { 'refresh_codex_entry_adapter' } elseif (-not $readiness.coreRuntimeReady -and $repairAttempted) { 'inspect_mcp_repair_and_open_new_task' } else { [string]$readiness.action }
+$needsNewTask = $false
+$action = if (-not $entrySkillOk) { 'refresh_codex_entry_adapter' } elseif (-not $mcpBindingOk) { 'repair_mcp_registration' } elseif (-not $readiness.coreRuntimeReady -and $repairAttempted) { 'inspect_mcp_repair' } elseif ($mcpLiveHandshakeState -eq 'not_observed_restart_required') { 'restart_codex_and_verify_live_mcp' } else { [string]$readiness.action }
 $result = [pscustomobject]@{
   ok = $ok
   schema = 'super-brain.first-load-bootstrap.v1'
@@ -214,27 +214,37 @@ $result = [pscustomobject]@{
   codexSkills = $CodexSkills
   memoryRoot = $MemoryRoot
   entrySkillOk = $entrySkillOk
+  entrySkillPhysicalOk = $entrySkillPhysicalOk
   entrySkillFresh = $entrySkillFresh
   entrySkillState = $entrySkillState
   hostEntryReady = $entrySkillOk
+  startupRouteReady = $startupRouteReady
+  startupRouteState = if ($startupRouteReady) { 'ready' } else { 'withheld' }
+  startupRouteReason = [string]$startupRoute.reason
+  startupRoutePaths = @($startupRoute.paths)
+  startupRouteExpected = @($startupRoute.expected)
+  startupRouteFailed = @($startupRoute.failed)
   coreRuntimeReady = [bool]$readiness.coreRuntimeReady
   adapterRequired = $true
   adapterState = $entrySkillState
   transport = [string]$readiness.transport
-  availability = if ($ok) { 'full' } else { 'withheld' }
+  availability = if (-not $ok) { 'withheld' } elseif ($mcpLiveHandshakeState -eq 'not_observed_restart_required') { 'h7_cli_ready_mcp_restart_required' } else { 'full' }
   memoryRootExists = $memoryRootExists
   mcpRegistered = ($null -ne $registered)
+  mcpConfigBindingOk = $mcpConfigBindingOk
+  mcpEpochMatches = $mcpEpochMatches
   mcpBindingOk = $mcpBindingOk
   mcpRuntimeIdentity = $mcpRuntimeIdentity
+  mcpLiveHandshakeState = $mcpLiveHandshakeState
+  mcpLiveHandshakeVerified = [bool]$mcpLiveHandshakeVerified
   mcpFunctionalOk = $mcpFunctionalOk
   mcpFunctionalCheckedAt = $mcpFunctionalCheckedAt
-  mcpFunctionalProbe = if ($mcpFunctionalProbe) { [pscustomobject]@{ code=[string]$mcpFunctionalProbe.code; durationMs=[int]$mcpFunctionalProbe.durationMs; checkCount=[int]$mcpFunctionalProbe.checkCount; failureCount=[int]$mcpFunctionalProbe.failureCount } } else { $null }
+  mcpProtocolReplay = if ($mcpProtocolReplay) { [pscustomobject]@{ code=[string]$mcpProtocolReplay.code; durationMs=[int]$mcpProtocolReplay.durationMs; checkCount=[int]$mcpProtocolReplay.checkCount; failureCount=[int]$mcpProtocolReplay.failureCount; mode='offline_replay_not_live_proof' } } else { $null }
   activationState = if ($activation) { [string]$activation.activationState } else { 'withheld' }
   fullBrainActive = ($activation -and [string]$activation.activationState -eq 'full_brain_active')
   activationCoreReady = [bool]$activationCoreReady
   activationProbeCode = $activationProbeCode
   activationReceipt = if ($activation) { [pscustomobject]@{ activationId=[string]$activation.activationId; receiptHash=[string]$activation.receiptHash; scopeRef=[string]$activation.scope.scopeRef; packageVersion=[string]$activation.package.version; routeMapHash=[string]$activation.route.routeMapHash; coreReady=[bool]$activation.capabilities.coreReady; rawPromptStored=$false; rawTranscriptStored=$false } } else { $null }
-  mcpProbeMaxAgeMinutes = $McpProbeMaxAgeMinutes
   repairAttempted = $repairAttempted
   repairOk = if ($repairResult) { [bool]$repairResult.ok } else { $false }
   needsNewTask = $needsNewTask

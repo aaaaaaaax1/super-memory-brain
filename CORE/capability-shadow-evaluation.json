@@ -4,7 +4,7 @@
   "state": "passed",
   "code": "H7_CAPABILITY_SHADOW_EVALUATION_PASSED",
   "packageVersion": "0.6.0",
-  "manifestSha256": "8fd45ca012446e20d45d5340e7d0c23a376a133fa77d1663f27cbc43ffbfa16e",
+  "manifestSha256": "5daeccdf0384a13c6f086e4fa5c244365b67d98dc209947d930fa8aa73c32244",
   "sourceRegistrySha256": "a1c019507efe6a3ad6862ff27d429385cf1793a52e0953f4fb3420e14efd032c",
   "sourceManifestHashes": [
     {
@@ -43,5 +43,5 @@
   ],
   "rawPromptStored": false,
   "rawTranscriptStored": false,
-  "payloadHash": "e3b9ea285879be1a085467b3eeb5599c7e0eea3c21eeaf141a3d963f88652c87"
+  "payloadHash": "bd582dd88303c3df375db68615e956f38f484c818c3ffbb09223c6ed9cfc343a"
 }

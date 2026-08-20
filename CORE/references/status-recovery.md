@@ -1,9 +1,15 @@
 # Status And Recovery Route
 
 Super Brain is an independent H7 control-plane Agent. This document describes
-its recovery contract; it does not create a second state store or a host-side
-continuation policy. The current H7 scope, execution contract, visible-progress
-receipt, and live project proof remain the authoritative control plane.
+its local-only recovery contract; it does not create a second state store or an
+external continuation policy. The current cwd, `SUPER_BRAIN_LOCAL_SESSION_ID`,
+scoped execution contract, current local progress receipt, and live project
+proof remain the authoritative control plane.
+
+Host transport is permanently retired. H7 never reads, waits for, retries, or
+persists Host tail, context, thread, readback, or metadata; it also never binds,
+starts, or bridges those inputs. Every legacy Host transport input is rejected
+before decoding with `H7_HOST_TRANSPORT_RETIRED`.
 
 ## Authority Split
 
@@ -13,72 +19,49 @@ another:
 1. The latest user instruction controls the objective, authorization, stop,
    replace, and priority decision. It is never a progress anchor and cannot
    select, truncate, or rewrite the latest assistant progress.
-2. The time-latest real assistant reply still visible in the current thread
-   locates where continuation begins. It is never sufficient by itself to claim
-   the task, phase, step, completed work, or next mutation.
-3. The scoped execution contract stores the mapped task state, canonical plan,
-   work-line tree, and permitted action. It cannot select a visible locator by
-   itself, but it is valid current-state evidence after H7 has mapped that
-   locator to exactly one same-scope workline.
+2. The scoped execution contract stores the mapped task state, canonical plan,
+   work-line tree, and permitted action for exactly one local cwd/session scope.
+3. The current local progress receipt records the latest proof-bound progress
+   publication for that contract. It cannot replace task state or live facts.
 4. Live project evidence and the H7 project-progress proof establish project
    facts and actual completed work. A stale proof is not evidence of current
    progress.
-5. A strict H7 v4 durable visible-progress receipt validates the current
-   locator when it is present; it never causes H7 to scan backward and select an
-   older reply. Memory, summaries, handoffs, checkpoints, tool narration, and
-   collaborator reports are supplemental evidence only. They never replace the
-   current visible locator.
+5. Memory, summaries, handoffs, checkpoints, tool narration, and collaborator
+   reports are supplemental evidence only. They never replace the current local
+   scope, contract, progress receipt, or project proof.
 
-## Visible-First, Mapping-Second Continuation
+## Local-Only Continuation
 
 For the same main workline, compaction, pause-after-continue, restart, model
-switch, rebind, and user correction, H7 first reads the current thread's
-**time-latest real assistant reply still visible in the visible context**. That
-is `current_visible_assistant`: it answers only **where to resume looking**.
-It is not a task selector and cannot, by its wording alone, decide what work was
-actually completed.
+switch, rebind, and user correction, H7 has one recovery input: exactly one
+current local cwd/session scope, meaning cwd plus `SUPER_BRAIN_LOCAL_SESSION_ID`. H7 resolves one scoped
+execution contract, then rechecks its current local progress receipt and live
+project proof. The resulting `local_contract_current` recovery projection is
+non-authorizing and contains no external text, identity, thread, or locator.
 
-When the Host has already injected the exact current visible tail into the
-agent context, the adapter derives one bounded `codex_visible_context`
-observation without a thread read. Otherwise it reads the current thread tail
-once and supplies one bounded host-derived `visible_progress_assertion`, never
-raw thread text or Host identities. If it has no already-exposed current-tail
-observation, it may make exactly one bounded
-`read_thread(turnLimit=1, includeOutputs=false, maxOutputCharsPerItem=480)`
-read and one `turnLimit=2` retry only when no actual assistant candidate is
-returned. It does not scan the conversation, project tree, summaries,
-contracts, checkpoints, memory, user messages, or older receipts to find a more
-convenient replacement. This transport cannot cryptographically attest a
-caller-supplied assertion, so the adapter must derive it from current
-Host-visible context or the bounded fallback read, and H7 must still validate
-scope and receipt binding. A process-local
-cache/lease, old contract, checkpoint, summary, memory, or old receipt is never
-a locator substitute. If the Host cannot provide a current observation, H7 withholds the
-governed action and repairs the evidence path; a timeout never proves that
-prior visible context is unavailable.
+Summaries, memory, old receipts, cache/leases, and state cards cannot select
+normal continuation. Public `host_visible_context`, `host_thread_payload`,
+`visible_progress_assertion`, Host readback, and Host metadata inputs return
+`H7_HOST_TRANSPORT_RETIRED` immediately. A missing local scope, non-unique
+contract, stale proof, or unavailable H7 runtime withholds governed action.
 
-### Two-Stage Resume Decision
+### Resume Decision
 
-1. **Locate.** Select only the time-latest actual `agentMessage` currently
-   visible in this thread. A newer ordinary message remains the locator; H7
-   must not walk backward to an older v4 receipt.
-2. **Map and verify.** Starting from that locator, H7 maps it to exactly one
-   same-scope task/workline using current scope identity and then uses the
-   current contract plus live project evidence to establish the actual phase,
-   step, completed work, pending work, and allowed next action. A missing,
-   ambiguous, foreign, or evidence-conflicting mapping does not silently choose
-   an older task; it enters reconciliation before mutation.
+1. **Resolve scope.** Derive the workspace only from cwd and the owner session
+   only from `SUPER_BRAIN_LOCAL_SESSION_ID`.
+2. **Map and verify.** Resolve exactly one current scoped contract and validate
+   its current local progress receipt plus live project proof. Use those records
+   to establish the actual task, workline, phase, step, completed work, pending
+   work, and allowed next action.
 
-This is deliberately one-way: the visible reply locates the resume point;
-current task state and project proof explain what that point means. An old
-summary, old contract, old checkpoint, memory record, or old receipt cannot
-replace the locator, but a current same-scope contract and current project proof
-are required to interpret it accurately.
+A missing, ambiguous, foreign, or evidence-conflicting mapping enters
+reconciliation before mutation. An old summary, contract, checkpoint, memory
+record, receipt, external thread, or external message cannot replace the current
+local scope and current proof.
 
-### Candidate Classes And Ordinary Continuity
+### Local Progress And Ordinary Continuity
 
-`latest_durable_assistant` only validates whether the same current locator has
-the strict v4 prefix in its first three non-empty lines:
+The current local progress receipt validates the strict v4 progress envelope:
 
 ```text
 G1
@@ -86,17 +69,13 @@ G1
 <one compact progress sentence>
 ```
 
-Later evidence is display-only and never changes the binding. A strict v4
-candidate becomes durable progress only when its hash, exact sentence, scope,
-and live project proof are current. A plain current reply remains
-display-only continuity evidence: it may be the correct normal continuation
-starting point, but it cannot itself claim a phase, completed work,
-authorization, or a formal stage transition.
-Strict v4 validation is required for a durable progress/phase/completion claim
-and for a forward formal stage transition.
+The envelope becomes durable progress only when its hash, exact sentence, local
+scope, execution-contract revision, and live project proof are current. Plain
+commentary cannot claim a phase, completed work, authorization, or a formal
+stage transition. Strict v4 validation remains required for a durable
+progress/phase/completion claim and for a forward formal stage transition.
 
-When mapping finds no active task, H7 performs **ordinary no-task continuity**:
-it keeps the current visible reply as the continuity point and responds normally
+When mapping finds no active task, H7 performs **ordinary no-task continuity**
 without creating an execution contract, task card, state card, project proof,
 or fake repair task. H7 participation is still real; the absence of a task card
 does not disable continuity.
@@ -110,124 +89,103 @@ or high-impact mutation.
 
 ### State Cards And Boundary Recovery
 
-A state card is an exceptional recovery selector, not a normal same-workline
-readback or synchronization record. Normal same-workline continuation,
-compaction, pause-and-resume, and restart keep the current visible locator in a
-transient H7 receipt binding only: they do not persist a visible-readback/state
-card or perform a per-turn state-card CAS. A state card may select a workline
-only in two cases:
+A state card is an exceptional `parent_return` selector, not a normal
+same-workline synchronization record. Local-contract recovery remains card-free:
+it does not persist an external-readback/state card or perform a per-turn
+state-card CAS.
+A state card may select a workline only after H7 verifies an approved
+`parent_return` to another approved workline.
 
-1. H7 has proved that this current session truly cannot read its prior visible
-   context after the bounded current-thread read and retry have completed with a
-   structured unavailable result; or
-2. H7 has verified an approved `parent_return` to another approved workline and
-   selects the already-approved parent workline.
-
-A skipped read, timeout, slow response, missing attempt, stale hot index, or
-old receipt is **not** proof that visible context is unavailable. Those cases
-withhold the governed action and repair the evidence path; they never authorize
-a state-card fallback. A same-process cache or lease is likewise not a fallback.
-The state card can never override a same-workline current visible locator.
+A timeout, stale hot index, old receipt, or missing entry adapter is **not** a
+state-card eligibility signal. A same-process cache or lease is likewise not a
+fallback. The state card can never override a valid current local contract.
 
 ### Drift Diagnosis And Repair
 
-`latest_assistant` is reserved for detected drift diagnosis only. It may
-describe a mismatch, but never selects normal continuation or auto-mutates a
-contract. On drift, H7 must: (1) map the current visible locator to the latest
-same-scope task state and live project evidence, (2) prevent a duplicate or
-already-failed action, (3) correct the current visible/scoped state, (4) repair
-the root cause, and (5) replay the same path before declaring success.
-Auto-alignment remains an emergency-only guard, never the normal route.
+On drift, H7 must: (1) resolve the current local scope, contract, progress
+receipt, and live project proof, (2) prevent a duplicate or already-failed
+action, (3) correct the current scoped state, (4) repair the root cause, and
+(5) replay the same path before declaring success. Auto-alignment remains an
+emergency-only guard, never the normal route.
 
-`brain_cli.py turn-runtime` is the same H7 transport when the registered MCP
-is unavailable or stale; it is not a degraded continuation mode. If neither
-transport can return a current scoped H7 receipt, return
-`H7_RUNTIME_UNAVAILABLE` and repair before governed work resumes.
+`brain_cli.py turn-runtime` is the same H7 runtime transport when the registered
+MCP is unavailable or stale; it is not a degraded continuation mode. It binds
+the same workspace cwd and `SUPER_BRAIN_LOCAL_SESSION_ID`. If neither runtime
+entry can return a current scoped H7 receipt, return `H7_RUNTIME_UNAVAILABLE`
+and repair before governed work resumes.
 
 ## Resume Receipt
 
 After a verified interruption, compaction, disconnect, model switch,
 cross-session rebind, explicit resume of a suspended workline, or verified
 child return, emit one compact user-visible continuity receipt before mutation.
-Its first line is H7's exact recovery presentation of the current visible
-locator. The receipt then states the result of the same-scope mapping, rather
-than treating the locator sentence itself as the task state:
+Its first line is H7's exact local recovery presentation:
+`本地执行契约：进度：<verified phase>｜当前：<verified step>｜下一步：<verified action>`.
+The presentation is non-authorizing and contains no external text, identity,
+thread, metadata, or hash. If phase, step, or next action cannot be verified
+together, H7 withholds recovery and repairs the evidence boundary.
 
-- `已接上：` followed immediately by the exact time-latest real assistant
-  sentence visible in the current thread;
-- `定位：` that same sentence and its display/durable classification, never a
-  user message or summary;
-- `映射：` the verified task/workline plus actual phase, step, and completed or
-  pending work derived from current H7 state and live project proof;
-- `下一步：` the action authorized after that mapping and reconciliation with
-  the latest user instruction.
+Presentation correctness is part of the receipt contract. Evidence identity,
+completed/pending detail, branch identity, and return-point information remain
+internal unless the user explicitly requests status or diagnosis after recovery.
 
-Presentation correctness is part of the receipt contract:
-
-- Separate completed historical phases from the active mapped phase. A previous
-  accepted phase is not evidence that it is currently executing.
-- Include compact evidence with the H7 receipt/proof identity and a return
-  point with the nearest suspended parent or `none`.
+- Separate completed historical phases from the active mapped phase internally.
+  A previous accepted phase is not evidence that it is currently executing.
 - When `actionAuthorization=withheld`, say that the current action is to
   reconcile the latest user instruction and repair the missing mapping/proof.
   Do not expose, imply, or execute an older action just to complete a receipt.
 - A clearly labeled checkpoint-only state may be shown for diagnosis, but it
   cannot authorize continuation or be presented as a verified resume receipt.
-- When the current tail is plain prose, acknowledge it exactly as display-only;
-  do not pretend it is an older v4 sentence, a stage claim, or project proof.
+- External prose never becomes a v4 sentence, stage claim, project proof, or
+  continuation locator. The local projection has no external tail.
 
-The acknowledgement is event-bound, not wording-bound. It appears exactly once
-on the first visible update only when H7 has a scope-bound recovery event or a
+The direct progress presentation is event-bound. It appears exactly once on the
+first visible update only when H7 has a scope-bound recovery event or a
 verified child-return receipt. A bare `continue`, ordinary continuous turn,
 status reply, progress update, greeting, or independent request does not emit
-`已接上：`.
+a recovery presentation.
 
-Do not claim durable progress from vague memory. If the exact current locator,
-same-scope task/workline mapping, current project proof for a progress claim,
-or authorized next action cannot be established, withhold before mutation and
+During ordinary continuous execution, do not repeat a phase/status card on
+each intermediate message. Use plain language for the concrete result or
+immediate next action. Phase/status presentation belongs only to the verified
+recovery opening line and H7-bound stage passed, failed, blocked, or completion
+receipts.
+
+Do not claim durable progress from vague memory. If the current local scope,
+contract, progress receipt, same-scope task/workline mapping, project proof, or
+authorized next action cannot be established, withhold before mutation and
 repair the evidence path.
 
 ## Emergency Drift Reconciliation
 
-Automatic alignment is an emergency-only guard after H7 detects a current-tail
-mismatch. It is not a normal continuation path and it must not hide a broken
-publication or rebind flow.
+Automatic alignment is an emergency-only guard after H7 detects a local
+contract/proof mismatch. It is not a normal continuation path and must not hide
+a broken publication or rebind flow. The guard may inspect only the current
+same-scope contract, issued local progress receipt, and live project proof. It
+detects the mismatch but never writes or silently realigns the contract.
 
-The guard may use only a current-thread, same-scope, strict v4 durable envelope
-that H7 has verified against an issued receipt. It detects the mismatch but
-never writes, realigns, or promotes the observed sentence into the contract.
-It returns `H7_VISIBLE_TAIL_EXPLICIT_RECONCILIATION_REQUIRED`. The controller
-must perform an explicit H7 checkpoint with fresh live project proof and then
-publish a fresh v4 receipt before continuing. The fallback may not accept
-caller-provided state, advance a stage, change a work-line, alter authorization,
-or turn a user-attested message into normal progress.
-
-`user_attested_visible_reply`, plain assistant commentary, a legacy H7 marker,
-and an old contract remain reconciliation clues only. They can block an unsafe
-walk-back to old progress, but cannot be auto-promoted. Only the explicit H7
-checkpoint can publish a new strict v4 receipt; that new receipt must then pass
-the same normal current-thread replay before work continues.
+The controller must perform an explicit H7 checkpoint with fresh live project
+proof and publish a fresh v4 receipt before continuing. Caller-provided state,
+external messages, legacy markers, and old contracts cannot be auto-promoted,
+advance a stage, change a workline, or alter authorization.
 
 ## P0 Continuity Priority Invariant
 
-`decision_key`: `resume-visible-locator-then-scoped-progress-mapping-v2`
-`topic_key`: `continuation`, `visible-locator`, `scoped-progress-mapping`,
+`decision_key`: `resume-local-contract-then-scoped-progress-mapping-v3`
+`topic_key`: `continuation`, `local-contract`, `scoped-progress-mapping`,
 `resume-receipt`, `instruction-anchor`, `task-order`
 
-On every verified recovery, the first user-facing update begins from the exact
-time-latest real assistant reply visible in the current thread, then states the
-verified same-scope task/workline mapping and only then reconciles the latest
-user instruction. The first response is a concise proof of connection: task
-instance, active main line or branch, actual mapped phase/step, verified
-completed/pending work, evidence, and return point.
+On every verified recovery, H7 uses the unique scoped local contract plus the
+current local progress receipt and project proof, then verifies the same-scope
+task/workline mapping and reconciles the latest user instruction. The first
+user-facing update is H7's exact local opening line; detailed task, branch,
+evidence, and return-point data remain available only to an explicit status or
+diagnostic request.
 
-The instruction, visible locator, H7 receipt, task mapping, and project proof
-have separate roles, not competing "latest" records. The user instruction
-controls what may happen next; the visible locator identifies where the resume
-check starts; the H7 receipt, current contract, and project proof establish what
-actually happened. They must bind the same task, workspace, owner session, task
-instance, package version, and current rule registry. A mismatch fails closed
-and never exports cross-task progress.
+The instruction, H7 receipt, task mapping, and project proof have separate
+roles, not competing "latest" records. They must bind the same task, workspace,
+owner session, task instance, package version, and current rule registry. A
+mismatch fails closed and never exports cross-task progress.
 
 ## Workspace Isolation And Hot Update Recovery
 
@@ -243,15 +201,15 @@ contract only in one H7 transaction after all of the following are current and
 verified:
 
 - package/runtime identity and rule-registry hash;
-- Host thread/session scope, workspace key, task instance, and exact v4
-  receipt-bound progress sentence;
+- verified cwd, `SUPER_BRAIN_LOCAL_SESSION_ID`, unique current scoped contract,
+  and exact v4 receipt-bound local progress sentence;
 - current live project proof and scoped contract revision;
 - CAS rebind result plus rebuilt hot index and activation receipt.
 
 If uniqueness, identity, scope, proof, or derived-index reconstruction fails,
 H7 withholds and reports the repair condition. It must not replay an old
-contract, call a stale MCP current, or resume from a summary. After rebind, run
-the same bounded current-thread v4 replay before declaring continuity restored.
+contract, call a stale MCP current, or resume from a summary. After rebind,
+validate the current local v4 receipt before declaring continuity restored.
 
 ## Latest Execution Contract
 
@@ -290,9 +248,10 @@ checkpoint or closeout receipt and live project proof for the claimed phase,
 completed work, verification identifiers, and next action. Missing, stale, or
 mismatched proof is `withheld`, not best-effort progress.
 
-A forward formal stage transition additionally requires a Host-read-back user
-stage receipt that H7 binds to the same closeout receipt and visible-progress
-hash. After every `passed`, `failed`, or `blocked` stage gate, send the user a
+A forward formal stage transition additionally requires an H7-issued user
+stage receipt bound to the same closeout receipt and local progress hash. Emit
+the receipt directly; no Host readback or acknowledgement is required. After
+every `passed`, `failed`, or `blocked` stage gate, send the user a
 compact stage receipt before beginning the next phase: stage name/number,
 status, concrete verification evidence, and next action. Never silently
 advance a phase, infer Stage 10 from a field mutation, or let a side branch

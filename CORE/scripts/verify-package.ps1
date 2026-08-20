@@ -25,40 +25,126 @@ $workspace = Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace'
 # report-free prevents the old "deploy first so deployment checks pass" loop.
 if ($PackageOnly -and -not $Worker) {
   $started = [DateTime]::UtcNow
-  $script:checks = @()
-  $script:sourceOk = $true
-  function Invoke-PackageOnlyCheck([string]$Name,[scriptblock]$Command) {
-    $output = @(& $Command 2>&1)
-    $exitCode = $LASTEXITCODE
-    $passed = ($exitCode -eq 0)
-    if (-not $passed) { $script:sourceOk = $false }
-    $detail = if ($passed) { '' } else { (($output | Select-Object -Last 4) -join "`n").Trim() }
-    $script:checks += [pscustomobject]@{
-      name=$Name
-      ok=$passed
-      exitCode=$exitCode
-      detail=$detail
+  # Package-only checks are independent source gates. Launch them as bounded
+  # owned processes so Python/PowerShell startup and CPU work overlap, while
+  # collecting results by their original index for deterministic JSON.
+  function ConvertTo-PackageOnlyArgumentLine([string[]]$Arguments) {
+    return (($Arguments | ForEach-Object {
+      $value = [string]$_
+      '"' + $value.Replace('"','\\"') + '"'
+    }) -join ' ')
+  }
+
+  function Get-PackageOnlyFailureDetail([object]$Outcome) {
+    $combined = (([string]$Outcome.stdout) + "`n" + ([string]$Outcome.stderr)).Trim()
+    if ([string]::IsNullOrWhiteSpace($combined) -and -not [string]::IsNullOrWhiteSpace([string]$Outcome.startError)) {
+      $combined = [string]$Outcome.startError
     }
+    if ([string]::IsNullOrWhiteSpace($combined)) { return '' }
+    return (($combined -split "`r?`n" | Select-Object -Last 4) -join "`n").Trim()
   }
-  Push-Location $Root
+
+  function Get-PackageOnlyParallelism {
+    $requested = 0
+    try { $requested = [int]$env:SUPER_BRAIN_VERIFY_PACKAGE_PARALLELISM } catch { $requested = 0 }
+    if ($requested -gt 0) { return [Math]::Min(8,[Math]::Max(1,$requested)) }
+    $logicalProcessors = [Math]::Max(1,[Environment]::ProcessorCount)
+    # Keep headroom for the desktop host and nested Python workers. This is a
+    # bounded default, not an unbounded fan-out based on the CPU count.
+    # Four workers is the bounded sweet spot for this package: it overlaps
+    # independent startup work without starving the execution-assist p95 gate
+    # or the desktop host.  The environment override remains available for
+    # CI machines with different contention characteristics.
+    return [Math]::Min(4,[Math]::Max(2,[int][Math]::Floor($logicalProcessors / 2)))
+  }
+
+  $checkDefinitions = @(
+    # Compile in memory. ``py_compile`` writes __pycache__ even with -B,
+    # which is unnecessary package churn and a shared-tree race under workers.
+    [pscustomobject]@{ name='python runtime compile'; executable='python'; arguments=@('-B','-c','import sys,pathlib; [compile(pathlib.Path(p).read_text(encoding=''utf-8''),p,''exec'') for p in sys.argv[1:]]','runtime\brain_core.py','runtime\execution_assist.py','runtime\capability_source_registry.py','runtime\capability_shadow_eval.py','runtime\agent_asset_loadout.py','runtime\work_dag.py','runtime\project_knowledge.py','runtime\run_observability.py','runtime\turn_runtime.py','runtime\brain_mcp.py','runtime\brain_cli.py','runtime\turn_close_dispatcher.py') }
+    [pscustomobject]@{ name='core rule registry regression'; executable='python'; arguments=@('tests\runtime_core_rule_registry_regression.py') }
+    [pscustomobject]@{ name='execution assist regression'; executable='python'; arguments=@('tests\runtime_execution_assist_regression.py') }
+    [pscustomobject]@{ name='capability source registry regression'; executable='python'; arguments=@('tests\runtime_capability_source_registry_regression.py') }
+    [pscustomobject]@{ name='capability shadow evaluation regression'; executable='python'; arguments=@('tests\runtime_capability_shadow_eval_regression.py') }
+    [pscustomobject]@{ name='MCP runtime identity regression'; executable='python'; arguments=@('tests\runtime_mcp_identity_regression.py') }
+    [pscustomobject]@{ name='MCP live-handshake regression'; executable='python'; arguments=@('tests\runtime_mcp_live_handshake_regression.py') }
+    [pscustomobject]@{ name='authority worker regression'; executable='python'; arguments=@('tests\runtime_authority_worker_regression.py') }
+    [pscustomobject]@{ name='agent asset loadout regression'; executable='python'; arguments=@('tests\runtime_agent_asset_loadout_regression.py') }
+    [pscustomobject]@{ name='work DAG regression'; executable='python'; arguments=@('tests\runtime_work_dag_regression.py') }
+    [pscustomobject]@{ name='project knowledge regression'; executable='python'; arguments=@('tests\runtime_project_knowledge_regression.py') }
+    [pscustomobject]@{ name='run observability regression'; executable='python'; arguments=@('tests\runtime_run_observability_regression.py') }
+    [pscustomobject]@{ name='Host transport retirement regression'; executable='python'; arguments=@('tests\runtime_host_transport_retirement_regression.py') }
+    # These checks exercise the canonical repository state root and mutate
+    # scoped contracts during their fixtures. Run them in an exclusive slot
+    # so independent workers cannot race their shared authority files.
+    [pscustomobject]@{ name='turn runtime regression'; executable='python'; serial=$true; arguments=@('tests\runtime_turn_runtime_regression.py') }
+    [pscustomobject]@{ name='verify package layers regression'; executable='python'; arguments=@('tests\runtime_verify_package_layers_regression.py') }
+    [pscustomobject]@{ name='memory eval'; executable='powershell.exe'; serial=$true; arguments=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'memory-eval.ps1'),'-Json') }
+  )
+
+  $resultByIndex = @{}
+  $active = New-Object System.Collections.ArrayList
+  $nextIndex = 0
+  $serialActive = $false
+  $parallelism = Get-PackageOnlyParallelism
+  $previousPyNoBytecode = $env:PYTHONDONTWRITEBYTECODE
+  $env:PYTHONDONTWRITEBYTECODE = '1'
   try {
-    Invoke-PackageOnlyCheck 'python runtime compile' { python -m py_compile runtime\brain_core.py runtime\execution_assist.py runtime\capability_source_registry.py runtime\capability_shadow_eval.py runtime\agent_asset_loadout.py runtime\work_dag.py runtime\project_knowledge.py runtime\run_observability.py runtime\turn_runtime.py runtime\brain_mcp.py runtime\brain_cli.py runtime\host_visible_tail.py }
-    Invoke-PackageOnlyCheck 'core rule registry regression' { python tests\runtime_core_rule_registry_regression.py }
-    Invoke-PackageOnlyCheck 'execution assist regression' { python tests\runtime_execution_assist_regression.py }
-    Invoke-PackageOnlyCheck 'capability source registry regression' { python tests\runtime_capability_source_registry_regression.py }
-    Invoke-PackageOnlyCheck 'capability shadow evaluation regression' { python tests\runtime_capability_shadow_eval_regression.py }
-    Invoke-PackageOnlyCheck 'agent asset loadout regression' { python tests\runtime_agent_asset_loadout_regression.py }
-    Invoke-PackageOnlyCheck 'work DAG regression' { python tests\runtime_work_dag_regression.py }
-    Invoke-PackageOnlyCheck 'project knowledge regression' { python tests\runtime_project_knowledge_regression.py }
-    Invoke-PackageOnlyCheck 'run observability regression' { python tests\runtime_run_observability_regression.py }
-    Invoke-PackageOnlyCheck 'host visible tail regression' { python tests\runtime_host_visible_tail_regression.py }
-    Invoke-PackageOnlyCheck 'host continuation bridge regression' { python tests\runtime_host_continuation_bridge_regression.py }
-    Invoke-PackageOnlyCheck 'turn runtime regression' { python tests\runtime_turn_runtime_regression.py }
-    Invoke-PackageOnlyCheck 'verify package layers regression' { python tests\runtime_verify_package_layers_regression.py }
-    Invoke-PackageOnlyCheck 'memory eval' { powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\memory-eval.ps1 -Json }
+    while ($nextIndex -lt $checkDefinitions.Count -or $active.Count -gt 0) {
+      while ($nextIndex -lt $checkDefinitions.Count -and $active.Count -lt $parallelism) {
+        $definition = $checkDefinitions[$nextIndex]
+        if ($definition.serial -eq $true -and $active.Count -gt 0) { break }
+        if ($serialActive) { break }
+        $argumentLine = ConvertTo-PackageOnlyArgumentLine @($definition.arguments)
+        $handle = Start-SuperBrainOwnedProcess -FilePath ([string]$definition.executable) -ArgumentLine $argumentLine -WorkingDirectory $Root
+        [void]$active.Add([pscustomobject]@{ index=$nextIndex; definition=$definition; handle=$handle })
+        $serialActive = ($definition.serial -eq $true)
+        $nextIndex++
+      }
+
+      $completed = @()
+      foreach ($entry in @($active | ForEach-Object { $_ })) {
+        $hasExited = $false
+        try {
+          if ($entry.handle.process) {
+            $entry.handle.process.Refresh()
+            $hasExited = [bool]$entry.handle.process.HasExited
+          } else { $hasExited = $true }
+        } catch { $hasExited = $true }
+        if (-not $hasExited) { continue }
+
+        $outcome = Complete-SuperBrainOwnedProcess -Handle $entry.handle
+        $exitCode = [int]$outcome.exitCode
+        $resultByIndex[[int]$entry.index] = [pscustomobject]@{
+          name=[string]$entry.definition.name
+          ok=($exitCode -eq 0)
+          exitCode=$exitCode
+          detail=if ($exitCode -eq 0) { '' } else { Get-PackageOnlyFailureDetail $outcome }
+        }
+        if ($entry.definition.serial -eq $true) { $serialActive = $false }
+        $completed += $entry
+      }
+      foreach ($entry in @($completed)) { [void]$active.Remove($entry) }
+      if ($active.Count -gt 0 -and $completed.Count -eq 0) { Start-Sleep -Milliseconds 40 }
+    }
   } finally {
-    Pop-Location
+    # An interrupted verifier must not leave child Python/PowerShell workers or
+    # their redirected output files behind.
+    foreach ($entry in @($active | ForEach-Object { $_ })) {
+      try { Complete-SuperBrainOwnedProcess -Handle $entry.handle -TimedOut | Out-Null } catch { }
+    }
+    if ($null -eq $previousPyNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue } else { $env:PYTHONDONTWRITEBYTECODE = $previousPyNoBytecode }
   }
+
+  $script:checks = @(
+    for ($index = 0; $index -lt $checkDefinitions.Count; $index++) {
+      if ($resultByIndex.ContainsKey($index)) { $resultByIndex[$index] }
+      else {
+        [pscustomobject]@{ name=[string]$checkDefinitions[$index].name; ok=$false; exitCode=-1; detail='PACKAGE_ONLY_CHECK_NOT_COMPLETED' }
+      }
+    }
+  )
+  $script:sourceOk = (@($script:checks | Where-Object { $_.ok -ne $true }).Count -eq 0)
   $result = [pscustomobject]@{
     schema='super-brain.verify-package-source-result.v1'
     scope='package_source_only'
@@ -171,7 +257,9 @@ if (-not $Worker) {
   $completedStepCount = 0
   $lastHeartbeatUtc = [DateTime]::UtcNow
   $outcome = $null
-  while ($null -eq $outcome) {
+  $workerFinished = $false
+  try {
+    while ($null -eq $outcome) {
     $captured = [string](Get-SuperBrainOwnedProcessOutputSnapshot $handle).stdout
     $progress = ''
     if (Test-Path -LiteralPath $workerProgressPath) {
@@ -216,21 +304,29 @@ if (-not $Worker) {
       Write-Host "VERIFY_HEARTBEAT elapsedSeconds=$([int]$handle.watch.Elapsed.TotalSeconds) timeoutSeconds=$effectiveTimeoutSeconds completedSteps=$completedStepCount outputChars=$($captured.Length)"
       $lastHeartbeatUtc = [DateTime]::UtcNow
     }
-    Start-Sleep -Milliseconds 250
-  }
+      Start-Sleep -Milliseconds 250
+    }
 
-  if (-not $Json) { Write-VerifyPackageStream $outcome.stdout }
-  $receiptCheck = Test-VerifyPackageResultReceipt $workerResultPath $workerRunId
-  $workerDecision = Resolve-VerifyPackageWorkerOutcome -Outcome $outcome -ReceiptCheck $receiptCheck -ExpectedRunId $workerRunId -TimeoutSeconds $effectiveTimeoutSeconds
-  $verifyOk = ($workerDecision.ok -eq $true)
-  if ($Json) {
-    Get-VerifyPackagePublicResult $workerDecision | ConvertTo-Json -Depth 16
+    if (-not $Json) { Write-VerifyPackageStream $outcome.stdout }
+    $receiptCheck = Test-VerifyPackageResultReceipt $workerResultPath $workerRunId
+    $workerDecision = Resolve-VerifyPackageWorkerOutcome -Outcome $outcome -ReceiptCheck $receiptCheck -ExpectedRunId $workerRunId -TimeoutSeconds $effectiveTimeoutSeconds
+    $verifyOk = ($workerDecision.ok -eq $true)
+    if ($Json) {
+      Get-VerifyPackagePublicResult $workerDecision | ConvertTo-Json -Depth 16
+    }
+    $workerFinished = $true
+    if ($verifyOk) { exit 0 }
+    if (-not $Json) { Write-Host "VERIFY_PACKAGE_FAILED error=$($workerDecision.error) exitCode=$($outcome.exitCode) timedOut=$($outcome.timedOut) durationMs=$($outcome.durationMs)" }
+    exit 1
+  } finally {
+    # Ctrl+C, host termination, or an unexpected verifier exception must not
+    # strand the owned worker tree or its temporary receipts.
+    if (-not $workerFinished -and $handle -and $handle.process) {
+      try { Stop-SuperBrainOwnedProcessTree ([int]$handle.process.Id) | Out-Null } catch { }
+    }
+    if ($removeWorkerProgressPath) { Remove-Item -LiteralPath $workerProgressPath -Force -ErrorAction SilentlyContinue }
+    if ($removeWorkerResultPath) { Remove-Item -LiteralPath $workerResultPath -Force -ErrorAction SilentlyContinue }
   }
-  if ($removeWorkerProgressPath) { Remove-Item -LiteralPath $workerProgressPath -Force -ErrorAction SilentlyContinue }
-  if ($removeWorkerResultPath) { Remove-Item -LiteralPath $workerResultPath -Force -ErrorAction SilentlyContinue }
-  if ($verifyOk) { exit 0 }
-  if (-not $Json) { Write-Host "VERIFY_PACKAGE_FAILED error=$($workerDecision.error) exitCode=$($outcome.exitCode) timedOut=$($outcome.timedOut) durationMs=$($outcome.durationMs)" }
-  exit 1
 }
 
 $ok = $true
@@ -302,7 +398,7 @@ $required = @(
   'scripts\optimize-advisor.ps1','scripts\tool-health.ps1','scripts\skill-capability-map.ps1','scripts\absorbed-capability-route.ps1',
   'scripts\accepted-constraints-preflight.ps1',
   'scripts\goal-route-lock.ps1','scripts\route-checkpoint.ps1','scripts\verified-module-snapshot.ps1','scripts\integration-parity-check.ps1','scripts\causal-change-plan.ps1','scripts\engineering-decision-gate.ps1','scripts\technology-decision.ps1','scripts\decision-binding.ps1',
-  'scripts\checkpoint-writer.ps1','scripts\execution-contract.ps1','scripts\work-dag.ps1','scripts\task-register.ps1','scripts\task-link-store.ps1','scripts\task-state-store.ps1','scripts\task-lifecycle-audit.ps1','scripts\routing-kernel.ps1',
+  'scripts\checkpoint-writer.ps1','scripts\execution-contract.ps1','scripts\execution-contract-worker.ps1','scripts\external-repair.ps1','scripts\external_repair.py','scripts\work-dag.ps1','scripts\task-register.ps1','scripts\task-link-store.ps1','scripts\task-state-store.ps1','scripts\task-lifecycle-audit.ps1','scripts\routing-kernel.ps1',
   'modules\skill-pool-router\scripts\skill-catalog.ps1',
   'scripts\test-recall.ps1','scripts\route-regression.ps1','scripts\memory-eval.ps1','scripts\intelligence-eval.ps1','scripts\autonomy-evidence-ledger.ps1','scripts\objective-benchmark.ps1','scripts\objective-benchmark-runner.ps1','scripts\objective-answer-artifact-generator.ps1','scripts\memory-eval-report.ps1','scripts\tag-legacy-memory.ps1','scripts\ci.ps1','scripts\lint.ps1','scripts\test-pester.ps1','scripts\concurrency-smoke-test.ps1','scripts\task-verification.ps1','scripts\team-dispatch-check.ps1','scripts\team-template-list.ps1','scripts\team-task-new.ps1','scripts\team-task-add-delegation.ps1','scripts\team-task-authorize.ps1','scripts\team-task-review.ps1','scripts\team-task-audit.ps1','scripts\team-task-decision.ps1','scripts\team-task-status.ps1','scripts\team-task-index.ps1','scripts\smoke-test.ps1','scripts\common.ps1','scripts\session-compact.ps1'
 )
@@ -797,17 +893,16 @@ $currentTaskContextText = Read-Utf8 'scripts\current-task-context.ps1'
 if (Test-ContainsAll $taskStateStoreText @('super-brain.task-state-event.v2','TASK_STATE_CAS_MISMATCH','Build-ProjectionsFromEvents','Commit-Entity','Complete-TaskState','TASK_STATE_COMPLETION_TRANSACTION_REQUIRED','phase=''prepared''','phase=''committed''','Reconcile-Store','Compact-Store','incomplete_transaction','leaseUntil','Different task IDs remain separate','merged = $false','Import-CurrentState')) { Mark-Ok 'task state store WAL CAS replay reconcile compact contract' } else { Mark-Fail 'task state store WAL CAS replay reconcile compact contract missing' }
 if (Test-ContainsAll $taskStateStoreText @('super-brain.terminal-plan-seal.v1','terminal-plan-seals','sourceContractHash','terminalPlanSealPath','terminalPlanSealHash')) { Mark-Ok 'task completion terminal plan seal before active-state removal' } else { Mark-Fail 'task completion terminal plan seal contract missing' }
 if ((Test-ContainsAll $commonText @('Get-SuperBrainSourceTreeBinding','git-worktree-v1','portable-content-tree-v1','New-SuperBrainEvidenceBinding','Test-SuperBrainEvidenceBinding')) -and (Test-ContainsAll $taskStateStoreText @('TASK_STATE_COMPLETION_VERIFICATION_HISTORICAL','evidenceBinding','completion_artifact_changed_after_prepare'))) { Mark-Ok 'completion evidence version binding and recovery guard' } else { Mark-Fail 'completion evidence version binding and recovery guard missing' }
-if ((Test-ContainsAll $taskStateStoreText @('super-brain.task-completion-receipt.v1','task_completion_receipt','TASK_STATE_COMPLETION_CALLER_SESSION_MISMATCH','receiptRequired')) -and (Test-ContainsAll $commonText @('callerSessionKey = $resolvedCallerSessionKey','CallerSessionKey=$resolvedCallerSessionKey')) -and (Test-ContainsAll $checkpointWriterText @('CallerSessionKey','completionReceiptPath','completionReceiptHash')) -and (Test-ContainsAll (Read-Utf8 'scripts\task-verification.ps1') @('-CallerSessionKey (Get-SuperBrainHostSessionKey)','completionTransactionId'))) { Mark-Ok 'completion receipt and caller-session propagation chain' } else { Mark-Fail 'completion receipt or caller-session propagation chain missing' }
+if ((Test-ContainsAll $taskStateStoreText @('super-brain.task-completion-receipt.v1','task_completion_receipt','TASK_STATE_COMPLETION_CALLER_SESSION_MISMATCH','receiptRequired')) -and (Test-ContainsAll $commonText @('callerSessionKey = $resolvedCallerSessionKey','CallerSessionKey=$resolvedCallerSessionKey')) -and (Test-ContainsAll $checkpointWriterText @('CallerSessionKey','completionReceiptPath','completionReceiptHash')) -and (Test-ContainsAll (Read-Utf8 'scripts\task-verification.ps1') @('-CallerSessionKey (Get-SuperBrainLocalSessionKey)','completionTransactionId'))) { Mark-Ok 'completion receipt and caller-session propagation chain' } else { Mark-Fail 'completion receipt or caller-session propagation chain missing' }
 if ((Test-ContainsAll $checkpointWriterText @('Commit-SuperBrainTaskState','checkpoint-writer.ps1:Start','checkpoint-writer.ps1:complete','checkpoint-writer.ps1:task-card','Sync-SuperBrainTaskState','checkpoint-writer.ps1:legacy-import')) -and (Test-ContainsAll $currentTaskContextText @('Commit-SuperBrainTaskState','current-task-context.ps1:clear','Sync-SuperBrainTaskState','current-task-context.ps1:legacy-import')) -and $taskRegisterText.Contains('Commit-SuperBrainTaskState') -and -not $taskRegisterText.Contains('Sync-SuperBrainTaskState')) { Mark-Ok 'task state writer commit integration with bounded legacy import' } else { Mark-Fail 'task state writer commit integration with bounded legacy import missing' }
 if (Test-ContainsAll $currentTaskContextText @('bindingState','bindingReason','authorizationState','locator_only_non_authorizing','taskStateRevision','contractRevision','planFingerprint','ownerSessionKey','lifecycleStatus','compatibilityEpoch','contractFileName','targetHash','locator_only')) { Mark-Ok 'current task context exact contract and lifecycle binding' } else { Mark-Fail 'current task context exact contract and lifecycle binding missing' }
 $turnRuntimeText = Read-Utf8 'runtime\turn_runtime.py'
 $turnCloseDispatcherText = Read-Utf8 'runtime\turn_close_dispatcher.py'
 $brainMcpText = Read-Utf8 'runtime\brain_mcp.py'
-$hostContinuationBridgeText = Read-Utf8 'runtime\host_continuation_bridge.py'
 $dispatcherText = Read-Utf8 'runtime\codex_prompt_hook_dispatcher.py'
 $hooklessRetirementText = Read-Utf8 'scripts\retire-codex-super-brain-hooks.ps1'
-if ((Test-ContainsAll $turnRuntimeText @('def open_turn','def checkpoint_turn','def close_turn','def read_evidence','hookless_turn_runtime','visible_progress_assertion','recovery_event','recoveryPresentation','H7_RECOVERY_PRESENTATION_CURRENT','H7_RECOVERY_PRESENTATION_SUPPRESSED','H7_VISIBLE_TAIL_ASSERTION_REQUIRED','H7_USER_ATTESTED_VISIBLE_PROGRESS_INTENT_REQUIRED','H7_PARENT_RETURN_STATE_CARD_CURRENT','observed_display_only','rawPromptStored')) -and (Test-ContainsAll $turnCloseDispatcherText @('latest assistant progress','progress_checkpoint','ResumeParent')) -and (Test-ContainsAll $brainMcpText @('brain_turn','brain_recall','brain_status','brain_recent','visible_progress_assertion','recovery_event','pause_resume'))) { Mark-Ok 'H7 governed turn lifecycle, visible-tail assertion, display-only continuity, recovery presentation, and MCP surface' } else { Mark-Fail 'H7 governed turn lifecycle, visible-tail assertion, display-only continuity, recovery presentation, or MCP surface missing' }
-if ((Test-ContainsAll $turnRuntimeText @('super-brain.visible-tail-observation.v4','H7_VISIBLE_TAIL_EXPLICIT_RECONCILIATION_REQUIRED','H7_SESSION_REBOUND_REPUBLISH_REQUIRED','h7ReceiptHash')) -and (Test-ContainsAll $brainMcpText @('super-brain.visible-tail-observation.v4','h7_receipt_hash','envelope_version')) -and (Test-ContainsAll $hostContinuationBridgeText @('HOST_VISIBLE_TAIL_READ_TIMEOUT_SECONDS = 5.0','HOST_VISIBLE_TAIL_READ_TIMEOUT','attempts = (1, 2)','HOST_VISIBLE_TAIL_MAX_NONEMPTY_LINES = 3'))) { Mark-Ok 'H7 v4 receipt-bound continuation and bounded Host bridge' } else { Mark-Fail 'H7 v4 receipt-bound continuation or bounded Host bridge missing' }
+if ((Test-ContainsAll $turnRuntimeText @('def open_turn','def checkpoint_turn','def close_turn','def read_evidence','hookless_turn_runtime','recovery_event','recoveryPresentation','H7_LOCAL_RECOVERY_PRESENTATION_CURRENT','H7_RECOVERY_PRESENTATION_SUPPRESSED','H7_USER_ATTESTED_VISIBLE_PROGRESS_INTENT_REQUIRED','H7_PARENT_RETURN_STATE_CARD_CURRENT','rawPromptStored')) -and (Test-ContainsAll $turnCloseDispatcherText @('latest assistant progress','progress_checkpoint','ResumeParent')) -and (Test-ContainsAll $brainMcpText @('brain_turn','brain_recall','brain_status','brain_recent','recovery_event','pause_resume'))) { Mark-Ok 'H7 governed local turn lifecycle and MCP surface' } else { Mark-Fail 'H7 governed local turn lifecycle or MCP surface missing' }
+if ((Test-ContainsAll $turnRuntimeText @('def open_turn','def checkpoint_turn','def close_turn','H7_LOCAL_CONTRACT_RECOVERY_CURRENT','H7_HOST_TRANSPORT_RETIRED')) -and (Test-ContainsAll $brainMcpText @('H7_HOST_TRANSPORT_RETIRED','current local cwd/session scope')) -and ($brainMcpText -notlike '*host_continuation_bridge*') -and ($brainMcpText -notlike '*read_thread*')) { Mark-Ok 'H7 local-only continuation and Host transport retirement' } else { Mark-Fail 'H7 local-only continuation or Host transport retirement missing' }
 $brainContextProgressText = Read-Utf8 'runtime\brain_context.py'
 if (
   (Test-ContainsAll $turnRuntimeText @('_project_progress_status','projectProgressHash','H7_PROJECT_PROGRESS_WITHHELD','project_progress_proof')) -and
@@ -817,7 +912,7 @@ if (
 if (Test-ContainsAll $dispatcherText @('Retired P7 dispatcher compatibility shim','"state": "retired"','H7 brain_turn','UserPromptSubmit')) { Mark-Ok 'retired P7 dispatcher is fail-open compatibility only' } else { Mark-Fail 'retired P7 dispatcher compatibility contract missing' }
 if (Test-ContainsAll $hooklessRetirementText @('super-brain.hookless-retirement.v1','Remove-SuperBrainHookEntries','otherHooksPreserved','-Apply after H7 runtime verification')) { Mark-Ok 'hookless retirement is explicit and report-first' } else { Mark-Fail 'hookless retirement guard missing' }
 $freshCodexSkillText = Read-Utf8 'super-memory-brain\SKILL.md'
-if ($freshCodexSkillText -like '*Fresh Codex Or Missing Conversation History*' -and $freshCodexSkillText -like '*brain_cli.py turn-runtime*' -and $freshCodexSkillText -like '*H7_RUNTIME_UNAVAILABLE*' -and $freshCodexSkillText -like '*Missing chat history is never evidence*' -and $freshCodexSkillText -like '*read_thread*' -and $freshCodexSkillText -like '*visible_progress_assertion*' -and $freshCodexSkillText -like '*H7_VISIBLE_TAIL_EXPLICIT_RECONCILIATION_REQUIRED*' -and $freshCodexSkillText -notlike '*use visible/live evidence for a direct answer*') { Mark-Ok 'fresh Codex H7 equivalent-transport and visible-tail boundary' } else { Mark-Fail 'fresh Codex H7 equivalent-transport or visible-tail boundary missing' }
+if ($freshCodexSkillText -like '*Fresh Codex Or Missing Conversation History*' -and $freshCodexSkillText -like '*brain_cli.py turn-runtime*' -and $freshCodexSkillText -like '*H7_RUNTIME_UNAVAILABLE*' -and $freshCodexSkillText -like '*Host transport is permanently retired*' -and $freshCodexSkillText -like '*H7_HOST_TRANSPORT_RETIRED*') { Mark-Ok 'fresh Codex local-only H7 boundary' } else { Mark-Fail 'fresh Codex local-only H7 boundary missing' }
 $taskIndexText = Read-Utf8 'scripts\task-index.ps1'
 if ($taskIndexText.Contains('[switch]$Table') -and $taskIndexText.Contains('[string]$Agent') -and $taskIndexText.Contains('[string]$SessionId') -and $taskIndexText.Contains('sessionName') -and $taskIndexText.Contains('agentId') -and $taskIndexText.Contains('identityKey') -and $taskIndexText.Contains('未知，不等于没有任务') -and $taskIndexText.Contains('# | 来源 | 会话 / 状态 | 进度')) { Mark-Ok 'task-index shared identity compact table' } else { Mark-Fail 'task-index shared identity compact table missing' }
 $taskLifecycleAuditText = Read-Utf8 'scripts\task-lifecycle-audit.ps1'
@@ -965,7 +1060,7 @@ $sessionRestoreText = Read-Utf8 'scripts\session-restore.ps1'
 if ($sessionRestoreText -like '*last-session-restore.json*' -and $sessionRestoreText -like '*tokenBudget*' -and $sessionRestoreText -like '*evidenceCards*' -and $sessionRestoreText -like '*Get-SuperBrainRelevantCheckpoint*' -and $sessionRestoreText -like '*checkpointSelection*' -and $sessionRestoreText -like '*experience-index.md*' -and $sessionRestoreText -like '*recallTriggered*' -and $sessionRestoreText -like '*profileCard*' -and $sessionRestoreText -like '*profile-card.ps1*' -and $sessionRestoreText -like '*BindSession*' -and $sessionRestoreText -like '*session-binding.ps1*' -and $sessionRestoreText -like '*sessionBinding*' -and $sessionRestoreText -like '*TtlMinutes*' -and $sessionRestoreText -like '*Get-RestoreContinuationReceiptCompatibility*' -and $sessionRestoreText -like '*currentUserInstructionAuthority*' -and $sessionRestoreText -like '*latestAssistantProgressReceipt*') { Mark-Ok 'session restore lightweight protocol and scoped assistant-progress receipt support' } else { Mark-Fail 'session restore lightweight protocol or scoped assistant-progress receipt support missing' }
 
 $statusRecoveryText = Read-Utf8 'references\status-recovery.md'
-if ($statusRecoveryText -like '*time-latest real assistant reply*' -and $statusRecoveryText -like '*current_visible_assistant*' -and $statusRecoveryText -like '*task instance*' -and $statusRecoveryText -like '*current ordered action*') { Mark-Ok 'latest assistant progress continuation invariant' } else { Mark-Fail 'latest assistant progress continuation invariant missing' }
+if (Test-ContainsAll $statusRecoveryText @('current local progress receipt','live project proof','task instance','current ordered action','scope-bound')) { Mark-Ok 'latest assistant progress continuation invariant' } else { Mark-Fail 'latest assistant progress continuation invariant missing' }
 
 $acceptedPreflightText = Read-Utf8 'scripts\accepted-constraints-preflight.ps1'
 if ($acceptedPreflightText -like '*last-accepted-constraints-preflight.json*' -and $acceptedPreflightText -like '*decision-search.ps1*' -and $acceptedPreflightText -like '*recall-search.ps1*' -and $acceptedPreflightText -like '*active-checkpoint.json*' -and $acceptedPreflightText -like '*session-binding.json*' -and $acceptedPreflightText -like '*mustPreserve*' -and $acceptedPreflightText -like '*mustNotViolate*' -and $acceptedPreflightText -like '*guardHash*' -and $acceptedPreflightText -like '*noTail*') { Mark-Ok 'accepted constraints preflight support' } else { Mark-Fail 'accepted constraints preflight support missing' }
@@ -984,7 +1079,7 @@ try {
 } catch { Mark-Fail "codegraph index json command $($_.Exception.Message)" }
 
 $impactAdvisorText = Read-Utf8 'scripts\impact-advisor.ps1'
-if ($impactAdvisorText -like '*last-impact-advisor.json*' -and $impactAdvisorText -like '*riskLevel*' -and $impactAdvisorText -like '*recommendedChecks*' -and $impactAdvisorText -like '*directCallers*' -and $impactAdvisorText -like '*affectedWorkspaceFiles*' -and $impactAdvisorText -like '*[switch]$NoWrite*' -and $impactAdvisorText -notlike '*last-project-continuity.json*') { Mark-Ok 'impact advisor static support' } else { Mark-Fail 'impact advisor static support missing' }
+if ($impactAdvisorText -like '*last-impact-advisor.json*' -and $impactAdvisorText -like '*riskLevel*' -and $impactAdvisorText -like '*recommendedChecks*' -and $impactAdvisorText -like '*directCallers*' -and $impactAdvisorText -like '*affectedWorkspaceFiles*' -and $impactAdvisorText.Contains('[switch]$NoWrite') -and $impactAdvisorText -notlike '*last-project-continuity.json*') { Mark-Ok 'impact advisor static support' } else { Mark-Fail 'impact advisor static support missing' }
 try {
   $impactJsonText = & (Join-Path $PSScriptRoot 'impact-advisor.ps1') -ChangedFiles 'scripts/codegraph-index.ps1' -NoWrite -Json
   $impactJson = $impactJsonText | ConvertFrom-Json
@@ -1084,9 +1179,9 @@ if ($commonText.Contains("initialized = `$true") -and $commonText.Contains("mode
 
 $globalStartupBlock = ''
 try { $globalStartupBlock = Get-SuperBrainGlobalStartupBlock $Root } catch { $globalStartupBlock = '' }
-if ($globalStartupBlock -like '*Super Memory Brain Bootstrap*' -and $globalStartupBlock -like '*Authority: bootstrap only*' -and $globalStartupBlock -like '*super-brain-rules.json*' -and $globalStartupBlock -like '*bootstrap never selects a continuation anchor*' -and $globalStartupBlock -like '*same H7 CLI*' -and $globalStartupBlock -like '*Never use Hook/P7*' -and $globalStartupBlock -notlike '*Compaction:*') { Mark-Ok 'thin global startup H7 route and retirement guards' } else { Mark-Fail 'thin global startup H7 route or retirement guards missing' }
-$globalStartupWorkflowMarkers = @('Git workflow trigger','Super Memory Brain Bootstrap','Authority: bootstrap only','super-brain-rules.json','must never duplicate or override','bootstrap never selects a continuation anchor','same H7 CLI','Never use Hook/P7')
-if ((Test-ContainsAll $globalStartupBlock $globalStartupWorkflowMarkers) -and $freshCodexSkillText -like '*sole behavioral-policy*' -and $freshCodexSkillText -like '*Every same-workline continuation is visible-context-first*' -and $freshCodexSkillText -like '*visible-readback/state card*' -and $freshCodexSkillText -like '*to another approved workline*' -and $freshCodexSkillText -like '*codex_visible_context*' -and $freshCodexSkillText -like '*recovery event*' -and $freshCodexSkillText -like '*is never an assertion substitute*') { Mark-Ok 'bootstrap single-source and skill recovery guards' } else { Mark-Fail 'bootstrap single-source or skill recovery guards missing' }
+if ($globalStartupBlock -like '*Super Memory Brain Bootstrap*' -and $globalStartupBlock -like '*Authority: bootstrap only*' -and $globalStartupBlock -like '*super-brain-rules.json*' -and $globalStartupBlock -like '*Host transport is permanently retired*' -and $globalStartupBlock -like '*H7_HOST_TRANSPORT_RETIRED*' -and $globalStartupBlock -like '*same H7 CLI*' -and $globalStartupBlock -like '*Never use Hook/P7*' -and $globalStartupBlock -notlike '*Compaction:*') { Mark-Ok 'thin global startup H7 route and retirement guards' } else { Mark-Fail 'thin global startup H7 route or retirement guards missing' }
+$globalStartupWorkflowMarkers = @('Git workflow trigger','Super Memory Brain Bootstrap','Authority: bootstrap only','super-brain-rules.json','must never duplicate or override','Host transport is permanently retired','H7_HOST_TRANSPORT_RETIRED','same H7 CLI','Never use Hook/P7')
+if ((Test-ContainsAll $globalStartupBlock $globalStartupWorkflowMarkers) -and $freshCodexSkillText -like '*sole behavioral-policy*' -and $freshCodexSkillText -like '*Every same-workline continuation uses one verified local cwd/session scope*' -and $freshCodexSkillText -like '*local_contract_current*' -and $freshCodexSkillText -like '*Summaries, handoffs, memory, checkpoints*' -and $freshCodexSkillText -like '*H7_HOST_TRANSPORT_RETIRED*' -and $freshCodexSkillText -like '*live project proof*') { Mark-Ok 'bootstrap single-source and skill recovery guards' } else { Mark-Fail 'bootstrap single-source or skill recovery guards missing' }
 if ($commonText -like '*PACKAGE_ROOT_MARKER_SOURCE_MISSING*' -and $commonText -like '*PACKAGE_ROOT_MARKER_VERIFY_FAILED*' -and $commonText -like '*MEMORY_ROOT_MARKER_SOURCE_MISSING*' -and $commonText -like '*MEMORY_ROOT_MARKER_VERIFY_FAILED*') { Mark-Ok 'root marker source and writeback verification guards' } else { Mark-Fail 'root marker source or writeback verification guards missing' }
 
 $installAgentText = Read-Utf8 'scripts\install-agent.ps1'
@@ -1309,7 +1404,7 @@ if ($LASTEXITCODE -eq 0) {
 } else { Mark-Fail 'H7 hookless retirement report' }
 
 $firstLoadBootstrapText = Read-Utf8 'scripts\first-load-bootstrap.ps1'
-if ($firstLoadBootstrapText -like '*super-brain.first-load-bootstrap.v1*' -and $firstLoadBootstrapText -like '*RepairMcp*' -and $firstLoadBootstrapText -like '*mcpBindingOk*' -and $firstLoadBootstrapText -like '*mcpFunctionalOk*' -and $firstLoadBootstrapText -like '*McpProbeMaxAgeMinutes*' -and $firstLoadBootstrapText -like '*-McpOnly*' -and $firstLoadBootstrapText -like '*memory-root.txt*' -and $firstLoadBootstrapText -like '*rawPromptStored = $false*') { Mark-Ok 'first-load MCP bootstrap guard' } else { Mark-Fail 'first-load MCP bootstrap guard missing' }
+if ($firstLoadBootstrapText -like '*super-brain.first-load-bootstrap.v1*' -and $firstLoadBootstrapText -like '*RepairMcp*' -and $firstLoadBootstrapText -like '*mcpBindingOk*' -and $firstLoadBootstrapText -like '*mcpLiveHandshakeVerified*' -and $firstLoadBootstrapText -like '*offline_replay_not_live_proof*' -and $firstLoadBootstrapText -like '*-McpOnly*' -and $firstLoadBootstrapText -like '*memory-root.txt*' -and $firstLoadBootstrapText -like '*rawPromptStored = $false*') { Mark-Ok 'first-load MCP bootstrap guard' } else { Mark-Fail 'first-load MCP bootstrap guard missing' }
 
 $bootstrapText = Read-Utf8 'scripts\bootstrap.ps1'
 $installTransactionText = Read-Utf8 'scripts\internal\install-transaction.ps1'
@@ -1671,19 +1766,25 @@ if ($LASTEXITCODE -eq 0) { Mark-Ok 'recall recent helper' } else { Mark-Fail 're
 Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'recall-search.ps1') -ScriptArguments @('-Query','super-memory-brain','-Limit','1','-TopK','1','-MaxTokens','80','-Layer','all') | Out-Null
 if ($LASTEXITCODE -eq 0) { Mark-Ok 'recall search helper' } else { Mark-Fail 'recall search helper' }
 
-Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'skill-sync-check.ps1') | Out-Null
-if ($LASTEXITCODE -eq 0) { Mark-Ok 'skill sync check' } else { Mark-Fail 'skill sync check' }
-$skillSyncJsonText = Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'skill-sync-check.ps1') -ScriptArguments @('-Json')
-if ($LASTEXITCODE -eq 0) {
-  try {
-    $skillSyncJson = $skillSyncJsonText | ConvertFrom-Json
-    $markerOk = $true
-    foreach ($syncResult in @($skillSyncJson.results)) {
-      if ($syncResult.zcodePackageRootOk -ne $true -or $syncResult.codexPackageRootOk -ne $true -or $syncResult.zcodeMemoryRootOk -ne $true -or $syncResult.codexMemoryRootOk -ne $true) { $markerOk = $false }
-    }
-    if ($markerOk) { Mark-Ok 'skill package and memory root markers' } else { Mark-Fail 'skill package and memory root markers' }
-  } catch { Mark-Fail "skill root marker json parse $($_.Exception.Message)" }
-} else { Mark-Fail 'skill root marker json command' }
+if ($WithTempInstall) {
+  # The isolated install below owns its skill roots; check those after the
+  # install has written the package and memory markers.
+  Mark-Ok 'skill sync check deferred to isolated install'
+} else {
+  Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'skill-sync-check.ps1') | Out-Null
+  if ($LASTEXITCODE -eq 0) { Mark-Ok 'skill sync check' } else { Mark-Fail 'skill sync check' }
+  $skillSyncJsonText = Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'skill-sync-check.ps1') -ScriptArguments @('-Json')
+  if ($LASTEXITCODE -eq 0) {
+    try {
+      $skillSyncJson = $skillSyncJsonText | ConvertFrom-Json
+      $markerOk = $true
+      foreach ($syncResult in @($skillSyncJson.results)) {
+        if ($syncResult.zcodePackageRootOk -ne $true -or $syncResult.codexPackageRootOk -ne $true -or $syncResult.zcodeMemoryRootOk -ne $true -or $syncResult.codexMemoryRootOk -ne $true) { $markerOk = $false }
+      }
+      if ($markerOk) { Mark-Ok 'skill package and memory root markers' } else { Mark-Fail 'skill package and memory root markers' }
+    } catch { Mark-Fail "skill root marker json parse $($_.Exception.Message)" }
+  } else { Mark-Fail 'skill root marker json command' }
+}
 
 Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'compact-report.ps1') | Out-Null
 if ($LASTEXITCODE -eq 0) { Mark-Ok 'compact report' } else { Mark-Fail 'compact report' }
@@ -1745,6 +1846,21 @@ if ($WithTempInstall) {
     $env:SUPER_BRAIN_ARCHIVE_ROOT = $tmpArchive
     Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'install.ps1') -ScriptArguments @('-ZCodeSkills',$zSkills,'-CodexSkills',$codexSkills,'-Neurobase',$tmpMemory,'-IncludeZCode','-Isolated','-NoBackup') | Out-Null
     if ($LASTEXITCODE -eq 0) { Mark-Ok 'integrated temp install' } else { Mark-Fail 'integrated temp install' }
+
+    $tempSkillSyncArguments = @('-ZCodeSkills',$zSkills,'-CodexSkills',$codexSkills,'-IncludeZCode')
+    Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'skill-sync-check.ps1') -ScriptArguments $tempSkillSyncArguments | Out-Null
+    if ($LASTEXITCODE -eq 0) { Mark-Ok 'isolated skill sync check' } else { Mark-Fail 'isolated skill sync check' }
+    $tempSkillSyncJsonText = Invoke-VerifyPackageCli -ScriptPath (Join-Path $PSScriptRoot 'skill-sync-check.ps1') -ScriptArguments (@($tempSkillSyncArguments) + @('-Json'))
+    if ($LASTEXITCODE -eq 0) {
+      try {
+        $tempSkillSyncJson = $tempSkillSyncJsonText | ConvertFrom-Json
+        $tempMarkerOk = $true
+        foreach ($syncResult in @($tempSkillSyncJson.results)) {
+          if ($syncResult.zcodePackageRootOk -ne $true -or $syncResult.codexPackageRootOk -ne $true -or $syncResult.zcodeMemoryRootOk -ne $true -or $syncResult.codexMemoryRootOk -ne $true) { $tempMarkerOk = $false }
+        }
+        if ($tempMarkerOk) { Mark-Ok 'isolated skill package and memory root markers' } else { Mark-Fail 'isolated skill package and memory root markers' }
+      } catch { Mark-Fail "isolated skill root marker json parse $($_.Exception.Message)" }
+    } else { Mark-Fail 'isolated skill root marker json command' }
 
     if (Test-Path (Join-Path $tmpMemory '.memory-scope.json')) { Mark-Ok 'integrated temp memory scope marker' } else { Mark-Fail 'integrated temp memory scope marker missing' }
 

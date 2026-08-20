@@ -24,7 +24,7 @@ Describe 'parallel fixture $escapedFixtureName' {
     [string]::IsNullOrWhiteSpace([string]`$env:SUPER_BRAIN_ARCHIVE_ROOT) | Should Be `$false
     `$env:SUPER_BRAIN_ARCHIVE_ROOT.StartsWith(`$stateRoot, [System.StringComparison]::OrdinalIgnoreCase) | Should Be `$true
     [string]::IsNullOrWhiteSpace([string]`$env:SUPER_BRAIN_WORKSPACE_KEY) | Should Be `$true
-    `$env:CODEX_THREAD_ID -like 'pester-*' | Should Be `$true
+    `$env:SUPER_BRAIN_LOCAL_SESSION_ID -like 'pester-*' | Should Be `$true
     `$insideMarker = Join-Path `$stateRoot 'fixture-marker.txt'
     [System.IO.File]::WriteAllText(`$insideMarker, '$escapedFixtureName')
     [System.IO.File]::WriteAllText('$escapedMarkerPath', `$stateRoot)

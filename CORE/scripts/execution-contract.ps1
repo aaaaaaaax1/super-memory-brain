@@ -1,6 +1,6 @@
 [CmdletBinding(PositionalBinding=$false)]
 param(
-  [ValidateSet('Set','ObserveUser','Get','Resolve','Guard','Clear','ResumeParent','CloseTurn','PrepareMerge','CompleteMerge','ValidatePlanReceipt','ValidateIntentReceipt','BindContext','RebindPackageVersion')]
+  [ValidateSet('Set','ObserveUser','Get','Resolve','Guard','Clear','ResumeParent','CloseTurn','PrepareMerge','CompleteMerge','ValidatePlanReceipt','ValidateIntentReceipt','BindContext','RebindPackageVersion','CreatePhaseCloseout')]
   [string]$Action = 'Get',
   [string]$TaskId = '',
   [string]$WorkspaceKey = '',
@@ -20,6 +20,9 @@ param(
   # transcripts; the contract validates it against the live project root.
   [string]$ProjectProgressProofBase64 = '',
   [string]$ProjectRoot = '',
+  # Retired compatibility parameter. Any non-empty value is rejected before
+  # identity resolution or contract access with H7_HOST_TRANSPORT_RETIRED.
+  [string]$HostReadbackProjectionBase64 = '',
   [string]$NextAction = '',
   [string]$CurrentPhase = '',
   [string]$CurrentStep = '',
@@ -163,6 +166,7 @@ $script:LastConfirmedSentenceWasBound = $PSBoundParameters.ContainsKey('LastConf
 $script:ProgressCheckpointBase64WasBound = $PSBoundParameters.ContainsKey('ProgressCheckpointBase64') -and -not [string]::IsNullOrWhiteSpace($ProgressCheckpointBase64)
 $script:ProjectProgressProofBase64WasBound = $PSBoundParameters.ContainsKey('ProjectProgressProofBase64') -and -not [string]::IsNullOrWhiteSpace($ProjectProgressProofBase64)
 $script:ProjectRootWasBound = $PSBoundParameters.ContainsKey('ProjectRoot') -and -not [string]::IsNullOrWhiteSpace($ProjectRoot)
+$script:HostReadbackProjectionWasBound = $PSBoundParameters.ContainsKey('HostReadbackProjectionBase64') -and -not [string]::IsNullOrWhiteSpace($HostReadbackProjectionBase64)
 $script:LastConfirmedSourceWasBound = $PSBoundParameters.ContainsKey('LastConfirmedSource') -and $LastConfirmedSource -ne 'auto'
 $script:EnableCanonicalPlanWasBound = $PSBoundParameters.ContainsKey('EnableCanonicalPlan') -and $EnableCanonicalPlan
 $script:CanonicalMutationPathWasBound = $PSBoundParameters.ContainsKey('CanonicalMutationPath') -and -not [string]::IsNullOrWhiteSpace($CanonicalMutationPath)
@@ -302,6 +306,15 @@ function Get-ProjectProgressPayloadHash([object]$Body) {
   $python = Get-Command python -ErrorAction SilentlyContinue
   if (-not $python) { throw 'EXECUTION_CONTRACT_PYTHON_REQUIRED_FOR_H7_CANONICAL_HASH' }
   $json = $canonical | ConvertTo-Json -Depth 16 -Compress
+  # A single authority invocation often validates the exact same canonical
+  # proof body at several gates.  Keep a tiny process-local cache keyed by the
+  # canonical bytes so repeated gates do not launch a new Python child.  This
+  # is not durable state, not cross-request authority, and is bounded to avoid
+  # turning a long-lived PowerShell host into a memory cache.
+  if (-not $script:ProjectProgressHashCache) { $script:ProjectProgressHashCache = @{} }
+  if ($script:ProjectProgressHashCache.ContainsKey([string]$json)) {
+    return [string]$script:ProjectProgressHashCache[[string]$json]
+  }
   $program = @'
 import hashlib
 import json
@@ -329,6 +342,8 @@ print(hashlib.sha256(json.dumps(
   }
   $hash = (($output | ForEach-Object { [string]$_ }) -join '').Trim().ToLowerInvariant()
   if ($hash -notmatch '^[a-f0-9]{64}$') { throw 'EXECUTION_CONTRACT_H7_CANONICAL_HASH_INVALID' }
+  if ($script:ProjectProgressHashCache.Count -ge 32) { $script:ProjectProgressHashCache.Clear() }
+  $script:ProjectProgressHashCache[[string]$json] = $hash
   return $hash
 }
 
@@ -419,7 +434,7 @@ function Test-ProjectProgressProof(
         $candidate = [IO.Path]::GetFullPath((Join-Path $root.path $relative))
         $resolvedCandidate = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
         $rootPrefix = $root.path + [IO.Path]::DirectorySeparatorChar
-        if (-not $resolvedCandidate.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $resolvedCandidate -PathType Leaf) -or (Get-FileHash -LiteralPath $resolvedCandidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$entry.sha256) { throw 'proof evidence changed or escaped project root' }
+        if (-not $resolvedCandidate.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $resolvedCandidate -PathType Leaf) -or (Get-SuperBrainFileSha256 $resolvedCandidate) -ne [string]$entry.sha256) { throw 'proof evidence changed or escaped project root' }
       } catch {
         $result.code = 'EXECUTION_CONTRACT_PROJECT_PROGRESS_EVIDENCE_HASH_MISMATCH'; $result.missing=@('project_evidence_hash'); return [pscustomobject]$result
       }
@@ -516,7 +531,7 @@ function New-ProjectProgressProof(
       $resolvedCandidate = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
       $rootPrefix = $root.path + [IO.Path]::DirectorySeparatorChar
       if (-not $resolvedCandidate.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $resolvedCandidate -PathType Leaf)) { throw 'project evidence path is unavailable or escapes the project root' }
-      $actualHash = (Get-FileHash -LiteralPath $resolvedCandidate -Algorithm SHA256).Hash.ToLowerInvariant()
+      $actualHash = Get-SuperBrainFileSha256 $resolvedCandidate
     } catch {
       return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_PROJECT_PROGRESS_EVIDENCE_MISSING'; missing=@('project_evidence_file'); proof=$null }
     }
@@ -1056,7 +1071,89 @@ function New-CanonicalPlanFromChecklist(
   return Test-CanonicalPlanState $plan
 }
 
-function Read-CanonicalMutationEnvelope([string]$Path) {
+function Get-CanonicalMutationPayloadHash([object]$Envelope) {
+  if (-not $Envelope) { return '' }
+  $body = [ordered]@{}
+  foreach ($property in @($Envelope.PSObject.Properties | Where-Object { [string]$_.Name -ne 'payloadHash' })) {
+    $body[[string]$property.Name] = $property.Value
+  }
+  try { return (Get-ProjectProgressPayloadHash ([pscustomobject]$body)).ToLowerInvariant() } catch { return '' }
+}
+
+function Test-CanonicalMutationEnvelopeScope(
+  [object]$Envelope,
+  [string]$ExpectedTaskId = '',
+  [string]$ExpectedTaskInstanceId = '',
+  [string]$ExpectedWorkspaceKey = '',
+  [string]$ExpectedOwnerSessionKey = '',
+  [string]$ExpectedTransitionId = ''
+) {
+  if (-not $Envelope -or $Envelope -is [System.Array] -or $Envelope -is [string]) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_OBJECT_REQUIRED' }
+  }
+  # v1 envelopes had no immutable task/session scope and are never eligible
+  # for automatic migration.  They remain readable only as an explicit,
+  # fail-closed diagnostic so an old file cannot authorize a current task.
+  if ([string]$Envelope.schema -eq 'super-brain.canonical-plan-mutation.v1') {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_REQUIRED'; guard='Legacy canonical mutation envelopes without task, instance, workspace, and session scope are retired.' }
+  }
+  if ([string]$Envelope.schema -ne 'super-brain.canonical-plan-mutation.v2') {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCHEMA_INVALID' }
+  }
+  if (-not $Envelope.PSObject.Properties['scope'] -or -not $Envelope.scope -or $Envelope.scope -is [System.Array] -or $Envelope.scope -is [string]) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_REQUIRED'; guard='A v2 canonical mutation must carry an immutable four-key scope.' }
+  }
+  $scopeNames = @('taskId','taskInstanceId','workspaceKey','ownerSessionKey')
+  if (-not (Test-ProjectProgressPropertySet $Envelope.scope $scopeNames)) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_REQUIRED'; guard='Canonical mutation scope must contain exactly taskId, taskInstanceId, workspaceKey, and ownerSessionKey.' }
+  }
+  $taskId = [string]$Envelope.scope.taskId
+  $taskInstanceId = [string]$Envelope.scope.taskInstanceId
+  $workspaceKey = [string]$Envelope.scope.workspaceKey
+  $ownerSessionKey = [string]$Envelope.scope.ownerSessionKey
+  $transitionId = [string]$Envelope.transitionId
+  if (
+    [string]::IsNullOrWhiteSpace($taskId) -or
+    $taskInstanceId -notmatch '^ti-[a-f0-9]{32}$' -or
+    $workspaceKey -notmatch '^ws-[a-f0-9]{24}$' -or
+    $ownerSessionKey -notmatch '^sid-[a-f0-9]{16,64}$' -or
+    $transitionId -notmatch '^[A-Za-z0-9._:-]{1,120}$'
+  ) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_INVALID'; taskId=$taskId; taskInstanceId=$taskInstanceId; workspaceKey=$workspaceKey; ownerSessionKey=$ownerSessionKey; transitionId=$transitionId }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedTaskId) -and -not [string]::Equals($taskId,$ExpectedTaskId,[StringComparison]::Ordinal)) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_MISMATCH'; field='taskId'; expected=$ExpectedTaskId; actual=$taskId }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedTaskInstanceId) -and -not [string]::Equals($taskInstanceId,$ExpectedTaskInstanceId,[StringComparison]::OrdinalIgnoreCase)) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_MISMATCH'; field='taskInstanceId'; expected=$ExpectedTaskInstanceId; actual=$taskInstanceId }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedWorkspaceKey) -and -not (Test-SuperBrainWorkspaceKey $workspaceKey $ExpectedWorkspaceKey)) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_MISMATCH'; field='workspaceKey'; expected=$ExpectedWorkspaceKey; actual=$workspaceKey }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedOwnerSessionKey) -and -not [string]::Equals($ownerSessionKey,$ExpectedOwnerSessionKey,[StringComparison]::OrdinalIgnoreCase)) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_MISMATCH'; field='ownerSessionKey'; expected=$ExpectedOwnerSessionKey; actual=$ownerSessionKey }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedTransitionId) -and -not [string]::Equals($transitionId,$ExpectedTransitionId,[StringComparison]::Ordinal)) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_TRANSITION_MISMATCH'; expected=$ExpectedTransitionId; actual=$transitionId }
+  }
+  if (-not $Envelope.PSObject.Properties['payloadHash'] -or [string]$Envelope.payloadHash -notmatch '^[a-f0-9]{64}$') {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_PAYLOAD_HASH_REQUIRED' }
+  }
+  $actualPayloadHash = Get-CanonicalMutationPayloadHash $Envelope
+  if ([string]::IsNullOrWhiteSpace($actualPayloadHash) -or -not [string]::Equals($actualPayloadHash,[string]$Envelope.payloadHash,[StringComparison]::OrdinalIgnoreCase)) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_PAYLOAD_HASH_MISMATCH'; expected=$actualPayloadHash; actual=[string]$Envelope.payloadHash }
+  }
+  return [pscustomobject]@{ ok=$true; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_CURRENT'; taskId=$taskId; taskInstanceId=$taskInstanceId; workspaceKey=$workspaceKey; ownerSessionKey=$ownerSessionKey; transitionId=$transitionId; payloadHash=[string]$Envelope.payloadHash }
+}
+
+function Read-CanonicalMutationEnvelope(
+  [string]$Path,
+  [string]$ExpectedTaskId = '',
+  [string]$ExpectedTaskInstanceId = '',
+  [string]$ExpectedWorkspaceKey = '',
+  [string]$ExpectedOwnerSessionKey = '',
+  [string]$ExpectedTransitionId = ''
+) {
   if ([string]::IsNullOrWhiteSpace($Path)) { return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_PATH_REQUIRED' } }
   $fullPath = try { [IO.Path]::GetFullPath($Path) } catch { '' }
   if ([string]::IsNullOrWhiteSpace($fullPath) -or -not (Test-SuperBrainChildPath $memoryBase $fullPath)) {
@@ -1076,8 +1173,29 @@ function Read-CanonicalMutationEnvelope([string]$Path) {
   if (-not $value -or $value -is [System.Array] -or $value -is [string]) {
     return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_OBJECT_REQUIRED'; path=$fullPath }
   }
+  $scope = Test-CanonicalMutationEnvelopeScope $value $ExpectedTaskId $ExpectedTaskInstanceId $ExpectedWorkspaceKey $ExpectedOwnerSessionKey $ExpectedTransitionId
+  if (-not $scope.ok) {
+    $scope | Add-Member -NotePropertyName path -NotePropertyValue $fullPath -Force
+    return $scope
+  }
+  # v1 envelopes carried no task/workspace/instance/session scope and are
+  # historical evidence only. Never reinterpret them as a current action.
+  if ([string]$value.schema -ne 'super-brain.canonical-plan-mutation.v2') {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_LEGACY_UNSCOPED'; path=$fullPath }
+  }
+  if (-not $value.PSObject.Properties['scope'] -or -not $value.scope) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_REQUIRED'; path=$fullPath }
+  }
+  foreach ($name in @('taskId','taskInstanceId','workspaceKey','ownerSessionKey')) {
+    if (-not $value.scope.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$value.scope.$name)) {
+      return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_REQUIRED'; path=$fullPath }
+    }
+  }
+  if ([string]$value.payloadHash -notmatch '^[a-f0-9]{64}$') {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_PAYLOAD_HASH_INVALID'; path=$fullPath }
+  }
   $normalizedEnvelope = $value | ConvertTo-Json -Depth 12 -Compress
-  return [pscustomobject]@{ ok=$true; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_OK'; path=$fullPath; envelope=$value; contentHash=Get-ContinuityFingerprint $normalizedEnvelope }
+  return [pscustomobject]@{ ok=$true; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_OK'; path=$fullPath; envelope=$value; scope=$scope; contentHash=Get-ContinuityFingerprint $normalizedEnvelope }
 }
 
 function Get-CanonicalPlanSourceRelativePath([string]$BasePath,[string]$ChildPath) {
@@ -1191,7 +1309,7 @@ function Read-CanonicalPlanSourceManifest([string]$Path) {
   if (-not $document.ok -or -not (Test-Path -LiteralPath $document.path -PathType Leaf)) {
     return [pscustomobject]@{ ok=$false; code=if($document.ok){'EXECUTION_CONTRACT_CANONICAL_SOURCE_DOCUMENT_MISSING'}else{[string]$document.code}; path=$location.path }
   }
-  $actualDocumentHash = (Get-FileHash -LiteralPath $document.path -Algorithm SHA256).Hash.ToLowerInvariant()
+  $actualDocumentHash = Get-SuperBrainFileSha256 $document.path
   if ($actualDocumentHash -ne $documentHash) {
     return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_SOURCE_DOCUMENT_HASH_MISMATCH'; path=$location.path; documentPath=$document.path }
   }
@@ -1202,7 +1320,7 @@ function Read-CanonicalPlanSourceManifest([string]$Path) {
     scope=[string]$location.scope
     relativePath=[string]$location.relativePath
     manifest=$value
-    manifestSha256=(Get-FileHash -LiteralPath $location.path -Algorithm SHA256).Hash.ToLowerInvariant()
+    manifestSha256=Get-SuperBrainFileSha256 $location.path
     sourceDocument=[pscustomobject]@{ relativePath=$documentRelativePath.Replace('\','/'); sha256=$documentHash }
   }
 }
@@ -1271,7 +1389,7 @@ function Get-CanonicalPlanSourceStatus([object]$Contract,[object]$InstructionAnc
   if (-not $manifestPath.ok -or -not (Test-Path -LiteralPath $manifestPath.path -PathType Leaf)) {
     return [pscustomobject]@{ required=$true; current=$false; code=if($manifestPath.ok){'EXECUTION_CONTRACT_CANONICAL_SOURCE_NOT_FOUND'}else{[string]$manifestPath.code} }
   }
-  $manifestHash = (Get-FileHash -LiteralPath $manifestPath.path -Algorithm SHA256).Hash.ToLowerInvariant()
+  $manifestHash = Get-SuperBrainFileSha256 $manifestPath.path
   if ($manifestHash -ne ([string]$binding.manifestSha256).ToLowerInvariant()) {
     return [pscustomobject]@{ required=$true; current=$false; code='EXECUTION_CONTRACT_CANONICAL_SOURCE_MANIFEST_HASH_MISMATCH' }
   }
@@ -1298,13 +1416,31 @@ function Apply-CanonicalPlanMutation(
   [object]$Envelope,
   [string]$LatestInstructionValue,
   [int]$CurrentRevision,
-  [string]$ReplacementRootFocusId = ''
+  [string]$ReplacementRootFocusId = '',
+  [string]$ExpectedTaskId = '',
+  [string]$ExpectedTaskInstanceId = '',
+  [string]$ExpectedWorkspaceKey = '',
+  [string]$ExpectedOwnerSessionKey = ''
 ) {
   $validated = Test-CanonicalPlanState $ExistingPlan
   if (-not $validated.ok) { return $validated }
   $plan = $validated.plan
-  if ([string]$Envelope.schema -ne 'super-brain.canonical-plan-mutation.v1' -or [string]$Envelope.targetScope -ne 'canonical_main') {
+  if ([string]$Envelope.schema -ne 'super-brain.canonical-plan-mutation.v2' -or [string]$Envelope.targetScope -ne 'canonical_main') {
     return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCHEMA_INVALID' }
+  }
+  if (-not $Envelope.PSObject.Properties['scope'] -or -not $Envelope.scope) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_REQUIRED' }
+  }
+  if (
+    [string]$Envelope.scope.taskId -ne [string]$ExpectedTaskId -or
+    [string]$Envelope.scope.taskInstanceId -ne [string]$ExpectedTaskInstanceId -or
+    [string]$Envelope.scope.workspaceKey -ne [string]$ExpectedWorkspaceKey -or
+    [string]$Envelope.scope.ownerSessionKey -ne [string]$ExpectedOwnerSessionKey
+  ) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_SCOPE_MISMATCH' }
+  }
+  if ([string]$Envelope.payloadHash -notmatch '^[a-f0-9]{64}$') {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_PAYLOAD_HASH_INVALID' }
   }
   $operation = [string]$Envelope.operation
   if ($operation -notin @('append','set_status','cancel_item','replace_canonical')) { return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_OPERATION_INVALID' } }
@@ -2410,7 +2546,11 @@ function Protect-ReturnStackIntegrity(
   [string]$ActiveFocusIdValue = '',
   [switch]$UpgradeLegacy
 ) {
-  $raw = @($Items)
+  # PowerShell unwraps an empty JSON array property to `$null` when it is
+  # passed through `@($Contract.returnStack)`.  Treat that representation as
+  # an empty stack; otherwise every subsequent Set/CloseTurn incorrectly
+  # fails with `blank_return_focus` before H7 can publish a checkpoint.
+  $raw = @($Items | Where-Object { $null -ne $_ })
   if ($raw.Count -gt $script:ReturnStackMaxDepth) {
     return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_RETURN_STACK_INVALID'; reason='return_stack_too_deep'; cards=@() }
   }
@@ -2665,6 +2805,88 @@ function Validate-IntentReceipt {
   }
 }
 
+function Create-PhaseCloseout {
+  $allowedParameters = @(
+    'Action','TaskId','WorkspaceKey','SessionKey','ProjectRoot',
+    'ExpectedRevision','ExpectedPlanFingerprint',
+    'StateRoot','Json','NoExit'
+  )
+  $unsupported = @($script:ExecutionContractBoundParameterNames | Where-Object { $_ -notin $allowedParameters } | Sort-Object -Unique)
+  if ($unsupported.Count -gt 0) {
+    return [pscustomobject]@{
+      ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_INPUT_FORBIDDEN';taskId=$TaskId;workspaceKey=$WorkspaceKey
+      forbidden=@($unsupported);guard='CreatePhaseCloseout accepts only local CAS scope fields. It never accepts Host transport, raw prompts, transcripts, caller-supplied H7 hashes, or an external receipt path.'
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($TaskId)) { return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_TASK_REQUIRED';taskId='';workspaceKey=$WorkspaceKey} }
+  if ([string]::IsNullOrWhiteSpace($WorkspaceKey)) { return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_WORKSPACE_REQUIRED';taskId=$TaskId;workspaceKey=''} }
+  if ([string]::IsNullOrWhiteSpace($SessionKey)) { return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_SESSION_REQUIRED';taskId=$TaskId;workspaceKey=$WorkspaceKey;guard='Creating phase-closeout evidence requires the owning root Codex session identity.'} }
+  if (-not $script:ProjectRootWasBound) { return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_PROJECT_ROOT_REQUIRED';taskId=$TaskId;workspaceKey=$WorkspaceKey} }
+  if ($ExpectedRevision -lt 0) { return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_EXPECTED_REVISION_REQUIRED';taskId=$TaskId;workspaceKey=$WorkspaceKey} }
+  if ([string]::IsNullOrWhiteSpace($ExpectedPlanFingerprint)) { return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_EXPECTED_PLAN_REQUIRED';taskId=$TaskId;workspaceKey=$WorkspaceKey} }
+  $projectRootStatus = Resolve-SuperBrainPhaseCloseoutProjectRoot $ProjectRoot
+  if (-not $projectRootStatus.ok) {
+    return [pscustomobject]@{ok=$false;code=('EXECUTION_CONTRACT_' + [string]$projectRootStatus.code);taskId=$TaskId;workspaceKey=$WorkspaceKey}
+  }
+  $contractPath = Get-ContractPath $TaskId $WorkspaceKey
+  return Invoke-SuperBrainFileLock $contractPath {
+    $record = Get-BoundContractRecord $TaskId $WorkspaceKey
+    if ($record.identityConflict) { return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_IDENTITY_MISMATCH';taskId=$TaskId;workspaceKey=$WorkspaceKey} }
+    $existing = $record.contract
+    if (-not $existing) { return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_NOT_FOUND';taskId=$TaskId;workspaceKey=$WorkspaceKey} }
+    $sessionBlock = Get-ContractSessionMutationBlock $existing 'CreatePhaseCloseout'
+    if ($sessionBlock) { return $sessionBlock }
+    if ([int]$existing.revision -ne $ExpectedRevision) {
+      return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_REVISION_MISMATCH';taskId=$TaskId;workspaceKey=$WorkspaceKey;expectedRevision=$ExpectedRevision;actualRevision=[int]$existing.revision;guard='The execution contract changed before local closeout publication. Re-read the current task and create a new closeout receipt.'}
+    }
+    $actualPlanFingerprint = if ($existing.PSObject.Properties['planReceipt'] -and $existing.planReceipt) { [string]$existing.planReceipt.planFingerprint } else { '' }
+    if ($actualPlanFingerprint -ne $ExpectedPlanFingerprint) {
+      return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PLAN_FINGERPRINT_MISMATCH';taskId=$TaskId;workspaceKey=$WorkspaceKey;expectedPlanFingerprint=$ExpectedPlanFingerprint;actualPlanFingerprint=$actualPlanFingerprint;guard='The approved plan changed before local closeout publication. Create closeout evidence only for the current plan.'}
+    }
+    $currentStatus = Test-ContractCurrent $existing
+    if (-not $currentStatus.current) {
+      return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_CONTRACT_STALE';taskId=$TaskId;workspaceKey=$WorkspaceKey;reasons=@($currentStatus.reasons);guard='A phase closeout can be created only from the current active contract.'}
+    }
+    $phase = Get-SuperBrainFormalPhaseToken ([string]$existing.currentPhase)
+    if ([string]::IsNullOrWhiteSpace($phase)) {
+      return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_FORMAL_PHASE_REQUIRED';taskId=$TaskId;workspaceKey=$WorkspaceKey;currentPhase=[string]$existing.currentPhase}
+    }
+    if ((Get-ContractPhaseEvidencePolicy $existing) -ne 'h7_current') {
+      return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_EVIDENCE_POLICY_MISMATCH';taskId=$TaskId;workspaceKey=$WorkspaceKey}
+    }
+    $issued = New-SuperBrainPhaseCloseoutAuthority $existing $workspace $Root $memoryBase $projectRootStatus.path
+    if (-not $issued.ok) {
+      return [pscustomobject]@{ok=$false;code=('EXECUTION_CONTRACT_' + [string]$issued.code);taskId=$TaskId;workspaceKey=$WorkspaceKey;guard='Current local H7 contract, project proof, visible progress, activation receipt, and telemetry must validate before a closeout receipt can be issued.'}
+    }
+    return [pscustomobject]@{
+      ok=$true
+      action='CreatePhaseCloseout'
+      code='EXECUTION_CONTRACT_PHASE_CLOSEOUT_CREATED'
+      taskId=$TaskId
+      workspaceKey=$WorkspaceKey
+      ownerSessionKey=[string]$existing.ownerSessionKey
+      receiptPath=[string]$issued.receiptPath
+      path=[string]$issued.receiptPath
+      receiptSha256=[string]$issued.receiptSha256
+      sha256=[string]$issued.receiptSha256
+      phase=[string]$issued.phase
+      revision=[int]$issued.revision
+      contractRevision=[int]$issued.contractRevision
+      planFingerprint=[string]$issued.planFingerprint
+      replayed=[bool]$issued.replayed
+      locator=[pscustomobject]@{
+        schema='super-brain.phase-closeout-locator.v1'
+        deterministic=$true
+        algorithm='sha256:utf8-lines(taskId,workspaceKey,ownerSessionKey,revision,planFingerprint,phase,visibleProgressPayloadHash)[:24]'
+        path=[string]$issued.receiptPath
+      }
+      rawPromptStored=$false
+      rawTranscriptStored=$false
+      contractMutated=$false
+    }
+  }
+}
+
 function New-ContinuityStateCard(
   [string]$TaskIdValue,
   [string]$WorkspaceKeyValue,
@@ -2881,7 +3103,7 @@ function Get-TaskIdHash([string]$Value) {
 }
 
 function Get-ExecutionSessionKey([string]$Value) {
-  return Get-SuperBrainHostSessionKey $Value
+  return Get-SuperBrainLocalSessionKey $Value
 }
 
 function Get-ContractSessionKey($Contract) {
@@ -3091,6 +3313,7 @@ function Resolve-Identity {
       if ($hotIndex) {
         @($hotIndex.entries | Where-Object {
           [string]$_.status -eq 'active' -and
+          $_.wakeEligible -ne $false -and
           [string]$_.packageVersion -eq [string]$manifest.version -and
           (Test-SuperBrainWorkspaceKey ([string]$_.workspaceKey) $WorkspaceKey) -and
           [string]::Equals([string]$_.ownerSessionKey,$SessionKey,[StringComparison]::OrdinalIgnoreCase)
@@ -3191,14 +3414,14 @@ function Write-ContractContinuityStagingValue([string]$Id,[string]$Name,[object]
 function New-ContractContinuityCommand([string]$Role,[string]$Operation,[string]$TargetPath,[string]$PayloadPath,[string]$ExpectedHash,[string]$Id,[string]$Key,[bool]$ApplyWhenMissing=$false) {
   return [pscustomobject]@{
     role=$Role; operation=$Operation; targetPath=[IO.Path]::GetFullPath($TargetPath); payloadPath=[IO.Path]::GetFullPath($PayloadPath)
-    payloadHash=(Get-FileHash -LiteralPath $PayloadPath -Algorithm SHA256).Hash; expectedTargetHash=$ExpectedHash
+    payloadHash=Get-SuperBrainFileSha256 $PayloadPath; expectedTargetHash=$ExpectedHash
     expectedTaskId=$Id; expectedWorkspaceKey=$Key; applyWhenMissing=$ApplyWhenMissing
   }
 }
 
 function Get-ContractContinuityPointerExpectedHash([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
-  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+  return Get-SuperBrainFileSha256 $Path
 }
 
 function Copy-ContractContinuityValue([object]$Value) {
@@ -3231,7 +3454,7 @@ function Get-ContractContinuityActiveEntity(
   if (-not [string]::Equals($path,[IO.Path]::GetFullPath($expectedPath),[StringComparison]::OrdinalIgnoreCase)) {
     return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CONTINUITY_ENTITY_PATH_INVALID'; kind=$Kind; path=$path; expectedPath=$expectedPath }
   }
-  if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or -not [string]::Equals((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash,[string]$entity.hash,[StringComparison]::OrdinalIgnoreCase)) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or -not [string]::Equals((Get-SuperBrainFileSha256 $path),[string]$entity.hash,[StringComparison]::OrdinalIgnoreCase)) {
     return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CONTINUITY_ENTITY_HASH_STALE'; kind=$Kind; path=$path }
   }
   $value = Read-ContractJson $path
@@ -3381,7 +3604,7 @@ function Invoke-AtomicContractContinuity([object]$Contract,[string]$Mutation,[ob
     $contractPath = [string]$Contract.path
     $contractPayloadPath = Write-ContractContinuityStagingValue ([string]$Contract.taskId) 'execution-contract' $Contract
     [void]$stagedPaths.Add($contractPayloadPath)
-    $contractHash = (Get-FileHash -LiteralPath $contractPayloadPath -Algorithm SHA256).Hash
+    $contractHash = Get-SuperBrainFileSha256 $contractPayloadPath
     $contractFileName = Split-Path -Leaf $contractPath
     $checkpointProjection = $null
     $checkpointPayloadPath = ''
@@ -4021,9 +4244,15 @@ function Set-Contract([switch]$ObserveOnly,[object]$PackageVersionRebindPayload=
       return $view
     }
     $canonicalMutationRecord = $null
+    # Canonical mutations are read only after deriving the same immutable
+    # scope that will be persisted on this contract.  This prevents a file
+    # from another task/session from being accepted merely because its path is
+    # inside the shared state root.
+    $canonicalMutationExpectedOwnerSessionKey = if ($RebindSession -and -not [string]::IsNullOrWhiteSpace($SessionKey)) { [string]$SessionKey } elseif (-not [string]::IsNullOrWhiteSpace($existingSessionKey)) { [string]$existingSessionKey } else { [string]$SessionKey }
+    $canonicalMutationExpectedTaskInstanceId = if ($existing -and $existing.PSObject.Properties['taskInstanceId']) { [string]$existing.taskInstanceId } else { '' }
     if ($script:CanonicalMutationPathWasBound) {
       if ($ObserveOnly) { return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CANONICAL_MUTATION_OBSERVE_FORBIDDEN'; taskId=$TaskId; workspaceKey=$WorkspaceKey } }
-      $canonicalMutationRecord = Read-CanonicalMutationEnvelope $CanonicalMutationPath
+      $canonicalMutationRecord = Read-CanonicalMutationEnvelope $CanonicalMutationPath $TaskId $canonicalMutationExpectedTaskInstanceId $WorkspaceKey $canonicalMutationExpectedOwnerSessionKey $TransitionId
       if (-not $canonicalMutationRecord.ok) { return $canonicalMutationRecord }
     }
     $canonicalSourceManifestRecord = $null
@@ -4457,9 +4686,10 @@ function Set-Contract([switch]$ObserveOnly,[object]$PackageVersionRebindPayload=
       $instructionAnchorRequiresCanonicalSource -or
       ($existing -and $existing.PSObject.Properties['canonicalPlanSourceRequired'] -and $existing.canonicalPlanSourceRequired -eq $true)
     )
+    $canonicalPreviousProjection = if ($existingCanonicalPlan) { Get-CanonicalPlanProjection $existingCanonicalPlan } else { $null }
     if ($canonicalMutationRecord) {
       $replacementRootFocusId = if($mode-eq'replace' -and $focusChanged){$newFocus}else{''}
-      $mutationResult = Apply-CanonicalPlanMutation $existingCanonicalPlan $canonicalMutationRecord.envelope $latestInstruction ([int]$existing.revision) $replacementRootFocusId
+      $mutationResult = Apply-CanonicalPlanMutation $existingCanonicalPlan $canonicalMutationRecord.envelope $latestInstruction ([int]$existing.revision) $replacementRootFocusId $TaskId $taskInstanceIdValue $WorkspaceKey $ownerSessionKey
       if (-not $mutationResult.ok) { return $mutationResult }
       $canonicalPlanValue = $mutationResult.plan
     } elseif ($script:EnableCanonicalPlanWasBound -and -not $existingCanonicalPlan) {
@@ -4504,6 +4734,68 @@ function Set-Contract([switch]$ObserveOnly,[object]$PackageVersionRebindPayload=
       if ([string]$newFocus -eq [string]$canonicalPlanValue.rootFocusId -and $returnStack.Count -eq 0) {
         $stateCompletedSteps = @($canonicalProjection.completedSteps)
         $statePendingSteps = @($canonicalProjection.pendingSteps)
+      }
+      # Completing the final canonical item is a phase boundary, even when a
+      # caller omits CurrentPhase/CurrentStep/NextAction and would otherwise
+      # leave the old formal stage and stale action projected into the new
+      # contract.  Do not invent a terminal state or advance a stage here:
+      # require one same-CAS progress checkpoint, fresh project proof, and
+      # explicit phase/step/action fields so the existing H7 closeout gate can
+      # validate the real transition.  The guard runs before any contract
+      # write, so a rejected mutation leaves revision and plan untouched.
+      $canonicalCompletionTransition = (
+        -not $ObserveOnly -and
+        $canonicalMutationRecord -and
+        $canonicalPreviousProjection -and
+        $canonicalMainActive -and
+        $returnStack.Count -eq 0 -and
+        [int]$canonicalPreviousProjection.pendingCount -gt 0 -and
+        [int]$canonicalProjection.pendingCount -eq 0
+      )
+      if ($canonicalCompletionTransition) {
+        # A decoded H7 checkpoint marks these fields as explicitly bound, so
+        # this accepts the normal runtime transport while rejecting an empty
+        # or partially projected terminal state from any other caller.
+        $completionProjectionFieldsBound = (
+          $script:CurrentPhaseWasBound -and
+          $script:CurrentStepWasBound -and
+          $script:NextActionWasBound -and
+          -not [string]::IsNullOrWhiteSpace([string]$CurrentPhase) -and
+          -not [string]::IsNullOrWhiteSpace([string]$CurrentStep) -and
+          -not [string]::IsNullOrWhiteSpace([string]$NextAction)
+        )
+        $completionProjectionChanged = (
+          -not [string]::Equals([string]$CurrentPhase,[string]$existing.currentPhase,[StringComparison]::Ordinal) -or
+          -not [string]::Equals([string]$CurrentStep,[string]$existing.currentStep,[StringComparison]::Ordinal) -or
+          -not [string]::Equals([string]$NextAction,[string]$existing.nextAction,[StringComparison]::Ordinal)
+        )
+        $completedProjectionKeys = @($canonicalProjection.completedSteps | ForEach-Object { Get-ChecklistStepKey ([string]$_) })
+        $stepOrActionTargetsCompletedItem = (
+          $completedProjectionKeys -contains (Get-ChecklistStepKey ([string]$CurrentStep)) -or
+          $completedProjectionKeys -contains (Get-ChecklistStepKey ([string]$NextAction))
+        )
+        $completionProgressBound = (
+          $script:ProgressCheckpointBase64WasBound -and
+          $script:ProjectProgressProofBase64WasBound -and
+          [string]$LastConfirmedSource -eq 'assistant_visible_reply' -and
+          $completionProjectionFieldsBound -and
+          $completionProjectionChanged -and
+          -not $stepOrActionTargetsCompletedItem
+        )
+        if (-not $completionProgressBound) {
+          return [pscustomobject]@{
+            ok=$false
+            code='EXECUTION_CONTRACT_CANONICAL_COMPLETION_PROGRESS_BINDING_REQUIRED'
+            taskId=$TaskId
+            workspaceKey=$WorkspaceKey
+            planId=[string]$canonicalPlanValue.planId
+            transitionId=[string]$canonicalMutationRecord.envelope.transitionId
+            previousPendingCount=[int]$canonicalPreviousProjection.pendingCount
+            pendingCount=[int]$canonicalProjection.pendingCount
+            requiredFields=@('ProgressCheckpointBase64','ProjectProgressProofBase64','assistant_visible_reply','CurrentPhase','CurrentStep','NextAction')
+            guard='The final canonical item cannot silently complete while retaining the prior phase or action. Bind a fresh H7 progress checkpoint and project proof with explicit current phase, step, and next action in the same CAS transition.'
+          }
+        }
       }
       if($returnStack.Count-eq0 -and [string]$newFocus-ne[string]$canonicalPlanValue.rootFocusId){
         return [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_CANONICAL_ROOT_FOCUS_MISMATCH';taskId=$TaskId;workspaceKey=$WorkspaceKey;focusId=$newFocus;canonicalRootFocusId=[string]$canonicalPlanValue.rootFocusId;guard='A root work line cannot detach from the canonical plan root without an explicit canonical replacement.'}
@@ -4755,7 +5047,7 @@ function New-PackageVersionRebindInputProof([object]$Contract,[string]$ProjectRo
       $resolvedCandidate = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
       $rootPrefix = $rootBinding.path + [IO.Path]::DirectorySeparatorChar
       if (-not $resolvedCandidate.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $resolvedCandidate -PathType Leaf)) { throw 'evidence path unavailable' }
-      $actualHash = (Get-FileHash -LiteralPath $resolvedCandidate -Algorithm SHA256).Hash.ToLowerInvariant()
+      $actualHash = Get-SuperBrainFileSha256 $resolvedCandidate
     } catch {
       return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_PACKAGE_VERSION_REBIND_EVIDENCE_MISSING'; missing=@('project_evidence_file'); input=$null; changedEvidence=@() }
     }
@@ -5585,9 +5877,15 @@ function Complete-MergeContract {
 }
 
 function Resolve-Contract {
+  $script:ResolvedTransitionReceipts = @()
   $visibleUser = Protect-Instruction $VisibleUserInstruction
   $visibleCommitment = Limit-ContractText $VisibleAssistantCommitment 480
   $contract = Read-BoundContract $TaskId $WorkspaceKey
+  if ($contract -and $contract.PSObject.Properties['transitionReceipts']) {
+    # Keep the replay ledger bounded and projection-only.  The dispatcher can
+    # decide idempotent close replay without a second Get process.
+    $script:ResolvedTransitionReceipts = @(Limit-TransitionReceipts @($contract.transitionReceipts))
+  }
   $validity = Test-ContractCurrent $contract
   $sessionRead = Get-ContractSessionReadState $contract
   $contractReadable = ($validity.current -and $sessionRead.authorized -eq $true)
@@ -5768,7 +6066,7 @@ function Test-ContractContinuityProjectionEntity(
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
     return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CONTINUITY_' + $Kind.ToUpperInvariant() + '_FILE_MISSING'; reason='file_missing'; path=$path }
   }
-  $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+  $hash = Get-SuperBrainFileSha256 $path
   if (-not [string]::Equals($hash,[string]$entity.hash,[StringComparison]::OrdinalIgnoreCase)) {
     return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CONTINUITY_' + $Kind.ToUpperInvariant() + '_HASH_MISMATCH'; reason='hash_mismatch'; path=$path }
   }
@@ -5820,7 +6118,7 @@ function Get-ContractContinuityAuthorityStatus([object]$Contract) {
   if ([string]::IsNullOrWhiteSpace($contractPath) -or -not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
     return [pscustomobject]@{ required=$true; current=$false; code='EXECUTION_CONTRACT_CONTINUITY_CONTRACT_FILE_MISSING'; reason='contract_file_missing'; contextPath=$contextPath; routePath=''; projectionPath=''; eventPath=''; contractRevision=[int]$Contract.revision; taskStateRevision=0; incompleteTransactionCount=0; parseErrorCount=0 }
   }
-  $contractHash = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
+  $contractHash = Get-SuperBrainFileSha256 $contractPath
   foreach ($check in @(
     [pscustomobject]@{ ok=([int]$context.contractRevision -eq [int]$Contract.revision); code='EXECUTION_CONTRACT_CONTINUITY_CONTEXT_CONTRACT_REVISION_MISMATCH'; reason='context_contract_revision_mismatch' },
     [pscustomobject]@{ ok=([string]$context.planFingerprint -eq [string]$Contract.planReceipt.planFingerprint); code='EXECUTION_CONTRACT_CONTINUITY_CONTEXT_PLAN_FINGERPRINT_MISMATCH'; reason='context_plan_fingerprint_mismatch' },
@@ -5838,7 +6136,7 @@ function Get-ContractContinuityAuthorityStatus([object]$Contract) {
     return [pscustomobject]@{ required=$true; current=$false; code='EXECUTION_CONTRACT_CONTINUITY_TASK_STATE_INVALID'; reason='task_state_projection_missing_or_nonactive'; contextPath=$contextPath; routePath=''; projectionPath=$projectionPath; eventPath=$eventPath; contractRevision=[int]$Contract.revision; taskStateRevision=[int]$context.taskStateRevision; incompleteTransactionCount=0; parseErrorCount=0 }
   }
   $projectedContext = if ($projection.entities -and $projection.entities.PSObject.Properties['context']) { $projection.entities.context } else { $null }
-  $contextHash = (Get-FileHash -LiteralPath $contextPath -Algorithm SHA256).Hash
+  $contextHash = Get-SuperBrainFileSha256 $contextPath
   if (-not $projectedContext -or [int]$projection.revision -ne [int]$context.taskStateRevision -or [string]$projectedContext.path -ne $contextPath -or [string]$projectedContext.status -ne 'active' -or -not [string]::Equals([string]$projectedContext.hash,$contextHash,[StringComparison]::OrdinalIgnoreCase)) {
     return [pscustomobject]@{ required=$true; current=$false; code='EXECUTION_CONTRACT_CONTINUITY_TASK_STATE_BINDING_MISMATCH'; reason='context_projection_binding_mismatch'; contextPath=$contextPath; routePath=''; projectionPath=$projectionPath; eventPath=$eventPath; contractRevision=[int]$Contract.revision; taskStateRevision=[int]$projection.revision; incompleteTransactionCount=0; parseErrorCount=0 }
   }
@@ -5978,6 +6276,19 @@ function Write-Result($Value,[int]$ExitCode=0) {
 }
 
 try {
+  if ($script:HostReadbackProjectionWasBound) {
+    $retiredHost = [pscustomobject]@{
+      ok=$false
+      code='H7_HOST_TRANSPORT_RETIRED'
+      taskId=$TaskId
+      workspaceKey=$WorkspaceKey
+      rawPromptStored=$false
+      rawTranscriptStored=$false
+      guard='Host transport, Host readback, and Host metadata are permanently retired. Use the current local cwd/session scope and local H7 proof.'
+    }
+    Write-Result $retiredHost 1
+    if ($NoExit) { return }
+  }
   Resolve-Identity
   if ($script:ProgressCheckpointBase64WasBound -and $Action -ne 'Set') {
     $invalidCheckpointAction = [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_PROGRESS_CHECKPOINT_ACTION_INVALID'; taskId=$TaskId; workspaceKey=$WorkspaceKey; guard='A H7 progress checkpoint is valid only for the CAS-protected Set action.' }
@@ -6004,10 +6315,17 @@ try {
     'Set' { Set-Contract }
     'ObserveUser' { Set-Contract -ObserveOnly }
     'Get' { Get-ContractForSession }
-    'Resolve' { Resolve-Contract }
+    'Resolve' {
+      $resolved = Resolve-Contract
+      if ($resolved -and $resolved.PSObject.Properties['ok'] -and $resolved.ok -eq $true) {
+        $resolved | Add-Member -NotePropertyName transitionReceipts -NotePropertyValue @($script:ResolvedTransitionReceipts) -Force
+      }
+      $resolved
+    }
     'Guard' { Guard-Work }
     'ValidatePlanReceipt' { Validate-PlanReceipt }
     'ValidateIntentReceipt' { Validate-IntentReceipt }
+    'CreatePhaseCloseout' { Create-PhaseCloseout }
     'ResumeParent' { Resume-ParentContract }
     'CloseTurn' { Close-TurnContract }
     'PrepareMerge' { Prepare-MergeContract }

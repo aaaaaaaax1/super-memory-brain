@@ -26,7 +26,7 @@ Describe 'Task verification learning receipt boundary' {
     $verification = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
     $checkpointWriter = Get-Content -LiteralPath $checkpointWriterPath -Raw -Encoding UTF8
     $common = Get-Content -LiteralPath $commonPath -Raw -Encoding UTF8
-    $verification.Contains('-CallerSessionKey (Get-SuperBrainHostSessionKey)') | Should Be $true
+    $verification.Contains('-CallerSessionKey (Get-SuperBrainLocalSessionKey)') | Should Be $true
     $checkpointWriter.Contains('-CallerSessionKey $CallerSessionKey') | Should Be $true
     $checkpointWriter.Contains('completionReceiptPath') | Should Be $true
     $checkpointWriter.Contains('completionReceiptHash') | Should Be $true

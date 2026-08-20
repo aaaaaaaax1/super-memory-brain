@@ -1,6 +1,6 @@
 ---
 name: super-memory-brain
-description: "Route explicit 超级大脑/Super Brain/G1 control, status, recall, continuation, learning, restore, maintenance, subagent, Agent Bridge, and canonical git提交 requests. Skip greetings, ordinary chat/code, user-agent, and human-brain mentions."
+description: "Route Super Brain/G1 and governed task continuity, progress/status/next-step, recovery/history, recall/learning, repair/maintenance, subagent, and canonical git提交—even without naming Super Brain. Skip greetings, ordinary chat/code, user-agent, and human-brain mentions."
 ---
 
 ## Role And Roots
@@ -21,6 +21,13 @@ reviewers, or verifiers and cannot replace or rewrite this control plane.
 The versioned `super-brain-rules.json` registry is the sole behavioral-policy
 authority. This adapter only routes into that authority and must never create a
 second copy, priority order, or exception to its rules.
+
+Super Brain is host-model neutral: it never selects, hardcodes, or binds a
+宿主 LLM or approval provider. If one host model is unavailable, H7 continuity
+must remain usable; the host's currently available authorized capability or a
+human approval path decides approval. The adapter may report that an external
+approval capability is unavailable, but it must not turn that into an H7 or
+ordinary-continuation deadlock.
 
 An installed copy may contain only `SKILL.md`, `package-root.txt`, and
 `memory-root.txt`; resolve the full package and active state root from those
@@ -63,10 +70,13 @@ Load this adapter for:
   repair, refresh, install, restore, or maintenance;
 - task status, progress, next step, interruption recovery, prior-session work,
   recall, remember, learning, or durable preference intent;
+- fresh-task semantic intent for governed progress, continuation, recovery,
+  project state, learning, repair, or maintenance also loads this adapter; the
+  user does not need to name Super Brain or `G1` literally;
 - configured canonical workflow phrases such as `git怎么写`;
 - explicit subagent execution/review/verification or Agent Bridge channel intent.
 
-Ordinary greeting or chat stays direct. Do not load it for greetings, ordinary chat/code with enough visible context,
+Ordinary greeting or chat stays direct, as does ordinary code. Do not load it for greetings or ordinary chat/code with enough visible context,
 `user agent`, product names containing G1, human-brain mentions, or generic
 agent wording without delegation/channel intent.
 
@@ -102,96 +112,56 @@ MCP transport nor the same H7 CLI can produce a current scoped receipt, stop
 the governed operation with an explicit `H7_RUNTIME_UNAVAILABLE` diagnosis and
 repair path; never continue as if Super Brain were active. Missing chat history is never evidence that durable package state is missing.
 
-Every same-workline continuation is visible-context-first: ordinary
-`continue`, compaction, recovery, pause followed by continue, restart, model
-switch, rebind, and user correction begin from the current thread's latest
-actual assistant tail before interpreting the next action. When the Host has
-already injected that exact visible tail into the current agent context, the
-adapter derives one bounded `codex_visible_context` observation without a
-thread read; otherwise it reads the tail once and supplies one bounded,
-host-derived `visible_progress_assertion`. It transmits neither raw thread text
-nor Host identities into durable H7 state. A fallback host tool call may
-use `read_thread(turnLimit=1, includeOutputs=false,
-maxOutputCharsPerItem=480)` with one retry only when the host has no already
-exposed current-tail observation. The package must not pretend that a caller,
-summary, contract, checkpoint, memory item, user message, old receipt, or
-process-local cache/lease is a Host observation. H7 validates scope and receipt
-binding, but this transport does not cryptographically attest a caller-supplied
-field; the adapter must derive it from current Host-visible context or the
-bounded fallback read. If a current observation cannot be supplied,
-withhold the governed action and repair that evidence boundary.
+Before any governed tool call or project mutation after compression, restart,
+pause/resume, model switch, or a user correction, complete one H7
+`brain_turn(open)` (MCP or the same CLI fallback). A stale MCP is not a
+permission to reason from a summary: use the CLI fallback immediately or
+withhold.
 
-The time-latest real assistant reply visible in the current thread is a resume
-**locator**, not a complete task state. H7 must next map that exact locator to
-one same-scope task/workline and confirm the actual project phase, step,
-completed work, pending work, and allowed action from current runtime state and
-live project evidence. It must not backscan old summaries, contracts,
-checkpoints, memory, or receipts to replace the locator. If the mapping is
-missing, ambiguous, foreign, or conflicts with live evidence, reconcile before
-mutation rather than guessing from the sentence alone.
+Host transport is permanently retired. This adapter never reads, waits for, retries, or persists Host
+tail, context, thread, readback, or metadata; it also never binds, starts, or
+bridges those inputs. Public `host_visible_context`,
+`host_thread_payload`, `visible_progress_assertion`, Host readback, and Host
+metadata are rejected before decoding with `H7_HOST_TRANSPORT_RETIRED`.
 
-There are three non-interchangeable selectors:
+Every same-workline continuation uses one verified local cwd/session scope: cwd plus
+`SUPER_BRAIN_LOCAL_SESSION_ID`, its unique current scoped execution contract,
+current local progress receipt, and live project proof. H7 maps that evidence to
+one same-scope task/workline and establishes the actual phase, step, completed
+work, pending work, and allowed action. The `local_contract_current` recovery
+projection is non-authorizing, card-free, and contains no external text,
+identity, thread, or locator.
 
-- **Same workline:** `current_visible_assistant` is the only candidate. It is
-  always the newest actual `agentMessage`; no user message, summary, preview,
-  collaborator text, state card, older receipt, or process cache/lease may
-  replace it. H7 validates its bounded host-derived observation, then maps that exact
-  candidate to current same-scope task and project evidence before choosing an
-  action. Normal same-workline continuation, compaction, pause followed by
-  continue, and restart keep this as a transient H7 receipt binding: they do
-  not persist a visible-readback/state card or perform a per-turn state-card
-  CAS. Ordinary no-task work creates neither a task card nor a state card. If
-  it is ordinary prose, the
-  result is a display-only readback and
-  is non-authorizing: it is display-only continuity evidence and may not alter progress, phase, step, next action,
-  authorization, project proof, or the execution contract, but it also must not
-  block the mapping step merely for lacking a durable envelope. When mapping
-  finds no active task, H7 continues in ordinary no-task mode without creating
-  artificial task state.
-- **Durable validation of that same candidate:**
-  `latest_durable_assistant` may verify whether the current candidate itself is
-  a strict H7 v4 prefix in its first three non-empty lines: `G1`,
-  `[H7-PROGRESS-V4 receipt_hash=<64 lowercase hex characters>]`, and one exact
-  progress sentence. It never scans backward across a newer plain or legacy
-  message; later evidence remains display-only. A failed durable validation
-  leaves a plain current candidate display-only—it does not revive an old
-  receipt or turn the current prose into progress.
-- **Detected drift only:** `latest_assistant` is reserved for diagnosis after
-  H7 has already detected a same-scope mismatch. It can describe the mismatch,
-  but never selects a normal continuation anchor, writes state, realigns a
-  contract, or promotes plain/legacy/user-attested text.
+Summaries, handoffs, memory, checkpoints, old receipts, user quotations, model
+recaps, collaborator text, and process-local cache/leases cannot select or
+authorize continuation. Missing, ambiguous, foreign, or evidence-conflicting
+local scope enters reconciliation before mutation. H7 may use a state card only
+for a verified `parent_return` to another approved workline; timeout, stale
+index, or missing entry adapter never enables a state-card fallback.
 
-The selector exceptions are narrow: H7 may use a state card only for a verified
-return to another approved workline, or after the host has explicitly proved
-that current visible context is unavailable. A timeout, skipped read, slow
-response, stale hot index, old receipt, or missing attempt is not proof of
-unavailable context. The card never overrides same-workline visible progress. A
-user-reported newer reply is `user_attested_visible_reply` for reconciliation
-only; it cannot authorize normal continuation. If the Host cannot supply a
-trustworthy current observation, governed recovery remains withheld; a summary
-is never an assertion substitute.
+The current local progress receipt may validate a strict H7 v4 prefix: `G1`,
+`[H7-PROGRESS-V4 receipt_hash=<64 lowercase hex characters>]`, and one exact
+progress sentence. Its hash, scope, contract revision, and live project proof
+must all be current. Plain commentary never alters progress, phase, step, next
+action, authorization, project proof, or the execution contract.
 
 Routine H7 identity and project-proof validation stays in the background for an
 ordinary continuation and is not repeatedly shown to the user. Surface it only
 for an explicit status request, a blocker, detected drift, a formal
 progress/stage receipt, or a high-impact action. Formal stage transitions and
 high-impact actions still require current validation before execution. The
-normal path never skips the bounded current-thread tail read or trades it for a
-same-process cache/lease.
+normal path never imports or waits on an external continuation bridge and never
+trades current evidence for a same-process cache/lease.
 
 Auto-alignment is an emergency-only drift repair, not a normal continuation
-path. Only after H7 detects a current-tail mismatch may it inspect a
-same-scope, issued, strict v4 envelope through `latest_assistant`. It may
-detect the scope-bound mismatch, but it never writes, realigns, or promotes the
-observed sentence into the contract. It returns
-`H7_VISIBLE_TAIL_EXPLICIT_RECONCILIATION_REQUIRED`; the controller must perform
-an explicit H7 checkpoint with fresh live proof and publish a fresh v4 receipt
-before continuing. The fallback may not accept caller-provided state, advance a
-stage, change authorization, or promote user-attested/plain/legacy text.
-On drift, first map the current visible locator to actual same-scope task state
-and live project proof to prevent duplicated or already-failed work; then
-correct the displayed/scoped state, repair the root cause, and replay the same
-path before declaring success.
+path. Only after H7 detects a local contract/proof mismatch may it compare the
+same-scope contract, issued local progress receipt, and live project proof. It
+may detect the mismatch, but it never silently writes or realigns the contract.
+The controller must perform an explicit H7 checkpoint with fresh live proof and
+publish a fresh v4 receipt before continuing. On drift, first resolve current
+same-scope task state and live project proof to prevent duplicated or
+already-failed work; then correct scoped state, repair the root cause, and replay
+the same path before declaring success.
 
 Hot update/restart rebind is equally strict: H7 may CAS-rebind one unique
 same-workspace contract only after current package/runtime identity, scope,
@@ -203,39 +173,38 @@ scope, proof, uniqueness, or derived-index rebuild withholds the turn.
 For a verified recovery event—compaction, restart, model switch, cross-session
 rebind, user correction, explicit resume of a suspended workline, or child
 return—call `brain_turn(open)` with the matching `recovery_event`. H7 returns a
-transient `recoveryPresentation.openingLine`; show that exact line first, then
-one compact receipt with:
-the exact current visible-tail sentence, its display/progress classification,
-latest instruction, state/action, evidence, and return point. A plain current
-tail is display-only: it is still acknowledged exactly, but it cannot supply a
-progress sentence, phase, step, project proof, authorization, or stage claim.
-The receipt must separately show the verified task/workline and actual mapped
-phase/step; the visible-tail sentence only identifies where the resume check
-started.
+transient `recoveryPresentation.openingLine`; show that exact local-contract
+line first: `本地执行契约：进度：…｜当前：…｜下一步：…`. The line is
+non-authorizing and contains no external text, identity, thread, readback,
+metadata, or locator. Do not emit raw commentary as a standalone substitute or
+explain H7's validation before the actual continuation result.
 Completed phases stay historical; a withheld action means reconcile the newest
 instruction, never resume by guess. The event must be scope-bound
 runtime/checkpoint evidence or a verified child return; never infer it from a
 bare `continue` or another user wording.
 
 The first recovery receipt must use H7's exact
-`recoveryPresentation.openingLine`, which begins `已接上：` followed immediately
-by the exact current `assistant_visible_reply` sentence, whether that tail is a
-v4 progress publication or ordinary display-only prose, before any new
-diagnosis, plan, tool action, or phase update. A display-only acknowledgement
-does not mutate the contract or make a progress claim. For `recovery_event=none`,
-H7 returns `H7_RECOVERY_PRESENTATION_SUPPRESSED`; do not emit this
-acknowledgement. A `user_attested_visible_reply` is a reconciliation-only
-bridge: it never replaces the current visible tail or authorizes continuation.
-If the current-tail readback, scope binding, or required H7 transport is
-unavailable, withhold governed work and repair the evidence path instead of
-emitting a generic continuation.
+`recoveryPresentation.openingLine`. It shows the verified mapped phase, current
+step, and next action without any external sentence, identity, thread, or hash.
+The local projection does not mutate the contract or make a durable progress claim. For
+`recovery_event=none`, H7 returns `H7_RECOVERY_PRESENTATION_SUPPRESSED`; do not
+emit this acknowledgement. Caller-attested replies and external continuation
+inputs are rejected; they never replace the local contract or authorize
+continuation. If the local scope or required H7 runtime transport is unavailable,
+withhold governed work and repair the evidence path instead of emitting a
+generic continuation.
 
-For such a genuine recovery, exactly the first visible update starts with
-`已接上`, states the exact current visible tail and active action, and must then
-actually continue it. Only a current v4 receipt may additionally state prior
-durable progress. Ordinary continuous work, a bare `continue`, status replies,
-and progress updates are not recovery events and must not use this
-acknowledgement. Do not use it for greetings or independent direct requests.
+For such a genuine recovery, the first visible update states the verified
+continuation progress and active action, then actually continues it. Only a
+current v4 receipt may state durable completion. Ordinary continuous work, a bare `continue`, status
+replies, and progress updates are not recovery events and must not use this
+presentation. Do not use it for greetings or independent direct requests.
+
+During ordinary continuous execution, do not turn every intermediate update
+into a `进度：…｜当前：…｜下一步：…` card. State only the concrete result or
+immediate next action in plain language. Reserve phase/status presentation for
+the first line of a verified recovery and H7-bound stage passed, failed,
+blocked, or completion receipts.
 
 Before a material phase, branch, verification, return-point update, or any
 reply that reports project progress, call `brain_turn(phase=checkpoint)` with
@@ -246,6 +215,15 @@ update, not a raw prompt/transcript channel. Changing any of those scope fields
 requires a fresh project proof in the same update; if either write cannot be
 made, do not claim a durable recovery point or progress update.
 
+If the current user instruction newly authorizes, redirects, or resolves an
+active workline, supply its compact protected form as
+`latest_user_instruction` to that same checkpoint. H7 binds it to the scoped
+instruction anchor in the CAS transaction; it never preserves a raw prompt or
+transcript. When the proof names canonical-plan items, H7 must atomically mark
+only those exact, evidence- and verification-bound items completed. A verified
+item must never remain `pending`, and an unknown plan-item mapping fails closed
+instead of inventing task progress.
+
 Every normal visible progress receipt uses the strict v4 durable envelope:
 
 ```text
@@ -255,12 +233,12 @@ G1
 ```
 
 The second line is a lowercase SHA-256 hash bound to the issued scoped H7
-`visibleProgressReceipt`, not to a transient `open` receipt. The Host marks
-only that exact shape as `h7_durable_progress`. Freeform commentary,
+`visibleProgressReceipt`, not to a transient `open` receipt. H7 accepts only
+that exact shape as durable progress. Freeform commentary,
 unclassified messages, loose `G1`, legacy markers, and truncated text are not
 durable anchors and never authorize a progress claim or formal stage transition.
-They remain display-only current-tail evidence and may trigger a withheld drift
-repair, but can never become normal progress on their own.
+They may trigger a withheld drift repair, but can never become normal progress
+on their own.
 
 For a project-progress claim, recovery, phase transition, or completion, bind
 the same checkpoint to one `project_progress_proof`: current phase and step,
@@ -271,7 +249,8 @@ stale, mismatched, or unverified proof is `withheld`, never a best-effort
 progress claim; it does not authorize a fallback from the governed runtime.
 
 Every forward formal stage transition also requires an H7 closeout receipt and
-a Host-read-back user stage receipt bound to the same visible-progress hash.
+an H7-issued user stage receipt bound to the same local progress hash. Emit the
+receipt directly; no Host readback or acknowledgement is required.
 An execution-contract field mutation, old checkpoint, side branch, or summary
 cannot advance a stage by itself.
 
@@ -303,31 +282,33 @@ plane, and other domains use their matching one-hop reference. Read a second onl
 ## Hookless Turn Runtime
 
 `UserPromptSubmit` and `Stop` are retired for Super Brain. The only lifecycle
-authority is `brain_turn`: it uses real `CODEX_THREAD_ID`, cwd, one scoped
-execution contract, activation receipt, typed-memory refs/hash, and the existing
-turn-close dispatcher. Do not let a long-lived MCP worker guess a task. MCP
+authority is `brain_turn`: it uses cwd plus an explicit
+`SUPER_BRAIN_LOCAL_SESSION_ID`, one scoped execution contract,
+activation receipt, typed-memory refs/hash, and the existing turn-close
+dispatcher. Do not let a long-lived MCP worker guess a task. MCP
 `brain_recall` remains bounded for ordinary semantic memory or an explicitly
 verified `task_scope` (`top_k=1`, `max_tokens=120`; never above `top_k=3`,
 `max_tokens=500`).
 
-Only source-qualified, `injectReady` results are in-turn context. `brain_turn`
-creates the scope-bound H7 runtime receipt and bounded telemetry; it never stores
-a raw prompt or transcript. Skip recall for ordinary direct work/greetings; do
-not retry by watching logs or session files; unavailable or conflicting state
-fails closed for governed work.
+Only the current local contract, local progress receipt, and live project proof
+are in-turn context. `brain_turn` creates the scope-bound H7 runtime receipt and
+bounded telemetry; it never stores a raw prompt or transcript. Skip recall for
+ordinary direct work/greetings; do not retry by watching logs or session files;
+unavailable or conflicting state fails closed for governed work.
 
 If the registered H7 MCP transport is unavailable **or its live
 `brain_status.runtimeIdentity` is not `current`** but the current process has a
-verified `CODEX_THREAD_ID` and workspace cwd, use the package-owned
-`brain_cli` equivalent command: `turn-runtime` with the same typed intent and a
-Base64 UTF-8 progress checkpoint, or bounded `recall`/`recent`/`status` reads.
+verified workspace cwd plus `SUPER_BRAIN_LOCAL_SESSION_ID`, use the
+package-owned `brain_cli` equivalent
+command: `turn-runtime` with the same typed intent and a Base64 UTF-8 progress
+checkpoint, or bounded `recall`/`recent`/`status` reads.
 It has the same H7 contract authority and is an equivalent transport, never a
 degraded execution path. A live MCP identity mismatch is a real repair state:
 do not call the stale MCP as current, and request exact approval before
 re-registering the one global MCP entry. Do not revive P7, a prompt Hook, or a
 background worker. If the CLI cannot bind the same scope or return a current receipt,
 fail closed with `H7_RUNTIME_UNAVAILABLE` and repair instead of answering from
-visible context.
+external context.
 
 Before a governed `brain_turn`, provide one normalized `turn_intent` enum from
 the visible request (`design_evaluate`, `continuity`, `super_brain_issue_*`,

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from core_rule_registry import load_registry, public_projection as project_core_rules
+from core_rule_registry import REGISTRY_RELATIVE_PATH, load_registry, public_projection as project_core_rules
 
 
 ACTIVATION_SCHEMA = "super-brain.activation-receipt.v1"
@@ -25,6 +25,50 @@ ACTIVATION_STATES = {"full_brain_active", "withheld", "failed"}
 CORE_CAPABILITIES = ("runtime", "route", "memory", "task_state", "continuation", "response_policy", "core_rules")
 ACTIVE_RECEIPTS_DIRECTORY = "receipts-current"
 LEGACY_RECEIPTS_DIRECTORY = "receipts"
+_STATIC_IDENTITY_CACHE_MAX = 8
+_STATIC_IDENTITY_CACHE: dict[str, tuple[tuple[tuple[int, int], ...], dict[str, Any]]] = {}
+
+
+def _static_identity_stamps(paths: tuple[Path, ...]) -> tuple[tuple[int, int], ...] | None:
+    """Return one bounded filesystem stamp per static identity input."""
+
+    stamps: list[tuple[int, int]] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        stamps.append((stat.st_mtime_ns, stat.st_size))
+    return tuple(stamps)
+
+
+def _static_identity_cache_get(
+    key: str,
+    stamps: tuple[tuple[int, int], ...] | None,
+) -> dict[str, Any] | None:
+    if stamps is None:
+        return None
+    cached = _STATIC_IDENTITY_CACHE.get(key)
+    if cached is None or cached[0] != stamps:
+        return None
+    _STATIC_IDENTITY_CACHE.pop(key, None)
+    _STATIC_IDENTITY_CACHE[key] = cached
+    return cached[1]
+
+
+def _static_identity_cache_put(
+    key: str,
+    stamps: tuple[tuple[int, int], ...] | None,
+    identity: dict[str, Any],
+) -> None:
+    # Missing inputs are deliberately not cached: a newly repaired package
+    # must be retried immediately instead of inheriting a withheld snapshot.
+    if stamps is None:
+        return
+    _STATIC_IDENTITY_CACHE.pop(key, None)
+    _STATIC_IDENTITY_CACHE[key] = (stamps, identity)
+    while len(_STATIC_IDENTITY_CACHE) > _STATIC_IDENTITY_CACHE_MAX:
+        _STATIC_IDENTITY_CACHE.pop(next(iter(_STATIC_IDENTITY_CACHE)))
 
 
 def _read_json(path: Path) -> Any:
@@ -122,12 +166,19 @@ def _static_identity(package_root: Path) -> dict[str, Any]:
     manifest_path = package_root / "manifest.json"
     route_path = package_root / "route-map.json"
     capabilities_path = package_root / "capabilities.json"
+    registry_path = package_root / REGISTRY_RELATIVE_PATH
+    static_paths = (manifest_path, route_path, capabilities_path, registry_path)
+    cache_key = os.path.normcase(str(package_root))
+    stamps = _static_identity_stamps(static_paths)
+    cached = _static_identity_cache_get(cache_key, stamps)
+    if cached is not None:
+        return cached
     manifest = _read_json(manifest_path)
     route_map = _read_json(route_path)
     capabilities = _read_json(capabilities_path)
     registry = load_registry(package_root, manifest=manifest if isinstance(manifest, dict) else {})
     core_rules = project_core_rules(registry)
-    return {
+    identity = {
         "manifest": manifest if isinstance(manifest, dict) else {},
         "manifestHash": file_sha256(manifest_path),
         "routeMap": route_map if isinstance(route_map, dict) else {},
@@ -140,6 +191,10 @@ def _static_identity(package_root: Path) -> dict[str, Any]:
         "coreRules": core_rules,
         "coreRulesReady": core_rules.get("status") == "current",
     }
+    # Re-stamp after reading.  A write during compilation must not be hidden
+    # behind the cached snapshot on the next request.
+    _static_identity_cache_put(cache_key, _static_identity_stamps(static_paths), identity)
+    return identity
 
 
 def _receipt_hash(receipt: dict[str, Any]) -> str:

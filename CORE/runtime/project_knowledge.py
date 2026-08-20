@@ -27,6 +27,7 @@ MAX_FILE_BYTES = 384 * 1024
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 _RELATIVE = re.compile(r"^[^/\\].{0,239}$")
 _SOURCE_SUFFIXES = {".py", ".ps1", ".json", ".js", ".jsx", ".ts", ".tsx"}
+_PUBLIC_PAYLOAD_HASH = "publicPayloadHash"
 
 
 def _withheld(code: str, *, route: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -75,6 +76,38 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(64 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_verified_file(path: Path) -> tuple[str | None, str | None, str | None]:
+    """Hash a proof file once and decode only the bounded source payload.
+
+    The resolver needs both the evidence digest and source text.  Keeping one
+    bounded read avoids reopening every proof file while retaining the
+    existing memory bound and error distinctions.
+    """
+
+    try:
+        initial_size = path.stat().st_size
+        if initial_size > MAX_FILE_BYTES:
+            return _sha256(path), None, "file_too_large"
+        with path.open("rb") as handle:
+            # Read at most one byte beyond the observed size.  This detects a
+            # concurrent growth without allowing an unbounded allocation.
+            buffered = handle.read(initial_size + 1)
+            digest = hashlib.sha256(buffered)
+            too_large = len(buffered) > MAX_FILE_BYTES or len(buffered) > initial_size
+            if too_large:
+                for chunk in iter(lambda: handle.read(64 * 1024), b""):
+                    digest.update(chunk)
+    except OSError:
+        return None, None, "file_read_failed"
+    digest_text = digest.hexdigest()
+    if too_large:
+        return digest_text, None, "file_too_large"
+    try:
+        return digest_text, buffered.decode("utf-8-sig"), None
+    except UnicodeError:
+        return digest_text, None, "file_unreadable"
 
 
 def _resolve(root: Path, relative: str) -> Path | None:
@@ -236,7 +269,7 @@ def _recommended_checks(nodes: Iterable[Mapping[str, Any]]) -> list[str]:
 
 
 def _public(value: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         "schema": SCHEMA,
         "state": str(value.get("state", "withheld")),
         "code": str(value.get("code", "H7_PROJECT_KNOWLEDGE_UNAVAILABLE")),
@@ -261,6 +294,10 @@ def _public(value: Mapping[str, Any]) -> dict[str, Any]:
         "sourcePathsOmitted": True,
         "payloadHash": str(value.get("payloadHash", "")),
     }
+    result[_PUBLIC_PAYLOAD_HASH] = canonical_hash(
+        {key: item for key, item in result.items() if key != _PUBLIC_PAYLOAD_HASH and key != "payloadHash"}
+    )
+    return result
 
 
 def receipt_is_valid(value: Any) -> bool:
@@ -273,7 +310,11 @@ def receipt_is_valid(value: Any) -> bool:
         "backgroundWorkers", "nonAuthorizing", "rawPromptStored", "rawTranscriptStored", "sourcePathsOmitted",
         "payloadHash",
     }
-    if set(value) != required or value.get("schema") != SCHEMA:
+    keys = set(value)
+    public_keys = required | {_PUBLIC_PAYLOAD_HASH}
+    internal_keys = required | {"nodes", "relations", "unknowns"}
+    allowed_key_sets = (required, public_keys, internal_keys, internal_keys | {_PUBLIC_PAYLOAD_HASH})
+    if not any(keys == allowed for allowed in allowed_key_sets) or value.get("schema") != SCHEMA:
         return False
     if value.get("state") not in {"ready", "withheld", "not_applicable"} or value.get("nonAuthorizing") is not True:
         return False
@@ -286,6 +327,28 @@ def receipt_is_valid(value: Any) -> bool:
     digest_fields = ("projectRootHash", "projectProgressPayloadHash", "payloadHash")
     if any(not isinstance(value.get(key), str) or (value.get(key) and not _SHA256.fullmatch(value.get(key))) for key in digest_fields):
         return False
+    state = str(value.get("state", ""))
+    code = str(value.get("code", ""))
+    mode = str(value.get("mode", ""))
+    if state == "ready" and code != "H7_PROJECT_KNOWLEDGE_READY":
+        return False
+    if state == "not_applicable" and (code != "H7_PROJECT_KNOWLEDGE_NOT_APPLICABLE" or mode != "not_applicable"):
+        return False
+    if state == "withheld" and not code.startswith("H7_PROJECT_KNOWLEDGE_"):
+        return False
+    if str(value.get("riskLevel", "")) not in {"low", "medium", "unknown"}:
+        return False
+    if _PUBLIC_PAYLOAD_HASH in value:
+        public_hash = value.get(_PUBLIC_PAYLOAD_HASH)
+        if not isinstance(public_hash, str) or not _SHA256.fullmatch(public_hash):
+            return False
+        public_body = {key: item for key, item in value.items() if key not in {"payloadHash", _PUBLIC_PAYLOAD_HASH, "nodes", "relations", "unknowns"}}
+        if canonical_hash(public_body) != public_hash:
+            return False
+    if {"nodes", "relations", "unknowns"}.issubset(keys):
+        internal_body = {key: item for key, item in value.items() if key != "payloadHash"}
+        if canonical_hash(internal_body) != str(value.get("payloadHash", "")):
+            return False
     return True
 
 
@@ -345,26 +408,26 @@ def resolve_project_knowledge(
     all_relations: list[dict[str, str]] = []
     proof_paths = set(files)
     texts: dict[str, str] = {}
+    resolved_paths: dict[str, Path] = {}
     for relative, expected_digest in sorted(files.items()):
         path = _resolve(root, relative)
         if path is None or not path.is_file():
             return _withheld("H7_PROJECT_KNOWLEDGE_EVIDENCE_PATH_INVALID", route=route_value), "H7_PROJECT_KNOWLEDGE_EVIDENCE_PATH_INVALID"
-        try:
-            digest = _sha256(path)
-        except OSError:
+        digest, text, read_error = _read_verified_file(path)
+        if digest is None:
             return _withheld("H7_PROJECT_KNOWLEDGE_EVIDENCE_READ_FAILED", route=route_value), "H7_PROJECT_KNOWLEDGE_EVIDENCE_READ_FAILED"
         if digest != expected_digest:
             return _withheld("H7_PROJECT_KNOWLEDGE_EVIDENCE_HASH_MISMATCH", route=route_value), "H7_PROJECT_KNOWLEDGE_EVIDENCE_HASH_MISMATCH"
+        resolved_paths[relative] = path
         node = {"path": relative, "sha256": digest, "kind": "proof_file"}
         nodes.append(node)
-        text, read_error = _read_text(path)
         if read_error:
             unknowns.append({"path": relative, "code": read_error, "verification": "inspect the focused file directly"})
         elif text is not None and path.suffix.lower() in _SOURCE_SUFFIXES:
             texts[relative] = text
 
     for relative, text in texts.items():
-        path = _resolve(root, relative)
+        path = resolved_paths.get(relative)
         if path is None:
             continue
         edges, dynamic = _parse_file(path, relative, text)
@@ -416,9 +479,9 @@ def resolve_project_knowledge(
 
 
 def public_projection(value: Mapping[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or not receipt_is_valid({key: value.get(key) for key in {
+    if not isinstance(value, Mapping) or not receipt_is_valid({**{key: value.get(key) for key in {
         "schema", "state", "code", "mode", "coverage", "projectRootHash", "projectProgressPayloadHash", "proofFileCount", "filesRead", "relationshipCount", "relationKinds", "unknownCount", "riskLevel", "recommendedVerificationIds", "globalImpactComplete", "fullTreeScan", "persistentIndex", "backgroundWorkers", "nonAuthorizing", "rawPromptStored", "rawTranscriptStored", "sourcePathsOmitted", "payloadHash"
-    }}):
+    }}, **({_PUBLIC_PAYLOAD_HASH: value.get(_PUBLIC_PAYLOAD_HASH)} if _PUBLIC_PAYLOAD_HASH in value else {})}):
         return _withheld("H7_PROJECT_KNOWLEDGE_RECEIPT_INVALID")
     return _public(value)
 

@@ -95,9 +95,15 @@ function Get-H7McpBinding([string]$CodexHomePath) {
   $expectedRuntimeIdentity = Get-SuperBrainMcpRuntimeIdentity $Root
   $runtimeIdentityMatch = [regex]::Match($configText, '(?mi)^\s*SUPER_BRAIN_RUNTIME_IDENTITY\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
   $registeredRuntimeIdentity = if ($runtimeIdentityMatch.Success) { [string]$runtimeIdentityMatch.Groups['value'].Value } else { '' }
+  $transportMatch = [regex]::Match($configText, '(?mi)^\s*SUPER_BRAIN_MCP_TRANSPORT\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
+  $registeredTransport = if ($transportMatch.Success) { [string]$transportMatch.Groups['value'].Value } else { '' }
+  $epochMatch = [regex]::Match($configText, '(?mi)^\s*SUPER_BRAIN_MCP_REGISTRATION_EPOCH\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
+  $registeredEpoch = if ($epochMatch.Success) { [string]$epochMatch.Groups['value'].Value } else { '' }
   $runtimeIdentityMatches = (-not [string]::IsNullOrWhiteSpace($registeredRuntimeIdentity)) -and ($registeredRuntimeIdentity -eq $expectedRuntimeIdentity)
+  $transportMatches = ($registeredTransport -eq 'codex_registered_v1')
+  $registrationEpochPresent = (-not [string]::IsNullOrWhiteSpace($registeredEpoch))
   return [pscustomobject]@{
-    ok = ((Test-Path -LiteralPath $configPath -PathType Leaf) -and $serverDeclared -and $brainMcpMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $runtimeIdentityMatches)
+    ok = ((Test-Path -LiteralPath $configPath -PathType Leaf) -and $serverDeclared -and $brainMcpMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $runtimeIdentityMatches -and $transportMatches -and $registrationEpochPresent)
     configPath = $configPath
     serverDeclared = [bool]$serverDeclared
     brainMcpPath = $brainMcp
@@ -108,6 +114,8 @@ function Get-H7McpBinding([string]$CodexHomePath) {
     expectedRuntimeIdentity = $expectedRuntimeIdentity
     registeredRuntimeIdentity = $registeredRuntimeIdentity
     runtimeIdentityMatches = $runtimeIdentityMatches
+    transportMatches = $transportMatches
+    registrationEpochPresent = $registrationEpochPresent
   }
 }
 
@@ -167,6 +175,7 @@ $recommendedAction = if (-not $mcpBinding.ok) {
 
 $result = [pscustomobject]@{
   ok = $ok
+  staticOk = $ok
   checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
   version = [string]$manifest.version
   packageRoot = $Root
@@ -184,6 +193,9 @@ $result = [pscustomobject]@{
     retiredTransportGuard = $retiredTransportGuard
   }
   currentSessionCacheRisk = $currentSessionCacheRisk
+  mcpExecutionReady = $false
+  mcpExecutionState = 'runtime_probe_required'
+  mcpExecutionProbe = 'Call registered brain_status and require runtimeIdentity.state=current plus liveMcpHandshake.state=current.'
   loadedSkillLimitation = 'The report verifies installed adapter files and H7 MCP binding, but cannot inspect adapter text already loaded into this chat context.'
   liveMcpIdentityLimitation = 'This static report cannot inspect the already-running MCP process. The governed H7 adapter must require brain_status.runtimeIdentity.state=current before using MCP execution; otherwise it uses the same package H7 CLI or repairs the one MCP registration.'
   newSessionPrompt = 'Open a new Codex task only when this chat began before a successful Super Brain adapter refresh.'
@@ -193,6 +205,6 @@ $result = [pscustomobject]@{
 }
 
 Write-JsonUtf8NoBom $statusPath $result 12
-if ($Json) { $result | ConvertTo-Json -Depth 12 } else { Write-Host "HOST_CACHE_CHECK ok=$($result.ok) risk=$($result.currentSessionCacheRisk) status=$statusPath" }
+if ($Json) { $result | ConvertTo-Json -Depth 12 } else { Write-Host "HOST_CACHE_CHECK staticOk=$($result.staticOk) mcpExecution=$($result.mcpExecutionState) risk=$($result.currentSessionCacheRisk) status=$statusPath" }
 if (-not $result.ok) { exit 1 }
 exit 0

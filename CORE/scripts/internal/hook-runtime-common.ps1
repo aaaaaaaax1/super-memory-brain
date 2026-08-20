@@ -7,9 +7,9 @@ function Get-SuperBrainStableHash([string]$Value,[int]$Length=16) {
   } finally { $sha.Dispose() }
 }
 
-function Get-SuperBrainHostSessionKey([string]$SessionId='') {
+function Get-SuperBrainLocalSessionKey([string]$SessionId='') {
   $candidate = $SessionId
-  if ([string]::IsNullOrWhiteSpace($candidate) -and -not [string]::IsNullOrWhiteSpace($env:CODEX_THREAD_ID)) { $candidate = [string]$env:CODEX_THREAD_ID }
+  if ([string]::IsNullOrWhiteSpace($candidate) -and -not [string]::IsNullOrWhiteSpace($env:SUPER_BRAIN_LOCAL_SESSION_ID)) { $candidate = [string]$env:SUPER_BRAIN_LOCAL_SESSION_ID }
   if ([string]::IsNullOrWhiteSpace($candidate)) { return '' }
   $candidate = $candidate.Trim()
   if ($candidate -match '^sid-[0-9a-f]{16,64}$') { return $candidate.ToLowerInvariant() }
@@ -87,7 +87,7 @@ function Get-SuperBrainHookCurrentTaskContext([string]$WorkspaceRoot,[string]$Wo
     $projectionPath = Join-Path (Join-Path $resolvedRoot 'task-state-store\projections') ((Get-SuperBrainHookTaskToken ([string]$context.taskId)) + '.json')
     try { $projection = Get-Content -LiteralPath $projectionPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
     if ([int]$projection.revision -ne [int]$context.taskStateRevision -or -not $projection.entities.context -or [string]$projection.entities.context.status -ne 'active' -or [string]$projection.entities.context.path -ne [string]$context.path -or (Get-SuperBrainHookFileSha256 ([string]$context.path)) -ne [string]$projection.entities.context.hash) { return $null }
-    $authorization = if ([string]::IsNullOrWhiteSpace($SessionKey) -or [string]$context.ownerSessionKey -eq (Get-SuperBrainHostSessionKey $SessionKey)) { 'allowed' } else { 'foreign_session_locator' }
+    $authorization = if ([string]::IsNullOrWhiteSpace($SessionKey) -or [string]$context.ownerSessionKey -eq (Get-SuperBrainLocalSessionKey $SessionKey)) { 'allowed' } else { 'foreign_session_locator' }
     $context | Add-Member -NotePropertyName contextProjectionAuthorization -NotePropertyValue $authorization -Force
   } else {
     $context | Add-Member -NotePropertyName contextProjectionAuthorization -NotePropertyValue 'legacy_compatibility' -Force

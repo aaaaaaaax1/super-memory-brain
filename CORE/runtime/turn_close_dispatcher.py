@@ -10,12 +10,18 @@ not required for the state transition.
 from __future__ import annotations
 
 import base64
+import atexit
 import hashlib
 import json
 import math
 import os
+import queue
+import shutil
+import signal
 import re
 import subprocess
+import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -33,6 +39,7 @@ MAX_PROJECT_PROGRESS_PROOF_BYTES = 32 * 1024
 MAX_PROJECT_PROGRESS_ITEMS = 24
 MAX_PROJECT_PROGRESS_EVIDENCE = 16
 MAX_PROJECT_PROGRESS_VERIFICATIONS = 16
+MAX_LATEST_USER_INSTRUCTION_CHARS = 480
 # Every governed H7 mutation crosses the Python-to-PowerShell authority
 # boundary at least twice (Resolve/Get plus CAS Set). Under a parallel verifier
 # run, an 8-second process budget can expire just before a healthy authority
@@ -41,6 +48,7 @@ MAX_PROJECT_PROGRESS_VERIFICATIONS = 16
 MIN_AUTHORITY_TRANSACTION_TIMEOUT_SECONDS = 12.0
 DEFAULT_TIMEOUT_SECONDS = 8.0
 VISIBLE_PROGRESS_SOURCES = {"assistant_visible_reply", "user_attested_visible_reply"}
+PHASE_CLOSEOUT_RECORD_SCHEMA = "super-brain.phase-closeout-receipt.v4"
 
 
 def _compact(value: Any, maximum: int = MAX_REFERENCE_CHARS) -> str:
@@ -137,6 +145,541 @@ def _authority_transaction_timeout(value: float) -> float:
     return max(MIN_AUTHORITY_TRANSACTION_TIMEOUT_SECONDS, requested)
 
 
+_AUTHORITY_WORKER_IDLE_SECONDS = 45.0
+_AUTHORITY_WORKER_REQUEST_BYTES = 256 * 1024
+_AUTHORITY_WORKER_RESPONSE_BYTES = 1024 * 1024
+_AUTHORITY_WORKER_MAX_REQUESTS = 64
+_AUTHORITY_WORKER_MARKER = "__SUPER_BRAIN_AUTHORITY_DONE__"
+_AUTHORITY_WORKER_TRANSPORT_ENV = "SUPER_BRAIN_MCP_TRANSPORT"
+_AUTHORITY_WORKER_TRANSPORT_VALUE = "codex_registered_v1"
+
+
+def _parse_worker_marker(line: str, marker: str) -> int | None:
+    """Accept only the exact worker completion protocol (exit 0 or 1)."""
+
+    if not line.startswith(marker):
+        return None
+    value = line[len(marker):]
+    return int(value) if value in {"0", "1"} else None
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    """Terminate the worker and any authority child it started.
+
+    ``execution-contract.ps1`` invokes a second PowerShell process for the
+    task-state store.  Killing only the resident parent can therefore leave a
+    mutating child alive while the caller falls back to the cold path.  Use the
+    platform's tree-aware primitive first, then a bounded direct wait/fallback.
+    """
+
+    pid = int(getattr(process, "pid", 0) or 0)
+    if pid > 0 and os.name == "nt":
+        taskkill = shutil.which("taskkill")
+        if taskkill:
+            try:
+                subprocess.run(
+                    [taskkill, "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2.0,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+    elif pid > 0:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=1.0)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+class _AuthorityWorker:
+    """One bounded in-process client for a warm PowerShell authority worker.
+
+    The worker is deliberately a transport optimization only.  The existing
+    execution-contract script remains the authority and receives the exact
+    same argument list as the cold path.  A single lock serializes requests,
+    while idle expiry and crash cleanup keep resident resources bounded.
+    """
+
+    def __init__(self, package_root: Path):
+        self.package_root = package_root
+        self.script_path = package_root / "scripts" / "execution-contract.ps1"
+        self.worker_path = package_root / "scripts" / "execution-contract-worker.ps1"
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen[str] | None = None
+        self._last_used = 0.0
+        self._sequence = 0
+        self._request_count = 0
+        self._reaper_stop: threading.Event | None = None
+        self._reaper: threading.Thread | None = None
+
+    def _ensure_reaper_locked(self) -> None:
+        if self._reaper is not None and self._reaper.is_alive():
+            if self._reaper_stop is None or not self._reaper_stop.is_set():
+                return
+            # A previous generation is already stopping.  Its event is
+            # captured by that thread, so detaching it here cannot make the
+            # replacement worker share a stop signal with the old thread.
+            self._reaper = None
+        stop_event = threading.Event()
+        self._reaper_stop = stop_event
+        self._reaper = threading.Thread(
+            target=self._reap_idle,
+            args=(stop_event,),
+            name="super-brain-authority-reaper",
+            daemon=True,
+        )
+        self._reaper.start()
+
+    def _reap_idle(self, stop_event: threading.Event) -> None:
+        """Release an unused resident authority without waiting for a call."""
+
+        while not stop_event.wait(timeout=1.0):
+            with self._lock:
+                process = self._process
+                # A worker can exit between requests (for example after a
+                # PowerShell startup error).  Treat that as a terminal channel
+                # state so the reaper does not remain resident until process
+                # shutdown, and let the next invocation create a fresh one.
+                if process is None or process.poll() is not None:
+                    self._shutdown_locked()
+                    stop_event.set()
+                    if self._reaper is threading.current_thread():
+                        self._reaper = None
+                    return
+                if self._last_used > 0 and time.monotonic() - self._last_used > _AUTHORITY_WORKER_IDLE_SECONDS:
+                    self._shutdown_locked()
+                    stop_event.set()
+                    if self._reaper is threading.current_thread():
+                        self._reaper = None
+                    return
+
+    def _shutdown_locked(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+        except (OSError, ValueError):
+            pass
+        _terminate_process_tree(process)
+        for stream in (process.stdout, process.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except (OSError, ValueError):
+                pass
+
+    def shutdown(self) -> None:
+        with self._lock:
+            if self._reaper_stop is not None:
+                self._reaper_stop.set()
+            self._shutdown_locked()
+
+    def _start_locked(self) -> bool:
+        if self._process is not None and self._process.poll() is None:
+            return True
+        self._shutdown_locked()
+        if not self.script_path.is_file() or not self.worker_path.is_file():
+            return False
+        environment = os.environ.copy()
+        environment.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
+        environment.pop("SUPER_BRAIN_STATE_ROOT", None)
+        command = [
+            _powershell(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(self.worker_path),
+            "-ScriptPath",
+            str(self.script_path),
+        ]
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            self._process = subprocess.Popen(
+                command,
+                # Keep the resident process anchored to the package, never to
+                # a caller's temporary/project directory.  The worker restores
+                # its location after each request before any caller cleanup.
+                cwd=str(self.package_root),
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                creationflags=creation_flags,
+                start_new_session=(os.name != "nt"),
+            )
+        except (OSError, ValueError):
+            self._process = None
+            return False
+        # Avoid creating a resident reaper for a process that failed during
+        # startup before the first request could be written.
+        if self._process.poll() is not None:
+            self._shutdown_locked()
+            return False
+        self._ensure_reaper_locked()
+        self._last_used = time.monotonic()
+        self._request_count = 0
+        return True
+
+    def invoke(self, arguments: list[str], timeout: float) -> tuple[int, str] | None:
+        try:
+            bounded_timeout = max(0.25, float(timeout))
+        except (TypeError, ValueError):
+            bounded_timeout = 12.0
+        with self._lock:
+            if self._process is not None and time.monotonic() - self._last_used > _AUTHORITY_WORKER_IDLE_SECONDS:
+                self._shutdown_locked()
+            if self._process is not None and self._request_count >= _AUTHORITY_WORKER_MAX_REQUESTS:
+                self._shutdown_locked()
+            if not self._start_locked():
+                return None
+            process = self._process
+            if process is None or process.stdin is None or process.stdout is None:
+                self._shutdown_locked()
+                return None
+            self._sequence = (self._sequence + 1) & 0xFFFFFFFFFFFFFFFF
+            request_id = f"{self._sequence:016x}"
+            request = {
+                "schema": "super-brain.execution-contract-worker-request.v1",
+                "id": request_id,
+                "cwd": os.getcwd(),
+                "args": [str(item) for item in arguments],
+            }
+            encoded = base64.b64encode(
+                json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).decode("ascii")
+            if len(encoded.encode("ascii")) > _AUTHORITY_WORKER_REQUEST_BYTES:
+                self._shutdown_locked()
+                return None
+            try:
+                process.stdin.write(encoded + "\n")
+                process.stdin.flush()
+            except (OSError, ValueError):
+                self._shutdown_locked()
+                return None
+
+            result_queue: queue.Queue[tuple[int, str] | None] = queue.Queue(maxsize=1)
+
+            def read_response() -> None:
+                lines: list[str] = []
+                response_bytes = 0
+                marker = _AUTHORITY_WORKER_MARKER + request_id + ":"
+                try:
+                    while True:
+                        line = process.stdout.readline()
+                        if line == "":
+                            result_queue.put(None)
+                            return
+                        clean = line.rstrip("\r\n")
+                        if clean.startswith(marker):
+                            exit_code = _parse_worker_marker(clean, marker)
+                            if exit_code is None:
+                                result_queue.put(None)
+                                return
+                            result_queue.put((exit_code, "\n".join(lines)))
+                            return
+                        response_bytes += len(line.encode("utf-8", errors="replace"))
+                        if response_bytes > _AUTHORITY_WORKER_RESPONSE_BYTES:
+                            result_queue.put(None)
+                            return
+                        lines.append(clean)
+                except (OSError, ValueError):
+                    result_queue.put(None)
+
+            reader_thread = threading.Thread(
+                target=read_response,
+                name="super-brain-authority-reader",
+                daemon=True,
+            )
+            reader_thread.start()
+            try:
+                result = result_queue.get(timeout=bounded_timeout)
+            except queue.Empty:
+                self._shutdown_locked()
+                reader_thread.join(timeout=1.0)
+                return None
+            if result is None:
+                self._shutdown_locked()
+                reader_thread.join(timeout=1.0)
+                return None
+            reader_thread.join(timeout=0.25)
+            self._last_used = time.monotonic()
+            self._request_count += 1
+            return result
+
+
+_AUTHORITY_CHANNEL_LOCK = threading.Lock()
+_AUTHORITY_CHANNEL: _AuthorityWorker | None = None
+_AUTHORITY_CHANNEL_KEY = ""
+
+
+def _shutdown_authority_channel() -> None:
+    global _AUTHORITY_CHANNEL, _AUTHORITY_CHANNEL_KEY
+    with _AUTHORITY_CHANNEL_LOCK:
+        channel = _AUTHORITY_CHANNEL
+        _AUTHORITY_CHANNEL = None
+        _AUTHORITY_CHANNEL_KEY = ""
+    if channel is not None:
+        channel.shutdown()
+
+
+def _invoke_warm_authority(
+    package_root: Path,
+    arguments: list[str],
+    timeout: float,
+) -> tuple[int, str] | None:
+    # A one-shot CLI should not pay to create a resident process.  The
+    # registered MCP is the long-lived caller for which this channel exists;
+    # its child CLI bridge intentionally receives a scrubbed environment.
+    if os.environ.get(_AUTHORITY_WORKER_TRANSPORT_ENV, "").strip() != _AUTHORITY_WORKER_TRANSPORT_VALUE:
+        return None
+    global _AUTHORITY_CHANNEL, _AUTHORITY_CHANNEL_KEY
+    key = os.path.normcase(str(package_root))
+    with _AUTHORITY_CHANNEL_LOCK:
+        if _AUTHORITY_CHANNEL is None or _AUTHORITY_CHANNEL_KEY != key:
+            previous = _AUTHORITY_CHANNEL
+            _AUTHORITY_CHANNEL = _AuthorityWorker(package_root)
+            _AUTHORITY_CHANNEL_KEY = key
+        else:
+            previous = None
+        channel = _AUTHORITY_CHANNEL
+    if previous is not None:
+        previous.shutdown()
+    if channel is None:
+        return None
+    return channel.invoke(arguments, timeout)
+
+
+atexit.register(_shutdown_authority_channel)
+
+
+def formal_phase_token(value: Any) -> str:
+    """Return the compact formal-stage token used solely for transport lookup.
+
+    The PowerShell execution contract remains the authority that decides
+    whether a transition is allowed.  This helper only decides whether the
+    runtime should look for the one deterministic H7 closeout record instead
+    of scanning a state directory.
+    """
+
+    label = str(value or "").strip()
+    if not label:
+        return ""
+    legacy = re.match(r"^(?:p(?:hase)?)\s*(\d+(?:\.\d+){0,2})(?=$|\s|[/:()\-])", label, re.IGNORECASE)
+    if legacy:
+        return f"P{legacy.group(1)}"
+    release = re.match(
+        r"^r(\d+)\s+stage\s*(\d+(?:\.\d+){0,2})(?=$|\s|[/:()\-])",
+        label,
+        re.IGNORECASE,
+    )
+    if release:
+        return f"R{release.group(1)}-STAGE{release.group(2)}"
+    stage = re.match(r"^stage\s*(\d+(?:\.\d+){0,2})(?=$|\s|[/:()\-])", label, re.IGNORECASE)
+    return f"STAGE{stage.group(1)}" if stage else ""
+
+
+def _phase_parts(token: str) -> tuple[str, tuple[int, ...]] | None:
+    legacy = re.fullmatch(r"P(\d+(?:\.\d+){0,2})", token, re.IGNORECASE)
+    if legacy:
+        return "P", tuple(int(part) for part in legacy.group(1).split("."))
+    release = re.fullmatch(r"R(\d+)-STAGE(\d+(?:\.\d+){0,2})", token, re.IGNORECASE)
+    if release:
+        return f"R{release.group(1)}-STAGE", tuple(int(part) for part in release.group(2).split("."))
+    stage = re.fullmatch(r"STAGE(\d+(?:\.\d+){0,2})", token, re.IGNORECASE)
+    if stage:
+        return "STAGE", tuple(int(part) for part in stage.group(1).split("."))
+    return None
+
+
+def _is_forward_formal_phase_transition(previous_phase: Any, next_phase: Any) -> bool:
+    previous_token = formal_phase_token(previous_phase)
+    next_token = formal_phase_token(next_phase)
+    previous = _phase_parts(previous_token)
+    target = _phase_parts(next_token)
+    if previous is None or target is None or previous[0] != target[0]:
+        return False
+    width = max(len(previous[1]), len(target[1]))
+    left = previous[1] + (0,) * (width - len(previous[1]))
+    right = target[1] + (0,) * (width - len(target[1]))
+    return right > left
+
+
+def is_formal_phase(value: Any) -> bool:
+    return bool(formal_phase_token(value))
+
+
+def _phase_closeout_authority_path(state_root: Path, contract: Mapping[str, Any]) -> Path | None:
+    """Compute one opaque closeout path; never enumerate the evidence root."""
+
+    task_id = _compact(contract.get("taskId"), 160)
+    workspace = _compact(contract.get("workspaceKey"), 80)
+    session = _compact(contract.get("ownerSessionKey"), 80)
+    phase = formal_phase_token(contract.get("currentPhase"))
+    try:
+        revision = int(contract.get("revision", contract.get("contractRevision", 0)) or 0)
+    except (TypeError, ValueError):
+        revision = 0
+    plan = contract.get("planReceipt") if isinstance(contract.get("planReceipt"), Mapping) else {}
+    fingerprint = _compact(contract.get("planFingerprint") or plan.get("planFingerprint"), 96)
+    visible = contract.get("visibleProgressReceipt") if isinstance(contract.get("visibleProgressReceipt"), Mapping) else {}
+    visible_hash = str(visible.get("payloadHash", ""))
+    if (
+        not task_id
+        or not workspace
+        or not session
+        or revision <= 0
+        or not phase
+        or not fingerprint
+        or not re.fullmatch(r"[a-f0-9]{64}", visible_hash)
+    ):
+        return None
+    identity = "\n".join((task_id, workspace, session, str(revision), fingerprint, phase, visible_hash))
+    identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    evidence_root = (state_root / "workspace" / "runtime-state" / "phase-evidence").resolve()
+    candidate = evidence_root / f"phase-closeout-v4-r{revision}-{phase.lower()}-{identity_hash[:24]}.json"
+    try:
+        candidate.resolve().relative_to(evidence_root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def find_phase_closeout_for_transition(
+    state_root: str | Path,
+    current_contract: Mapping[str, Any],
+    next_phase: Any,
+) -> tuple[Path | None, str]:
+    """Return the exact closeout required for one forward formal transition.
+
+    This is deliberately a one-file lookup.  It does not scan historical
+    closeouts, revive an old receipt, or decide that a transition is valid;
+    the PowerShell CAS authority revalidates the returned file under its lock.
+    """
+
+    if not _is_forward_formal_phase_transition(current_contract.get("currentPhase"), next_phase):
+        return None, "H7_PHASE_CLOSEOUT_NOT_REQUIRED"
+    path = _phase_closeout_authority_path(Path(state_root).expanduser().resolve(), current_contract)
+    if path is None or not path.is_file():
+        return None, "H7_PHASE_CLOSEOUT_EXACT_RECORD_REQUIRED"
+    try:
+        if path.stat().st_size <= 0 or path.stat().st_size > 64 * 1024:
+            return None, "H7_PHASE_CLOSEOUT_EXACT_RECORD_INVALID"
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None, "H7_PHASE_CLOSEOUT_EXACT_RECORD_INVALID"
+    if not isinstance(receipt, Mapping):
+        return None, "H7_PHASE_CLOSEOUT_EXACT_RECORD_INVALID"
+    visible = current_contract.get("visibleProgressReceipt") if isinstance(current_contract.get("visibleProgressReceipt"), Mapping) else {}
+    h7 = receipt.get("h7") if isinstance(receipt.get("h7"), Mapping) else {}
+    expected_phase = formal_phase_token(current_contract.get("currentPhase"))
+    plan = current_contract.get("planReceipt") if isinstance(current_contract.get("planReceipt"), Mapping) else {}
+    if (
+        str(receipt.get("schema", "")) != PHASE_CLOSEOUT_RECORD_SCHEMA
+        or str(receipt.get("taskId", "")) != str(current_contract.get("taskId", ""))
+        or str(receipt.get("workspaceKey", "")) != str(current_contract.get("workspaceKey", ""))
+        or str(receipt.get("ownerSessionKey", "")) != str(current_contract.get("ownerSessionKey", ""))
+        or str(receipt.get("phase", "")) != expected_phase
+        or int(receipt.get("contractRevision", 0) or 0) != int(current_contract.get("revision", 0) or 0)
+        or str(receipt.get("planFingerprint", "")) != str(current_contract.get("planFingerprint") or plan.get("planFingerprint", ""))
+        or str(h7.get("visibleProgressPayloadHash", "")) != str(visible.get("payloadHash", ""))
+        or receipt.get("rawPromptStored") is not False
+        or receipt.get("rawTranscriptStored") is not False
+    ):
+        return None, "H7_PHASE_CLOSEOUT_EXACT_RECORD_INVALID"
+    return path, "H7_PHASE_CLOSEOUT_EXACT_RECORD_CURRENT"
+
+
+def create_phase_closeout(
+    package_root: str | Path,
+    state_root: str | Path,
+    *,
+    task_id: str,
+    workspace_key: str,
+    session_key: str,
+    project_root: str | Path,
+    expected_revision: int,
+    expected_plan_fingerprint: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Ask the local H7 authority to publish an idempotent v4 closeout record."""
+
+    package = Path(package_root).expanduser().resolve()
+    state = Path(state_root).expanduser().resolve()
+    workspace = _normalize_workspace_key(workspace_key, base=Path.cwd())
+    session = _normalize_session_key(session_key)
+    root = _normalize_project_root(project_root)
+    if not workspace or not session or root is None:
+        return {
+            "ok": False,
+            "schema": SCHEMA,
+            "state": "withheld",
+            "code": "H7_PHASE_CLOSEOUT_SCOPE_REQUIRED",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    if expected_revision <= 0 or not _compact(expected_plan_fingerprint, 96):
+        return {
+            "ok": False,
+            "schema": SCHEMA,
+            "state": "withheld",
+            "code": "H7_PHASE_CLOSEOUT_CAS_FIELDS_REQUIRED",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    exit_code, result = _invoke_contract(
+        package,
+        state,
+        action="CreatePhaseCloseout",
+        task_id=_compact(task_id, 160),
+        workspace_key=workspace,
+        session_key=session,
+        timeout=_authority_transaction_timeout(timeout),
+        extra=[
+            "-ProjectRoot", str(root),
+            "-ExpectedRevision", str(expected_revision),
+            "-ExpectedPlanFingerprint", _compact(expected_plan_fingerprint, 96),
+        ],
+    )
+    if exit_code != 0 or not isinstance(result, Mapping) or result.get("ok") is not True:
+        return {
+            "ok": False,
+            "schema": SCHEMA,
+            "state": "withheld",
+            "code": str((result or {}).get("code", "H7_PHASE_CLOSEOUT_CREATE_FAILED")),
+            "contractReason": _compact((result or {}).get("reason", ""), 160),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    return {
+        "ok": True,
+        "schema": SCHEMA,
+        "state": "current",
+        "code": str(result.get("code", "H7_PHASE_CLOSEOUT_CREATED")),
+        "phase": _compact(result.get("phase"), 120),
+        "revision": int(result.get("revision", result.get("contractRevision", 0)) or 0),
+        "receiptSha256": str(result.get("receiptSha256", result.get("sha256", ""))),
+        "replayed": bool(result.get("replayed")),
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+
+
 def _invoke_contract(
     package_root: Path,
     state_root: Path,
@@ -173,9 +716,27 @@ def _invoke_contract(
         command.extend(["-TaskId", task_id])
     command.extend(extra or [])
     environment = os.environ.copy()
-    environment["CODEX_THREAD_ID"] = session_key
+    environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = session_key
     environment.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
     environment.pop("SUPER_BRAIN_STATE_ROOT", None)
+    # Reuse one package-owned authority worker when this process serves more
+    # than one governed request (the resident MCP path).  A missing, stale, or
+    # timed-out worker returns ``None`` and falls through to the unchanged cold
+    # subprocess path below, so optimization failure cannot weaken authority.
+    script_argument_index = command.index(str(script)) + 1
+    warm_result = _invoke_warm_authority(
+        package_root,
+        command[script_argument_index:],
+        timeout,
+    )
+    if warm_result is not None:
+        parsed_warm = _parse_json_output(warm_result[1])
+        # A marker with non-JSON payload is a transport/protocol failure, not
+        # an authority decision.  Let the unchanged cold path re-establish the
+        # result instead of turning a recoverable warm-channel fault into a
+        # false transaction failure.
+        if parsed_warm is not None:
+            return warm_result[0], parsed_warm
     try:
         completed = subprocess.run(
             command,
@@ -293,6 +854,176 @@ def _normalize_progress_checkpoint(value: Any) -> tuple[dict[str, str] | None, s
             return None, "H7_PROGRESS_CHECKPOINT_FIELDS_INVALID"
         normalized[field] = compact
     return normalized, "H7_PROGRESS_CHECKPOINT_CURRENT"
+
+
+def _normalize_latest_user_instruction(value: Any) -> tuple[str, str]:
+    """Accept one compact, redacted current-instruction reconciliation input.
+
+    This is deliberately narrower than a transcript channel.  The caller may
+    provide only the current user instruction that has already been scoped to
+    the active task; the contract's ``ObserveUser``/``Set`` path redacts and
+    binds it as an instruction anchor.  Checkpoint receipts retain only the
+    hash, never this text.
+    """
+
+    if value is None:
+        return "", "H7_LATEST_INSTRUCTION_NOT_SUPPLIED"
+    if not isinstance(value, str):
+        return "", "H7_LATEST_INSTRUCTION_INVALID"
+    compact = _compact(value, MAX_LATEST_USER_INSTRUCTION_CHARS)
+    if not compact or "\n" in compact or "\r" in compact:
+        return "", "H7_LATEST_INSTRUCTION_INVALID"
+    return compact, "H7_LATEST_INSTRUCTION_CURRENT"
+
+
+def _checklist_key(value: Any) -> str:
+    return " ".join(str(value or "").strip().split()).casefold()
+
+
+def _write_canonical_status_mutation(
+    *,
+    state_root: Path,
+    current: Mapping[str, Any],
+    proof: Mapping[str, Any] | None,
+    transition_id: str,
+    latest_user_instruction: str,
+    task_id: str = "",
+    workspace_key: str = "",
+    session_key: str = "",
+) -> tuple[str | None, str]:
+    """Create one CAS-bound canonical completion mutation from H7 proof.
+
+    A project-progress proof is already required to bind every completed item
+    to project evidence and passed verification.  When the active canonical
+    plan names those same items, translate that verified delta into the
+    existing ``set_status`` envelope instead of leaving a completed phase
+    projected as ``pending``.  Unknown or ambiguous item keys fail closed.
+    """
+
+    if not isinstance(proof, Mapping):
+        return None, "H7_CANONICAL_STATUS_NOT_APPLICABLE"
+    plan = current.get("canonicalPlan")
+    if not isinstance(plan, Mapping):
+        return None, "H7_CANONICAL_STATUS_NOT_APPLICABLE"
+    items = plan.get("items")
+    completed_items = proof.get("completedItems")
+    if not isinstance(items, list) or not isinstance(completed_items, list):
+        return None, "H7_CANONICAL_STATUS_NOT_APPLICABLE"
+    if not completed_items:
+        return None, "H7_CANONICAL_STATUS_NOT_APPLICABLE"
+
+    by_key: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, Mapping):
+            return None, "H7_CANONICAL_STATUS_PLAN_INVALID"
+        item_id = str(item.get("itemId", "")).strip()
+        key = _checklist_key(item.get("label"))
+        if not item_id or not key or key in by_key:
+            return None, "H7_CANONICAL_STATUS_PLAN_INVALID"
+        by_key[key] = dict(item)
+
+    target_ids: list[str] = []
+    evidence_refs: list[str] = []
+    seen_keys: set[str] = set()
+    for completed in completed_items:
+        if not isinstance(completed, Mapping):
+            return None, "H7_CANONICAL_STATUS_COMPLETED_ITEM_INVALID"
+        key = _checklist_key(completed.get("itemKey"))
+        if not key or key in seen_keys or key not in by_key:
+            return None, "H7_CANONICAL_STATUS_ITEM_MAPPING_WITHHELD"
+        seen_keys.add(key)
+        planned = by_key[key]
+        status = str(planned.get("status", ""))
+        if status not in {"pending", "in_progress", "completed"}:
+            return None, "H7_CANONICAL_STATUS_ITEM_STATE_INVALID"
+        if status != "completed":
+            target_ids.append(str(planned["itemId"]))
+        refs = completed.get("evidenceRefs")
+        if not isinstance(refs, list) or not refs:
+            return None, "H7_CANONICAL_STATUS_EVIDENCE_REQUIRED"
+        for reference in refs:
+            compact_ref = _compact(reference, 160)
+            if compact_ref and compact_ref not in evidence_refs:
+                evidence_refs.append(compact_ref)
+
+    if not target_ids:
+        return None, "H7_CANONICAL_STATUS_ALREADY_CURRENT"
+    if not latest_user_instruction:
+        latest_user_instruction = _compact(current.get("latestUserInstruction"), MAX_LATEST_USER_INSTRUCTION_CHARS)
+    if not latest_user_instruction:
+        return None, "H7_CANONICAL_STATUS_INSTRUCTION_REQUIRED"
+
+    try:
+        revision = int(current.get("revision", 0) or 0)
+        generation = int(plan.get("generation", 0) or 0)
+    except (TypeError, ValueError):
+        return None, "H7_CANONICAL_STATUS_PLAN_INVALID"
+    plan_id = str(plan.get("planId", "")).strip()
+    fingerprint = str(plan.get("currentFingerprint", "")).strip()
+    if revision <= 0 or generation <= 0 or not plan_id or not fingerprint:
+        return None, "H7_CANONICAL_STATUS_PLAN_INVALID"
+
+    task_instance_id = _compact(current.get("taskInstanceId"), 96)
+    scoped_task_id = _compact(task_id or current.get("taskId"), 160)
+    scoped_workspace_key = _compact(workspace_key or current.get("workspaceKey"), 96)
+    scoped_session_key = _compact(session_key or current.get("ownerSessionKey"), 96)
+    if not all((scoped_task_id, task_instance_id, scoped_workspace_key, scoped_session_key, transition_id)):
+        return None, "H7_CANONICAL_STATUS_SCOPE_REQUIRED"
+
+    scope = {
+        "taskId": scoped_task_id,
+        "taskInstanceId": task_instance_id,
+        "workspaceKey": scoped_workspace_key,
+        "ownerSessionKey": scoped_session_key,
+    }
+    envelope = {
+        "schema": "super-brain.canonical-plan-mutation.v2",
+        "scope": scope,
+        "targetScope": "canonical_main",
+        "operation": "set_status",
+        "targetItemIds": target_ids,
+        "items": [],
+        "status": "completed",
+        "evidenceRefs": evidence_refs[:6],
+        "approvalSource": "verified_status_transition",
+        "userInstructionFingerprint": _stable_hash(latest_user_instruction, 16),
+        "expectedPlanId": plan_id,
+        "expectedGeneration": generation,
+        "expectedRevision": revision,
+        "expectedFingerprint": fingerprint,
+        "transitionId": transition_id,
+    }
+    envelope["payloadHash"] = hashlib.sha256(
+        json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    mutation_dir = state_root / "workspace" / "runtime-state" / "canonical-mutations"
+    mutation_dir.mkdir(parents=True, exist_ok=True)
+    path_seed = json.dumps(
+        {"scope": scope, "transitionId": transition_id},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    path = mutation_dir / ("checkpoint-" + _stable_hash(path_seed, 32) + ".json")
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None, "H7_CANONICAL_STATUS_MUTATION_CONFLICT"
+        if isinstance(existing, Mapping) and str(existing.get("payloadHash", "")) == str(envelope["payloadHash"]):
+            return str(path), "H7_CANONICAL_STATUS_MUTATION_READY"
+        return None, "H7_CANONICAL_STATUS_MUTATION_CONFLICT"
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None, "H7_CANONICAL_STATUS_MUTATION_WRITE_FAILED"
+    return str(path), "H7_CANONICAL_STATUS_MUTATION_READY"
 
 
 def _project_progress_text(value: Any, maximum: int) -> str | None:
@@ -530,7 +1261,9 @@ def record_progress_checkpoint(
     session_key: str = "",
     progress_checkpoint: Mapping[str, Any] | None = None,
     project_progress_proof: Mapping[str, Any] | None = None,
+    latest_user_instruction: str | None = None,
     project_root: str | Path | None = None,
+    current_contract: Mapping[str, Any] | None = None,
     transition_id: str = "",
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
@@ -556,6 +1289,18 @@ def record_progress_checkpoint(
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
+    normalized_instruction = ""
+    if latest_user_instruction is not None:
+        normalized_instruction, instruction_code = _normalize_latest_user_instruction(latest_user_instruction)
+        if not normalized_instruction:
+            return {
+                "ok": False,
+                "schema": SCHEMA,
+                "code": instruction_code,
+                "stateMutated": False,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
     proof: dict[str, Any] | None = None
     proof_serialized = ""
     if project_progress_proof is not None:
@@ -591,15 +1336,72 @@ def record_progress_checkpoint(
         }
 
     requested_task = _compact(task_id, 160)
-    get_code, current = _invoke_contract(
-        package,
-        state,
-        action="Get",
-        task_id=requested_task,
-        workspace_key=workspace,
-        session_key=session,
-        timeout=transaction_timeout,
-    )
+
+    # ``open_turn`` has already read and bound the exact local contract for
+    # this same turn.  Reuse that private, stack-local snapshot as a CAS hint
+    # for the following Set.  PowerShell still re-reads the contract under its
+    # lock and enforces ExpectedRevision/ExpectedPlanFingerprint, so this is
+    # only a transport optimization and cannot authorize stale state.  Keep
+    # canonical-plan status transitions on the original Get path because they
+    # need a mutation envelope derived from the authoritative snapshot.
+    hinted_current: dict[str, Any] | None = None
+    canonical_status_transition = False
+    formal_phase_transition = False
+    if isinstance(current_contract, Mapping) and requested_task:
+        candidate = dict(current_contract)
+        candidate_task = _compact(candidate.get("taskId"), 160)
+        candidate_workspace = _compact(candidate.get("workspaceKey"), 96).lower()
+        candidate_session = _compact(candidate.get("ownerSessionKey"), 96).lower()
+        candidate_plan = candidate.get("canonicalPlan")
+        candidate_completed = proof.get("completedItems") if isinstance(proof, Mapping) else None
+        canonical_status_transition = (
+            isinstance(candidate_plan, Mapping)
+            and isinstance(candidate_completed, list)
+            and bool(candidate_completed)
+        )
+        formal_phase_transition = _is_forward_formal_phase_transition(
+            candidate.get("currentPhase"),
+            checkpoint.get("current_phase"),
+        )
+        try:
+            candidate_revision = int(candidate.get("revision", candidate.get("contractRevision", 0)) or 0)
+        except (TypeError, ValueError):
+            candidate_revision = 0
+        candidate_fingerprint = ""
+        plan_receipt_hint = candidate.get("planReceipt")
+        if isinstance(plan_receipt_hint, Mapping):
+            candidate_fingerprint = _compact(
+                candidate.get("planFingerprint") or plan_receipt_hint.get("planFingerprint"),
+                96,
+            )
+        else:
+            candidate_fingerprint = _compact(candidate.get("planFingerprint"), 96)
+        if (
+            candidate.get("ok") is True
+            and candidate_task == requested_task
+            and candidate_workspace == workspace.lower()
+            and candidate_session == session.lower()
+            and candidate_revision > 0
+            and candidate_fingerprint
+            and not canonical_status_transition
+            and not formal_phase_transition
+        ):
+            hinted_current = candidate
+
+    if hinted_current is not None:
+        get_code, current = 0, hinted_current
+        contract_read_path = "in_process_hint"
+    else:
+        get_code, current = _invoke_contract(
+            package,
+            state,
+            action="Get",
+            task_id=requested_task,
+            workspace_key=workspace,
+            session_key=session,
+            timeout=transaction_timeout,
+        )
+        contract_read_path = "authority_get"
     if get_code != 0 or not isinstance(current, dict) or current.get("ok") is not True:
         return {
             "ok": False,
@@ -625,6 +1427,63 @@ def record_progress_checkpoint(
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
+    # A forward formal stage transition may consume exactly one closeout.  Do
+    # the bounded deterministic lookup before any derived canonical-status
+    # write; ordinary checkpoints do not touch phase-evidence at all.  The
+    # PowerShell CAS authority still validates and consumes the file under its
+    # contract lock, so this adapter cannot turn a readable file into approval.
+    phase_closeout_path, phase_closeout_code = find_phase_closeout_for_transition(
+        state,
+        current,
+        checkpoint["current_phase"],
+    )
+    if phase_closeout_code == "H7_PHASE_CLOSEOUT_EXACT_RECORD_REQUIRED":
+        return {
+            "ok": False,
+            "schema": SCHEMA,
+            "code": phase_closeout_code,
+            "stateMutated": False,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    if phase_closeout_code == "H7_PHASE_CLOSEOUT_EXACT_RECORD_INVALID":
+        return {
+            "ok": False,
+            "schema": SCHEMA,
+            "code": phase_closeout_code,
+            "stateMutated": False,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    # A latest instruction carried by a checkpoint is not a mere observation:
+    # it is the scoped authorization being bound to this exact CAS mutation.
+    # Passing it to ``Set`` without the already-resolved current work-line
+    # mapping makes PowerShell correctly mark the contract as pending
+    # reconciliation *after* the checkpoint has committed.  That produces the
+    # false-looking outcome "write succeeded but H7 reopened withheld".  Bind
+    # only the current contract's concrete line metadata, never inferred text
+    # from the caller, so the authority can validate the same instruction and
+    # action in one transaction.
+    instruction_mapping: dict[str, str] = {}
+    if normalized_instruction:
+        instruction_mapping = {
+            "focusId": _compact(current.get("focusId"), 120),
+            "focusLabel": _compact(current.get("focusLabel"), 120),
+            "assistantCommitment": _compact(current.get("assistantCommitment"), 480),
+        }
+        # ``FocusId`` is the authority's required work-line selector.  Label
+        # and commitment are useful audit context when an older valid contract
+        # has them, but must not turn their historical absence into a new
+        # blocker.
+        if not instruction_mapping["focusId"]:
+            return {
+                "ok": False,
+                "schema": SCHEMA,
+                "code": "H7_PROGRESS_CHECKPOINT_INSTRUCTION_MAPPING_REQUIRED",
+                "stateMutated": False,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
     stable_payload = json.dumps(
         {
             "taskId": resolved_task,
@@ -632,6 +1491,8 @@ def record_progress_checkpoint(
             "ownerSessionKey": session,
             "checkpoint": checkpoint,
             "projectProgressInputHash": hashlib.sha256(proof_serialized.encode("utf-8")).hexdigest() if proof_serialized else "",
+            "latestUserInstructionHash": hashlib.sha256(normalized_instruction.encode("utf-8")).hexdigest() if normalized_instruction else "",
+            "instructionMapping": instruction_mapping,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -644,6 +1505,29 @@ def record_progress_checkpoint(
         json.dumps(checkpoint, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).decode("ascii")
     transport_proof = base64.b64encode(proof_serialized.encode("utf-8")).decode("ascii") if proof_serialized else ""
+    canonical_mutation_path, canonical_mutation_code = _write_canonical_status_mutation(
+        state_root=state,
+        current=current,
+        proof=proof,
+        transition_id=resolved_transition,
+        latest_user_instruction=normalized_instruction,
+        task_id=resolved_task,
+        workspace_key=workspace,
+        session_key=session,
+    )
+    if canonical_mutation_code not in {
+        "H7_CANONICAL_STATUS_NOT_APPLICABLE",
+        "H7_CANONICAL_STATUS_ALREADY_CURRENT",
+        "H7_CANONICAL_STATUS_MUTATION_READY",
+    }:
+        return {
+            "ok": False,
+            "schema": SCHEMA,
+            "code": canonical_mutation_code,
+            "stateMutated": False,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
     set_extra = [
         "-ProgressCheckpointBase64", transport_checkpoint,
         "-ProjectRoot", str(root),
@@ -652,8 +1536,27 @@ def record_progress_checkpoint(
         "-TransitionId", resolved_transition,
         "-Source", "turn-runtime:assistant-progress-checkpoint",
     ]
+    if phase_closeout_path is not None:
+        set_extra.extend(["-PhaseCloseoutPath", str(phase_closeout_path)])
     if transport_proof:
         set_extra.extend(["-ProjectProgressProofBase64", transport_proof])
+    if normalized_instruction:
+        set_extra.extend(
+            [
+                "-LatestUserInstruction",
+                normalized_instruction,
+                "-InstructionMode",
+                "continue",
+                "-FocusId",
+                instruction_mapping["focusId"],
+            ]
+        )
+        if instruction_mapping["focusLabel"]:
+            set_extra.extend(["-FocusLabel", instruction_mapping["focusLabel"]])
+        if instruction_mapping["assistantCommitment"]:
+            set_extra.extend(["-AssistantCommitment", instruction_mapping["assistantCommitment"]])
+    if canonical_mutation_path:
+        set_extra.extend(["-CanonicalMutationPath", canonical_mutation_path])
     set_code, updated = _invoke_contract(
         package,
         state,
@@ -740,9 +1643,18 @@ def record_progress_checkpoint(
         "revision": int(updated.get("revision", revision) or revision),
         "transitionId": resolved_transition,
         "lastConfirmedSource": checkpoint["source"],
+        "instructionAnchorBound": bool(normalized_instruction),
+        "instructionMappingBound": bool(instruction_mapping),
+        "canonicalStatusProjection": canonical_mutation_code,
         "projectProgress": {
             "state": str(((updated.get("projectProgressProof") or {}) if isinstance(updated.get("projectProgressProof"), dict) else {}).get("state", "withheld")),
             "payloadHash": str(((updated.get("projectProgressProof") or {}) if isinstance(updated.get("projectProgressProof"), dict) else {}).get("payloadHash", "")),
+        },
+        "phaseCloseout": {
+            "state": "consumed" if phase_closeout_path is not None else "not_applicable",
+            "code": phase_closeout_code,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
         },
         "visibleProgress": {
             "state": "current",
@@ -753,6 +1665,7 @@ def record_progress_checkpoint(
         },
         "rawPromptStored": False,
         "rawTranscriptStored": False,
+        "contractReadPath": contract_read_path,
     }
 
 
@@ -787,9 +1700,10 @@ def dispatch_turn_close(
             "terminalReplyAllowed": True,
             "requiresParentResume": False,
             "branchStatus": "",
-            "rawPromptStored": False,
-            "rawTranscriptStored": False,
-        }
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+        "contractReadPath": contract_read_path,
+    }
         return _base_result(policy=policy, resolution=None, code="TURN_CLOSE_DISPATCH_SCOPE_REQUIRED")
 
     resolve_code, resolution = _invoke_contract(
@@ -956,4 +1870,12 @@ def dispatch_turn_close(
     return result
 
 
-__all__ = ["dispatch_turn_close", "record_progress_checkpoint", "SCHEMA"]
+__all__ = [
+    "SCHEMA",
+    "create_phase_closeout",
+    "dispatch_turn_close",
+    "find_phase_closeout_for_transition",
+    "formal_phase_token",
+    "is_formal_phase",
+    "record_progress_checkpoint",
+]

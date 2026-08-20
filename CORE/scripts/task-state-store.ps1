@@ -287,7 +287,7 @@ function New-CompatibilityCompletionAuthorityContract(
   $checkpoint = if ($CompletedCheckpoint -and $CompletedCheckpoint.PSObject.Properties['value']) { $CompletedCheckpoint.value } else { $null }
   $taskCard = if ($CompletedTaskCard -and $CompletedTaskCard.PSObject.Properties['value']) { $CompletedTaskCard.value } else { $null }
   $sessionCandidate = if ($checkpoint -and $checkpoint.PSObject.Properties['sessionId']) { [string]$checkpoint.sessionId } elseif ($taskCard -and $taskCard.PSObject.Properties['sessionId']) { [string]$taskCard.sessionId } else { '' }
-  $ownerSessionKey = Get-SuperBrainHostSessionKey $sessionCandidate
+  $ownerSessionKey = Get-SuperBrainLocalSessionKey $sessionCandidate
   if ([string]::IsNullOrWhiteSpace($ownerSessionKey)) { throw 'TASK_STATE_COMPATIBILITY_AUTHORITY_SESSION_REQUIRED' }
   $resolvedWorkspaceKey = Get-SuperBrainWorkspaceKey $WorkspaceKey
   $instanceCandidate = if ($Manifest -and $Manifest.PSObject.Properties['expectedTaskInstanceId']) { [string]$Manifest.expectedTaskInstanceId } else { '' }
@@ -488,7 +488,7 @@ function Test-OwnerSessionRebind([object]$Previous,[object]$Next,[string]$Previo
   # Older Desktop projections may retain the raw host thread id while the
   # contract has already normalized it to sid-*. A rebind may upgrade only
   # when that raw id deterministically resolves to the recorded old owner.
-  $previousOwnerKey = Get-SuperBrainHostSessionKey ([string]$Previous.sessionId)
+  $previousOwnerKey = Get-SuperBrainLocalSessionKey ([string]$Previous.sessionId)
   if (-not [string]::Equals($previousOwnerKey,$PreviousSessionKey,[System.StringComparison]::OrdinalIgnoreCase)) { return $false }
   if (-not [string]::Equals([string]$Next.sessionId,$NextSessionKey,[System.StringComparison]::OrdinalIgnoreCase)) { return $false }
   $previousAgentId = ConvertTo-SuperBrainTaskStateAgentId ([string]$Previous.agentId) ([string]$Previous.platform)
@@ -1351,8 +1351,8 @@ function Assert-CompletionContract([object]$Manifest,[string]$Id,[string]$Worksp
     if (-not $receiptCurrent.ok) { throw ('TASK_STATE_COMPLETION_PLAN_RECEIPT_STALE code=' + [string]$receiptCurrent.code) }
   }
   if ([string]$contract.ownerSessionKey -ne [string]$Manifest.ownerSessionKey) { throw 'TASK_STATE_COMPLETION_SESSION_MISMATCH' }
-  $caller = Get-SuperBrainHostSessionKey $CallerSessionKey
-  $manifestCaller = if($Manifest.PSObject.Properties['callerSessionKey']){Get-SuperBrainHostSessionKey ([string]$Manifest.callerSessionKey)}else{''}
+  $caller = Get-SuperBrainLocalSessionKey $CallerSessionKey
+  $manifestCaller = if($Manifest.PSObject.Properties['callerSessionKey']){Get-SuperBrainLocalSessionKey ([string]$Manifest.callerSessionKey)}else{''}
   if ([string]::IsNullOrWhiteSpace($caller) -or [string]::IsNullOrWhiteSpace($manifestCaller)) { throw 'TASK_STATE_COMPLETION_CALLER_SESSION_REQUIRED' }
   if ($caller -ne $manifestCaller -or $caller -ne [string]$Manifest.ownerSessionKey -or $caller -ne [string]$contract.ownerSessionKey) { throw 'TASK_STATE_COMPLETION_CALLER_SESSION_MISMATCH' }
   if (@($contract.returnStack).Count -gt 0) { throw 'TASK_STATE_COMPLETION_PARENT_SUSPENDED' }
@@ -1681,7 +1681,7 @@ function New-TaskCompletionReceipt(
     targetRevision = $TargetRevision
     taskInstanceId = if($contract){[string]$contract.taskInstanceId}else{''}
     ownerSessionKey = [string]$Manifest.ownerSessionKey
-    callerSessionKey = Get-SuperBrainHostSessionKey $CallerSessionKey
+    callerSessionKey = Get-SuperBrainLocalSessionKey $CallerSessionKey
     packageVersion = $PackageVersion
     contractRevision = [int]$Manifest.expectedContractRevision
     planFingerprint = [string]$Manifest.expectedPlanFingerprint
@@ -1893,7 +1893,7 @@ function Complete-TaskState([string]$Id,[string]$ManifestPath,[int]$Expected,[st
   if ($completionStatus -ne 'completed') { throw "TASK_STATE_COMPLETION_STATUS_UNSUPPORTED status=$completionStatus" }
   if ([string]::IsNullOrWhiteSpace([string]$manifestValue.ownerSessionKey) -and -not $Override) { throw 'TASK_STATE_COMPLETION_SESSION_REQUIRED' }
   if ([string]::IsNullOrWhiteSpace([string]$manifestValue.expectedPlanFingerprint) -and -not $Override) { throw 'TASK_STATE_COMPLETION_PLAN_FINGERPRINT_REQUIRED' }
-  $callerSessionKey = Get-SuperBrainHostSessionKey $CallerSessionKey
+  $callerSessionKey = Get-SuperBrainLocalSessionKey $CallerSessionKey
   if ([string]::IsNullOrWhiteSpace($callerSessionKey) -and -not $Override) { throw 'TASK_STATE_COMPLETION_CALLER_SESSION_REQUIRED' }
 
   $completedCheckpoint = Assert-CompletionPayload ([string]$manifestValue.completedCheckpointPayloadPath) $Id $workspaceKey 'completed' 'CHECKPOINT'

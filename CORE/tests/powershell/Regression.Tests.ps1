@@ -204,8 +204,8 @@ Describe 'Task-scoped runtime state regression guards' {
   }
 
   It 'keeps task verification Json parseable while completing a non-pointer checkpoint' {
-    $oldThreadId = $env:CODEX_THREAD_ID
-    $env:CODEX_THREAD_ID = 'sid-9999999999999999'
+    $oldThreadId = $env:SUPER_BRAIN_LOCAL_SESSION_ID
+    $env:SUPER_BRAIN_LOCAL_SESSION_ID = 'sid-9999999999999999'
     $workspace = Join-Path $tempRoot 'memory\workspace'
     [IO.File]::WriteAllText((Join-Path $workspace 'last-verify-package.json'),'{"ok":true,"version":"0.5.80","checkedAt":"test"}',[Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $workspace 'last-hot-refresh.json'),'{"ok":true,"checkedAt":"test"}',[Text.UTF8Encoding]::new($false))
@@ -261,12 +261,12 @@ Describe 'Task-scoped runtime state regression guards' {
     $second.canonicalVerification.preserved | Should Be $true
     $second.verifiedOutcome.preserved | Should Be $true
     $second.rawPromptStored | Should Be $false
-    if ($null -eq $oldThreadId) { Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $oldThreadId }
+    if ($null -eq $oldThreadId) { Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $oldThreadId }
   }
 
   It 'rejects a causal review when the source tree changes before task verification' {
-    $oldThreadId = $env:CODEX_THREAD_ID
-    $env:CODEX_THREAD_ID = 'sid-causal-review-freshness'
+    $oldThreadId = $env:SUPER_BRAIN_LOCAL_SESSION_ID
+    $env:SUPER_BRAIN_LOCAL_SESSION_ID = 'sid-causal-review-freshness'
     try {
       $workspace = Join-Path $tempRoot 'memory\workspace'
       $taskId = 'causal-review-freshness-task'
@@ -325,7 +325,7 @@ Describe 'Task-scoped runtime state regression guards' {
       $verified.causalReviewBinding.ok | Should Be $true
       $verified.completionOutcome.completed | Should Be $true
     } finally {
-      if ($null -eq $oldThreadId) { Remove-Item Env:\CODEX_THREAD_ID -ErrorAction SilentlyContinue } else { $env:CODEX_THREAD_ID = $oldThreadId }
+      if ($null -eq $oldThreadId) { Remove-Item Env:\SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $oldThreadId }
     }
   }
 }
@@ -533,14 +533,14 @@ Describe 'Root marker and startup bootstrap guards' {
 
   It 'keeps one thin canonical startup block that delegates policy to Super Brain' {
     $commonText = Get-Content -LiteralPath (Join-Path $root 'scripts\common.ps1') -Raw -Encoding UTF8
-    foreach ($marker in @('legacyPattern','Super Memory Brain Bootstrap','Entry: explicit Super Brain/G1','Git workflow trigger','Authority: bootstrap only','super-brain-rules.json','must never duplicate or override','bootstrap never selects a continuation anchor','same H7 CLI','Never use Hook/P7','PACKAGE_ROOT_MARKER_SOURCE_MISSING','PACKAGE_ROOT_MARKER_VERIFY_FAILED')) {
+    foreach ($marker in @('legacyPattern','Super Memory Brain Bootstrap','Entry: explicit Super Brain/G1','Git workflow trigger','Authority: bootstrap only','super-brain-rules.json','must never duplicate or override','bootstrap never selects a continuation anchor','same H7 CLI','Never use Hook/P7','host-injected provenance','system/developer handoff','PACKAGE_ROOT_MARKER_SOURCE_MISSING','PACKAGE_ROOT_MARKER_VERIFY_FAILED')) {
       $commonText.Contains($marker) | Should Be $true
     }
   }
 
   It 'keeps H7 continuity separate from direct work and retired Hook/P7 evidence' {
     $skillText = Get-Content -LiteralPath (Join-Path $root 'super-memory-brain\SKILL.md') -Raw -Encoding UTF8
-    foreach ($marker in @('H7 runtime/MCP','brain_turn','brain_cli.py turn-runtime','same H7 CLI','H7_RUNTIME_UNAVAILABLE','ordinary direct work','watching logs or session files')) {
+    foreach ($marker in @('H7 runtime/MCP','brain_turn','brain_cli.py turn-runtime','same H7 CLI','H7_RUNTIME_UNAVAILABLE','ordinary direct work','fresh-task semantic intent','does not need to name Super Brain','watching logs or session files')) {
       $skillText.Contains($marker) | Should Be $true
     }
     $skillText.Contains('## Desktop Hook Fallback') | Should Be $false
@@ -554,6 +554,7 @@ Describe 'Root marker and startup bootstrap guards' {
     $block.Contains('must never duplicate or override') | Should Be $true
     $block.Contains('checkpoint wins') | Should Be $false
     $block.Contains('Use Playwright for normal browser automation') | Should Be $true
+    $block.Contains('literal naming is not required') | Should Be $true
     $block.Contains('Playwright cannot reliably complete') | Should Be $true
     $block.Contains('get-skills core') | Should Be $false
     $block.Contains('Python312\Scripts\browser-act.exe') | Should Be $false
@@ -611,5 +612,12 @@ Describe 'Root marker and startup bootstrap guards' {
       $description = ([string]$descriptionLine -replace '^description:\s*','').Trim().Trim('"').Trim("'")
       ($description.Length -le 280) | Should Be $true
     }
+  }
+
+  It 'routes semantic fresh-task intent without requiring the literal Super Brain name' {
+    $skill = Get-Content -LiteralPath (Join-Path $root 'super-memory-brain\SKILL.md') -Raw -Encoding UTF8
+    $skill.Contains('fresh-task semantic intent') | Should Be $true
+    $skill.Contains('does not need to name Super Brain') | Should Be $true
+    $skill.Contains('Ordinary greeting or chat stays direct') | Should Be $true
   }
 }

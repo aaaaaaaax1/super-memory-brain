@@ -114,7 +114,7 @@ def main() -> int:
             path.name for path in active_receipt_dir.glob("*.json")
         )
         cli_environment = os.environ.copy()
-        cli_environment["CODEX_THREAD_ID"] = "sid-activation-cli-regression"
+        cli_environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = "sid-activation-cli-regression"
         cli = subprocess.run(
             [
                 sys.executable,
@@ -322,7 +322,7 @@ def main() -> int:
         assert scoped_context_code == "BRAIN_CONTEXT_READY", scoped_context_code
         assert scoped_context and scoped_context["taskInstanceId"] == scoped_contract["taskInstanceId"]
         scoped_environment = os.environ.copy()
-        scoped_environment["CODEX_THREAD_ID"] = scoped_session
+        scoped_environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = scoped_session
         scoped_cli = subprocess.run(
             [
                 sys.executable,

@@ -106,6 +106,30 @@ function Test-ConfigHasPath([string]$Text,[string]$Path) {
   return $false
 }
 
+function Get-CodexMcpTableText([string]$Text,[string]$Name) {
+  if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Name)) { return '' }
+  $lines = @($Text -split "`r?`n")
+  $escaped = [regex]::Escape($Name)
+  $tablePattern = '^\s*\[mcp_servers\.(?:"' + $escaped + '"|' + $escaped + ')\]\s*$'
+  $start = -1
+  for ($index = 0; $index -lt $lines.Count; $index++) {
+    if ($lines[$index] -match $tablePattern) { $start = $index; break }
+  }
+  if ($start -lt 0) { return '' }
+  $end = $lines.Count
+  $sectionPrefix = 'mcp_servers.' + $Name
+  for ($index = $start + 1; $index -lt $lines.Count; $index++) {
+    if ($lines[$index] -match '^\s*\[(?<section>[^\]]+)\]\s*$') {
+      $section = [string]$Matches['section']
+      if ($section -ne $sectionPrefix -and -not $section.StartsWith($sectionPrefix + '.', [StringComparison]::OrdinalIgnoreCase)) {
+        $end = $index
+        break
+      }
+    }
+  }
+  return ($lines[$start..($end - 1)] -join "`n")
+}
+
 function Get-PrimaryCodexMcpStaticBinding([string]$CodexHomePath) {
   $configPath = Join-Path $CodexHomePath 'config.toml'
   if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
@@ -118,20 +142,30 @@ function Get-PrimaryCodexMcpStaticBinding([string]$CodexHomePath) {
   if (-not $declared) {
     return [pscustomobject]@{ state='not_configured'; ok=$true; configured=$false; configPath=$configPath; code='H7_MCP_NOT_CONFIGURED_CLI_EQUIVALENT_AVAILABLE'; runtimeIdentityMatches=$true }
   }
-  $runtimeIdentityMatch = [regex]::Match($configText, '(?mi)^\s*SUPER_BRAIN_RUNTIME_IDENTITY\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
+  $tableText = Get-CodexMcpTableText $configText 'super-memory-brain'
+  if ([string]::IsNullOrWhiteSpace($tableText)) {
+    return [pscustomobject]@{ state='stale'; ok=$false; configured=$true; configPath=$configPath; code='H7_MCP_TABLE_UNREADABLE'; runtimeIdentityMatches=$false }
+  }
+  $runtimeIdentityMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_RUNTIME_IDENTITY\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
   $registeredIdentity = if ($runtimeIdentityMatch.Success) { [string]$runtimeIdentityMatch.Groups['value'].Value } else { '' }
+  $transportMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_MCP_TRANSPORT\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
+  $registeredTransport = if ($transportMatch.Success) { [string]$transportMatch.Groups['value'].Value } else { '' }
+  $epochMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_MCP_REGISTRATION_EPOCH\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
+  $registeredEpoch = if ($epochMatch.Success) { [string]$epochMatch.Groups['value'].Value } else { '' }
   $expectedIdentity = Get-SuperBrainMcpRuntimeIdentity $Root
-  $brainMcpMatches = Test-ConfigHasPath $configText (Join-Path $Root 'runtime\brain_mcp.py')
-  $packageRootMatches = Test-ConfigHasPath $configText $Root
-  $memoryRootMatches = Test-ConfigHasPath $configText $MemoryRoot
-  $argumentContractPresent = ($configText -match '(?i)--package-root') -and ($configText -match '(?i)--memory-root')
+  $brainMcpMatches = Test-ConfigHasPath $tableText (Join-Path $Root 'runtime\brain_mcp.py')
+  $packageRootMatches = Test-ConfigHasPath $tableText $Root
+  $memoryRootMatches = Test-ConfigHasPath $tableText $MemoryRoot
+  $argumentContractPresent = ($tableText -match '(?i)--package-root') -and ($tableText -match '(?i)--memory-root')
   $identityMatches = ($registeredIdentity -eq $expectedIdentity)
-  $bindingOk = ($brainMcpMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $identityMatches)
+  $transportMatches = ($registeredTransport -eq 'codex_registered_v1')
+  $epochPresent = (-not [string]::IsNullOrWhiteSpace($registeredEpoch))
+  $bindingOk = ($brainMcpMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $identityMatches -and $transportMatches -and $epochPresent)
   return [pscustomobject]@{
-    state=if($bindingOk){'current'}else{'stale'}; ok=$bindingOk; configured=$true; configPath=$configPath
-    code=if($bindingOk){'H7_MCP_STATIC_BINDING_CURRENT'}else{'H7_MCP_STATIC_BINDING_STALE'}
+    state=if($bindingOk){'configured_current'}else{'stale'}; ok=$bindingOk; configured=$true; configPath=$configPath
+    code=if($bindingOk){'H7_MCP_STATIC_CONFIG_CURRENT'}else{'H7_MCP_STATIC_BINDING_STALE'}
     brainMcpMatches=$brainMcpMatches; packageRootMatches=$packageRootMatches; memoryRootMatches=$memoryRootMatches; argumentContractPresent=$argumentContractPresent
-    expectedRuntimeIdentity=$expectedIdentity; registeredRuntimeIdentity=$registeredIdentity; runtimeIdentityMatches=$identityMatches
+    expectedRuntimeIdentity=$expectedIdentity; registeredRuntimeIdentity=$registeredIdentity; runtimeIdentityMatches=$identityMatches; transportMatches=$transportMatches; registrationEpochPresent=$epochPresent
   }
 }
 
@@ -145,7 +179,7 @@ if ($codexHostPresent) {
 $codexHome = Split-Path -Parent $CodexSkills
 $mcpBinding = Get-PrimaryCodexMcpStaticBinding $codexHome
 if ($mcpBinding.state -eq 'stale') { $script:ok = $false }
-$configChecks += [pscustomobject]@{ name='Codex H7 MCP static binding'; ok=[bool]$mcpBinding.ok; state=[string]$mcpBinding.state; code=[string]$mcpBinding.code; path=[string]$mcpBinding.configPath; runtimeIdentityMatches=[bool]$mcpBinding.runtimeIdentityMatches }
+$configChecks += [pscustomobject]@{ name='Codex H7 MCP static binding'; ok=[bool]$mcpBinding.ok; state=[string]$mcpBinding.state; code=[string]$mcpBinding.code; path=[string]$mcpBinding.configPath; runtimeIdentityMatches=[bool]$mcpBinding.runtimeIdentityMatches; transportMatches=[bool]$mcpBinding.transportMatches; registrationEpochPresent=[bool]$mcpBinding.registrationEpochPresent }
 $turnRuntimePath = Join-Path $Root 'runtime\turn_runtime.py'
 $turnRuntimeEntryAvailable = Test-Path -LiteralPath $turnRuntimePath -PathType Leaf
 Add-Check 'H7 Turn Runtime entry' $turnRuntimePath
@@ -278,7 +312,7 @@ if ($Json) {
     }
   }
   $adapterState = if (-not $codexHostPresent) { 'not_installed' } elseif ($adapterAvailable) { 'ready' } else { 'withheld' }
-  [pscustomobject]@{ ok=$ok; strictOk=$ok; coreAvailable=$axes.coreAvailable; adapterAvailable=$adapterAvailable; adapterState=$adapterState; entryAdapterRequired=$codexHostPresent; includeZCode=$IncludeZCode; adapterCheckCount=@($adapterChecks).Count; adapterFailureCount=@($requiredAdapterFailures).Count; adapterChecks=$adapterChecks; optionalAdapterFailures=@($optionalAdapterFailures | ForEach-Object { [string]$_.name }); fullBrainActive=$axes.activation.fullBrainActive; activation=$axes.activation; turnRuntime=$axes.turnRuntime; retiredTransportGuard=$axes.retiredTransportGuard; mcpBinding=$mcpBinding; packageRoot=$Root; memoryRoot=$MemoryRoot; hookPath=''; isolationMode=$isolationMode; checks=$checks; hookChecks=$hookChecks; runtimeChecks=$runtimeChecks; configChecks=$configChecks } | ConvertTo-Json -Depth 8
+  [pscustomobject]@{ ok=$ok; strictOk=$ok; coreAvailable=$axes.coreAvailable; adapterAvailable=$adapterAvailable; adapterState=$adapterState; entryAdapterRequired=$codexHostPresent; includeZCode=$IncludeZCode; adapterCheckCount=@($adapterChecks).Count; adapterFailureCount=@($requiredAdapterFailures).Count; adapterChecks=$adapterChecks; optionalAdapterFailures=@($optionalAdapterFailures | ForEach-Object { [string]$_.name }); fullBrainActive=$axes.activation.fullBrainActive; activation=$axes.activation; turnRuntime=$axes.turnRuntime; retiredTransportGuard=$axes.retiredTransportGuard; mcpBinding=$mcpBinding; mcpExecutionReady=$false; mcpExecutionState='runtime_probe_required'; mcpExecutionProbe='Call registered brain_status and require runtimeIdentity.state=current plus liveMcpHandshake.state=current.'; packageRoot=$Root; memoryRoot=$MemoryRoot; hookPath=''; isolationMode=$isolationMode; checks=$checks; hookChecks=$hookChecks; runtimeChecks=$runtimeChecks; configChecks=$configChecks } | ConvertTo-Json -Depth 8
 } else {
   foreach ($check in $checks) { if ($check.ok) { Write-Host "OK $($check.name) - $($check.path)" } else { Write-Host "MISSING $($check.name) - $($check.path) actual=$($check.actual) expected=$($check.expected)" } }
   foreach ($check in $adapterChecks) {

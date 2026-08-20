@@ -128,6 +128,15 @@ Describe 'Verify-package worker receipt protocol' {
     Assert-TestVerifyPackageJsonExitAgreement $decision
   }
 
+  It 'keeps ISO timestamp strings stable across PowerShell JSON readers' {
+    $path = Join-Path $TestDrive 'cross-version-receipt.json'
+    $written = New-TestVerifyPackageReceipt $path 'vpr-cross-version-12345678' $true
+    $parsed = ConvertFrom-VerifyPackageJson (Get-Content -LiteralPath $path -Raw -Encoding UTF8)
+    $parsed.checkedAt.GetType().FullName | Should Be 'System.String'
+    (Get-VerifyPackageResultHash $parsed) | Should Be ([string]$written.statusHash)
+    (Test-VerifyPackageResultReceipt $path 'vpr-cross-version-12345678').ok | Should Be $true
+  }
+
   It 'keeps the public verifier wired to the receipt protocol boundary' {
     $source = Get-Content -LiteralPath (Join-Path $root 'scripts\verify-package.ps1') -Raw -Encoding UTF8
     foreach ($marker in @('internal\verify-package-receipt.ps1','Clear-VerifyPackageResultReceipt','Test-VerifyPackageResultReceipt','Resolve-VerifyPackageWorkerOutcome','Get-VerifyPackagePublicResult')) {
