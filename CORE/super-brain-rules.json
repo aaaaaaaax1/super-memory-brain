@@ -1,9 +1,9 @@
 {
   "schema": "super-brain.core-rule-registry.v1",
-  "registryVersion": 66,
+  "registryVersion": 67,
   "packageVersion": "0.6.0",
   "hashAlgorithm": "sha256(canonical-json-without-payloadHash)",
-  "payloadHash": "6cafa1c2a1f454e1914f9037506d0521eda6d41c0bd99b84ec1204b3608adde3",
+  "payloadHash": "1adf9977a806be4ca24659a49591ea675c2ef8e364863f80c8093bb9f2bd3e86",
   "rules": [
     {
       "ruleId": "SB-PROJECT-GROUNDED-DESIGN-001",
@@ -416,7 +416,7 @@
     },
     {
       "ruleId": "SB-CONTROL-PLANE-MAINTAINABILITY-001",
-      "revision": 12,
+      "revision": 13,
       "priority": 119,
       "scope": "runtime",
       "trigger": [
@@ -427,7 +427,7 @@
         "cleanup",
         "super_brain_defect"
       ],
-      "effect": "preserve_one_small_single_authoritative_local_only_continuation_control_plane_with_one_unique_cwd_super_brain_local_session_contract_progress_receipt_and_live_project_proof_path_one_ordinary_no_task_path_one_drift_repair_path_and_one_state_card_selector_limited_to_verified_parent_return_permanently_remove_host_locator_readback_metadata_retry_and_bridge_routes_remove_dead_conflicting_duplicate_or_cache_lease_routes_avoid_extra_mcp_processes_and_persistent_identity_cache_writes_preserve_required_contracts_and_require_each_retained_branch_to_have_one_named_invariant_and_one_regression",
+      "effect": "preserve_one_small_single_authoritative_local_only_continuation_control_plane_with_one_unique_cwd_super_brain_local_session_contract_progress_receipt_and_live_project_proof_path_one_ordinary_no_task_path_one_drift_repair_path_and_one_state_card_selector_limited_to_verified_parent_return_permanently_remove_host_locator_readback_metadata_retry_and_bridge_routes_remove_dead_conflicting_duplicate_or_cache_lease_routes_avoid_extra_mcp_processes_and_persistent_identity_cache_writes_isolate_recent_memory_to_the_verified_current_session_reject_stale_or_delivery_pending_mcp_projections_and_keep_process_lifecycle_diagnostics_read_only_report_only_preserve_required_contracts_and_require_each_retained_branch_to_have_one_named_invariant_and_one_regression",
       "enforcement": "runtime",
       "entrypoint": "runtime/turn_runtime.py",
       "acceptanceTests": [
@@ -455,7 +455,10 @@
         "no_architectural_sprawl_replay",
         "no_internal_lease_or_duplicate_route_replay",
         "host_transport_code_path_absence_replay",
-        "host_bridge_manifest_absence_replay"
+        "host_bridge_manifest_absence_replay",
+        "session_scoped_recent_replay",
+        "mcp_snapshot_freshness_and_delivery_gate_replay",
+        "mcp_process_audit_report_only_replay"
       ],
       "status": "active",
       "supersedes": []

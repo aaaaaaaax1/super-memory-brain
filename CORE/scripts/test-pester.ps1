@@ -21,7 +21,7 @@ $testRoot = Join-Path $Root 'tests\powershell'
 function Get-SuperBrainPesterTierFiles([string]$RequestedTier) {
   $tierMap = [ordered]@{
     Fast = @(
-      'Ci.Tests.ps1','Common.Tests.ps1','Manifest.Tests.ps1','RouteRegression.Tests.ps1',
+      'Ci.Tests.ps1','Common.Tests.ps1','Manifest.Tests.ps1','McpProcessAudit.Tests.ps1','RouteRegression.Tests.ps1',
       'TestPesterTiers.Tests.ps1','VersionBumpPrivacy.Tests.ps1','PackageVersionRebind.Tests.ps1'
     )
     Core = @(

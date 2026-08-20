@@ -541,7 +541,10 @@ def _run_mcp_bridge(core: BrainCore, workspace_root: Path | None) -> object:
         limit = arguments.get("limit", 5)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 20:
             return _mcp_bridge_failure("H7_MCP_CLI_BRIDGE_ARGUMENTS_INVALID")
-        return core.recent(limit)
+        # The stale-MCP bridge is always a scoped runtime path.  Passing an
+        # empty local session deliberately yields [] rather than reviving the
+        # ordinary unscoped CLI compatibility behaviour.
+        return core.recent(limit, session_key=core._context_session_key())
     return _mcp_bridge_failure("H7_MCP_CLI_BRIDGE_TOOL_UNSUPPORTED")
 
 

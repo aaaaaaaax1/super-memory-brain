@@ -3238,7 +3238,23 @@ class BrainCore:
 
         return candidate
 
-    def _recent_sandglass_rows(self, limit: int) -> list[tuple[int, str, str, str, str, str, str]]:
+    def _recent_sandglass_rows(
+        self,
+        limit: int,
+        *,
+        session_keys: set[str] | None = None,
+        include_legacy: bool = False,
+    ) -> list[tuple[int, str, str, str, str, str, str]]:
+        """Read a bounded recent tail, optionally restricted to provenance.
+
+        The unscoped path intentionally keeps its historical behaviour for the
+        ordinary CLI helper.  A scoped caller supplies the normalized session
+        provenance keys and receives only records that carry a matching
+        session marker; legacy unscoped lines are excluded unless explicitly
+        opted in by an internal caller.  Filtering while scanning (rather than
+        filtering only the last ``limit`` physical lines) is important when
+        several conversations append to the same shared sandglass.
+        """
         path = self.memory_root / "sandglass.txt"
         if not path.is_file():
             return []
@@ -3246,6 +3262,15 @@ class BrainCore:
         try:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
                 for line_number, line in enumerate(handle, 1):
+                    if session_keys is not None:
+                        record = _parse_sandglass_record_details(line)
+                        if record is None:
+                            continue
+                        if record.session_key:
+                            if record.session_key.lower() not in session_keys:
+                                continue
+                        elif not include_legacy:
+                            continue
                     tail.append((line_number, line))
         except (OSError, UnicodeError):
             return []
@@ -3785,13 +3810,53 @@ class BrainCore:
             "transport": "mcp-stdio-or-cli",
         }
 
-    def recent(self, limit: int = 5) -> list[dict[str, Any]]:
+    @classmethod
+    def _session_provenance_keys(cls, session_key: str) -> set[str]:
+        """Return compatible provenance forms for one local session.
+
+        Older writers persisted the first 16 hex characters of the session
+        hash, while the current runtime carries a ``sid-`` key.  Accept both
+        forms, plus the hash of an already-normalized key, without accepting a
+        missing session as a wildcard.
+        """
+
+        raw = str(session_key or "").strip().lower()
+        if not raw:
+            return set()
+        normalized = cls._session_key_from_value(raw).lower()
+        keys = {normalized}
+        if normalized.startswith("sid-"):
+            keys.add(normalized[4:20])
+        if re.fullmatch(r"[0-9a-f]{16,64}", raw):
+            keys.add(raw)
+        keys.add(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16])
+        keys.add(hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16])
+        return {item for item in keys if item}
+
+    def recent(self, limit: int = 5, *, session_key: str | None = None) -> list[dict[str, Any]]:
+        """Return recent memory, fail-closed when a scoped session is absent.
+
+        ``session_key=None`` preserves the ordinary CLI's legacy unscoped
+        read.  Runtime/MCP callers must pass the current local session (or an
+        explicit empty string); an empty scoped value returns no records and
+        can never fall back to another conversation's tail.
+        """
+
         limit = min(max(1, int(limit)), 20)
-        rows = self._recent_sandglass_rows(limit)
+        if session_key is None:
+            rows = self._recent_sandglass_rows(limit)
+        else:
+            requested = str(session_key or "").strip()
+            if not requested:
+                return []
+            rows = self._recent_sandglass_rows(
+                limit,
+                session_keys=self._session_provenance_keys(requested),
+            )
         return [
-            {"line": int(row[0]), "timestamp": str(row[1]), "text": _compact(str(row[2]), 320)}
+            {"line": int(row[0]), "timestamp": str(row[1]), "text": _compact(str(row[3]), 320)}
             for row in rows or []
-            if len(row) >= 3 and not _looks_corrupt(str(row[2]))
+            if len(row) >= 4 and not _looks_corrupt(str(row[3]))
         ]
 
     def health(self) -> dict[str, Any]:

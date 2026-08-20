@@ -401,6 +401,7 @@
                     "task-link-store.ps1",
                     "install-runtime.ps1",
                     "runtime-eval.ps1",
+                    "mcp-process-audit.ps1",
                     "runtime-status.ps1"
                 ],
     "scriptGroups":  {
@@ -425,6 +426,7 @@
                                       "extension-capability-map.ps1",
                                       "extension-ingest.ps1",
                                       "autonomous-executor.ps1",
+                                      "mcp-process-audit.ps1",
                                       "runtime-status.ps1"
                                   ],
                          "startup":  [
@@ -2330,6 +2332,15 @@
 
                                                      ],
                                "notes":  "Reports local runtime health and the registered narrow MCP without changing configuration."
+                           },
+                           {
+                               "path":  "mcp-process-audit.ps1",
+                               "tier":  "T0",
+                               "manualOnly":  false,
+                               "dangerousSwitches":  [
+
+                                                     ],
+                               "notes":  "Read-only process audit for package-owned MCP instances; reports PID, parent, start time, memory, scope, and conservative possible-orphan signals without changing configuration or terminating processes."
                            }
                        ],
     "memoryShortcut":  "memory:auto；G1 governs, ORC routes, Sandglass Hybrid Recall only on semantic/keyword recall; stable state only; private memory requires confirmation and [PRIVACY].",

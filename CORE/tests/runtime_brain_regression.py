@@ -2434,6 +2434,59 @@ def test_scoped_session_provenance_preserves_assistant_role_and_isolates_session
         assert results[0]["evidenceCard"]["provenanceScope"] == "scoped"
 
 
+def test_brain_recent_isolated_to_current_session_and_fail_closed_without_one() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-recent-session-") as directory:
+        memory_root = Path(directory) / "shared"
+        memory_root.mkdir(parents=True)
+        local_session = "session-local"
+        foreign_session = "session-foreign"
+        local_sender = provenance_sender(
+            "assistant",
+            sessionKey=BrainCore._scope_hash(local_session),
+        )
+        foreign_sender = provenance_sender(
+            "assistant",
+            sessionKey=BrainCore._scope_hash(foreign_session),
+        )
+        (memory_root / "sandglass.txt").write_text(
+            "\n".join(
+                [
+                    "2026-07-20 09:00:00 | user | legacy tail must stay hidden",
+                    f"2026-07-20 09:01:00 | {local_sender} | [SESSION][VERIFIED] local recent marker",
+                    f"2026-07-20 09:02:00 | {foreign_sender} | [SESSION][VERIFIED] foreign recent marker",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        original_session = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = local_session
+        try:
+            core = BrainCore(ROOT, memory_root)
+            scoped = core.recent(5, session_key=core._context_session_key())
+            assert [item["text"] for item in scoped] == ["[SESSION][VERIFIED] local recent marker"]
+
+            mcp_result = handle_tool(core, "brain_recent", {})
+            mcp_payload = json.loads(mcp_result["content"][0]["text"])
+            assert [item["text"] for item in mcp_payload] == ["[SESSION][VERIFIED] local recent marker"]
+
+            # The MCP path must never turn a missing local identity into a
+            # global tail read, even when the shared file has foreign records.
+            os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+            assert core.recent(5, session_key=core._context_session_key()) == []
+
+            # Ordinary CLI compatibility remains available only when the
+            # caller intentionally omits the scope argument altogether.
+            unscoped = core.recent(5)
+            assert len(unscoped) == 3
+        finally:
+            if original_session is None:
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+            else:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = original_session
+
+
 def test_missing_self_model_snapshot_is_explicitly_unknown() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-self-model-missing-") as directory:
         core = make_core(Path(directory))

@@ -36,6 +36,7 @@ Describe 'Super Memory Brain package manifest' {
     @($manifest.scripts) -contains 'internal\install-transaction.ps1' | Should Be $true
     @($manifest.scripts) -contains 'install-runtime.ps1' | Should Be $true
     @($manifest.scripts) -contains 'runtime-eval.ps1' | Should Be $true
+    @($manifest.scripts) -contains 'mcp-process-audit.ps1' | Should Be $true
     @($manifest.scripts) -contains 'runtime-status.ps1' | Should Be $true
     @($manifest.scripts) -contains 'absorbed-capability-route.ps1' | Should Be $true
     @($manifest.modules) -contains 'skill-pool-router' | Should Be $true
@@ -60,6 +61,7 @@ Describe 'Super Memory Brain package manifest' {
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'internal\install-transaction.ps1' }).tier | Should Be 'T2'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'install-runtime.ps1' }).tier | Should Be 'T2'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'runtime-eval.ps1' }).tier | Should Be 'T0'
+    ($manifest.scriptMetadata | Where-Object { $_.path -eq 'mcp-process-audit.ps1' }).tier | Should Be 'T0'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'runtime-status.ps1' }).tier | Should Be 'T0'
     ($manifest.scriptMetadata | Where-Object { $_.path -eq 'absorbed-capability-route.ps1' }).tier | Should Be 'T0'
     @($manifest.scriptGroups.startup) -contains 'retire-codex-super-brain-hooks.ps1' | Should Be $true

@@ -681,11 +681,15 @@ def _run_current_cli_bridge(
         return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_OPERATION_UNSAFE"), True)
     bridge_workspace_root: Path | None = None
     local_session_key = ""
+    if name in {"brain_turn", "brain_recent"}:
+        # Pass only the already-normalized local session to a fresh CLI.  An
+        # absent session is intentionally propagated as empty so brain_recent
+        # fails closed instead of reading another conversation's tail.
+        local_session_key = core._context_session_key()
     if name == "brain_turn":
         bridge_workspace_root = _mcp_cli_bridge_workspace_root(core)
         if bridge_workspace_root is None:
             return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_LOCAL_SCOPE_REQUIRED"), True)
-        local_session_key = core._context_session_key()
         if not local_session_key:
             return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_LOCAL_SESSION_REQUIRED"), True)
     cli_path = core.package_root / "runtime" / "brain_cli.py"
@@ -850,7 +854,12 @@ def handle_tool(
         )
         return tool_result(status)
     if name == "brain_recent":
-        return tool_result(core.recent(int(arguments.get("limit", 5))))
+        return tool_result(
+            core.recent(
+                int(arguments.get("limit", 5)),
+                session_key=core._context_session_key(),
+            )
+        )
     return tool_result({"error": f"unknown tool: {name}"}, True)
 
 

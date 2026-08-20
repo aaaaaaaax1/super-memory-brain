@@ -92,7 +92,7 @@ def assert_current_rule_contract(current: dict[str, object], source: dict[str, o
         "SB-DEFECT-ROOT-REPAIR-001": (7, "current_local_cwd_session_contract", "never_use_host_tail"),
         "SB-LATEST-STATE-001": (34, "current_local_cwd_super_brain_local_session", "host_transport_retired"),
         "SB-VISIBLE-PROGRESS-ANCHOR-001": (30, "retire_host_visible_context_tail", "h7_host_transport_retired"),
-        "SB-CONTROL-PLANE-MAINTAINABILITY-001": (12, "local_only_continuation_control_plane", "permanently_remove_host"),
+        "SB-CONTROL-PLANE-MAINTAINABILITY-001": (13, "local_only_continuation_control_plane", "permanently_remove_host"),
         "SB-PROGRESS-TRUTH-001": (18, "current_local_cwd_super_brain_local_session", "reject_every_host_locator"),
         "SB-STAGE-VERIFY-001": (6, "local_progress_hash", "host_readback"),
         "SB-EFFICIENT-DELIVERY-001": (7, "local_only_hot_path", "reject_legacy_host_inputs_before_decode"),

@@ -1126,6 +1126,52 @@ def test_mcp_rejects_future_control_snapshot(root: Path) -> None:
     assert read_mcp_snapshot(snapshot_path, now=datetime(2026, 8, 3, 12, tzinfo=UTC))["code"] == "BRAIN_CONTROL_MCP_SNAPSHOT_FUTURE"
 
 
+def test_mcp_snapshot_withholds_stale_or_pending_delivery(root: Path) -> None:
+    state_root = root / "mcp-snapshot-freshness"
+    control = BrainControl(state_root)
+    control.apply(card_command("note", "mcp-freshness-note", "mcp-freshness-note", 0, card_payload("note")))
+    materialized = control.materialize_outbox()
+    snapshot_path = Path(materialized["mcpSnapshot"]["path"])
+
+    def rewrite_snapshot(mutator) -> None:
+        value = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        body = {key: nested for key, nested in value.items() if key != "payloadHash"}
+        mutator(body)
+        snapshot = {
+            **body,
+            "payloadHash": hashlib.sha256(
+                json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        }
+        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    rewrite_snapshot(
+        lambda body: body.update(
+            {
+                "generatedAt": (datetime.now(UTC) - timedelta(days=2)).isoformat().replace("+00:00", "Z"),
+            }
+        )
+    )
+    stale = read_mcp_snapshot(snapshot_path)
+    assert not stale["ok"] and not stale["available"]
+    assert stale["status"] == "withheld" and stale["code"] == "BRAIN_CONTROL_MCP_SNAPSHOT_STALE", stale
+
+    # Restore a current timestamp, then emulate a publisher that exposed a
+    # non-watermarked snapshot while a durable delivery is still pending.
+    rewrite_snapshot(
+        lambda body: body.update(
+            {
+                "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "status": {**body["status"], "pendingDeliveryEvents": 1},
+                "deliveryWatermark": None,
+            }
+        )
+    )
+    pending = read_mcp_snapshot(snapshot_path)
+    assert not pending["ok"] and not pending["available"]
+    assert pending["status"] == "withheld" and pending["code"] == "BRAIN_CONTROL_MCP_SNAPSHOT_DELIVERY_PENDING", pending
+
+
 def test_mcp_snapshot_publishes_bounded_scope_bound_task_projection(root: Path) -> None:
     state_root = root / "mcp-task-projection"
     control = BrainControl(state_root)
@@ -3545,6 +3591,7 @@ def main() -> None:
         test_mcp_snapshot_publisher(root)
         test_mcp_reads_published_control_snapshot(root)
         test_mcp_rejects_future_control_snapshot(root)
+        test_mcp_snapshot_withholds_stale_or_pending_delivery(root)
         test_mcp_snapshot_publishes_bounded_scope_bound_task_projection(root)
         test_mcp_snapshot_accepts_allowed_h7_projection_as_display_only(root)
         test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(root)

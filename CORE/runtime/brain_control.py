@@ -51,6 +51,10 @@ CARD_REVISION_STATE_SCHEMA = "super-brain.card-revision-state.v1"
 ACTOR_RECEIPT_SCHEMA = "super-brain.actor-receipt.v1"
 MCP_SNAPSHOT_SCHEMA = "super-brain.mcp-snapshot.v1"
 MCP_SNAPSHOT_MAX_BYTES = 256 * 1024
+# An MCP snapshot is a read-only derived projection, not the durable source of
+# truth.  Keep its usable lifetime short enough that a disconnected worker
+# cannot silently present a day-old control-plane view as current.
+MCP_SNAPSHOT_MAX_AGE_SECONDS = 24 * 60 * 60
 MCP_TASK_REFERENCE_MAX_ITEMS = 64
 MCP_TASK_PROJECTION_MAX_ITEMS = 16
 MCP_CURRENT_TASK_LIFECYCLES = frozenset({"planned", "active", "paused", "blocked"})
@@ -933,7 +937,13 @@ def _normalize_mcp_task_projection(value: Any) -> dict[str, Any] | None:
 
 
 def read_mcp_snapshot(path: str | Path, *, now: datetime | None = None) -> dict[str, Any]:
-    """Read and validate a publisher-produced MCP snapshot without opening SQLite."""
+    """Read a current MCP snapshot without opening SQLite.
+
+    A non-zero pending count is safe only when the publisher included a
+    validated delivery watermark describing the exact event set being
+    materialized.  A snapshot that claims pending work without that proof is
+    withheld for every reader, including the publisher's own read-back.
+    """
 
     snapshot_path = Path(path)
     if not snapshot_path.is_file():
@@ -962,6 +972,16 @@ def read_mcp_snapshot(path: str | Path, *, now: datetime | None = None) -> dict[
         effective_now = now.astimezone(UTC)
     if generated_at > effective_now:
         return {"ok": False, "available": False, "code": "BRAIN_CONTROL_MCP_SNAPSHOT_FUTURE"}
+    age_seconds = (effective_now - generated_at).total_seconds()
+    if age_seconds > MCP_SNAPSHOT_MAX_AGE_SECONDS:
+        return {
+            "ok": False,
+            "available": False,
+            "status": "withheld",
+            "generatedAt": value.get("generatedAt", ""),
+            "ageSeconds": int(age_seconds),
+            "code": "BRAIN_CONTROL_MCP_SNAPSHOT_STALE",
+        }
     status = value.get("status")
     refs = value.get("taskProjectionRefs", [])
     task_projections = value.get("taskProjections", [])
@@ -974,7 +994,15 @@ def read_mcp_snapshot(path: str | Path, *, now: datetime | None = None) -> dict[
     ):
         return {"ok": False, "available": False, "code": "BRAIN_CONTROL_MCP_SNAPSHOT_INVALID"}
     required_status_counts = {
-        "schemaVersion", "cards", "events", "pendingOutbox", "intentAggregates", "intentReceipts", "taskAggregates", "taskRevisions"
+        "schemaVersion",
+        "cards",
+        "events",
+        "pendingOutbox",
+        "pendingDeliveryEvents",
+        "intentAggregates",
+        "intentReceipts",
+        "taskAggregates",
+        "taskRevisions",
     }
     if not required_status_counts.issubset(status) or any(
         isinstance(status[name], bool) or not isinstance(status[name], int) or status[name] < 0
@@ -1024,6 +1052,19 @@ def read_mcp_snapshot(path: str | Path, *, now: datetime | None = None) -> dict[
         ):
             return {"ok": False, "available": False, "code": "BRAIN_CONTROL_MCP_SNAPSHOT_INVALID"}
         delivery_watermark = {"eventCount": event_count, "eventSetHash": event_set_hash}
+    pending_delivery_events = int(status["pendingDeliveryEvents"])
+    # A pending count without a watermark has no proof that the projection is
+    # tied to the exact durable event set being delivered.  Fail closed rather
+    # than expose a partially refreshed control-plane view.
+    if pending_delivery_events > 0 and delivery_watermark is None:
+        return {
+            "ok": False,
+            "available": False,
+            "status": "withheld",
+            "generatedAt": value.get("generatedAt", ""),
+            "pendingDeliveryEvents": pending_delivery_events,
+            "code": "BRAIN_CONTROL_MCP_SNAPSHOT_DELIVERY_PENDING",
+        }
     return {
         "ok": True,
         "available": True,
@@ -1035,6 +1076,7 @@ def read_mcp_snapshot(path: str | Path, *, now: datetime | None = None) -> dict[
         "taskProjections": normalized_task_projections,
         "taskProjectionOverflow": task_projection_overflow,
         "deliveryWatermark": delivery_watermark,
+        "pendingDeliveryEvents": pending_delivery_events,
     }
 
 
@@ -1052,11 +1094,16 @@ def read_mcp_task_projection(
         return {"ok": False, "available": False, "status": "invalid_scope", "code": "BRAIN_CONTROL_MCP_TASK_SCOPE_INVALID"}
     snapshot = read_mcp_snapshot(path, now=now)
     if not snapshot.get("ok") or not snapshot.get("available"):
+        snapshot_code = str(snapshot.get("code", "BRAIN_CONTROL_MCP_SNAPSHOT_INVALID"))
+        withheld_codes = {
+            "BRAIN_CONTROL_MCP_SNAPSHOT_STALE",
+            "BRAIN_CONTROL_MCP_SNAPSHOT_DELIVERY_PENDING",
+        }
         return {
             "ok": bool(snapshot.get("ok")),
             "available": False,
-            "status": "unavailable",
-            "code": str(snapshot.get("code", "BRAIN_CONTROL_MCP_SNAPSHOT_INVALID")),
+            "status": "withheld" if snapshot_code in withheld_codes else "unavailable",
+            "code": snapshot_code,
         }
     if snapshot.get("taskProjectionOverflow") is True:
         return {"ok": True, "available": False, "status": "overflow", "code": "BRAIN_CONTROL_MCP_TASK_PROJECTION_OVERFLOW"}
