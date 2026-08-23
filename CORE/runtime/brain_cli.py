@@ -275,6 +275,23 @@ def _ensure_core_activation(
     return receipt
 
 
+def _explicit_scope_matches_local(core: BrainCore, workspace_key: str, session_key: str) -> bool:
+    """Treat CLI scope flags as assertions, never as foreign-scope selectors."""
+
+    supplied_workspace = str(workspace_key or "").strip().lower()
+    supplied_session = str(session_key or "").strip().lower()
+    if not supplied_workspace and not supplied_session:
+        return True
+    current_workspace = str(core._context_workspace_key()).strip().lower()
+    current_session = str(core._context_session_key()).lower()
+    if not supplied_workspace or not supplied_session or supplied_workspace != current_workspace:
+        return False
+    # An explicit scope is a local assertion, never a session selector.  A
+    # missing process session therefore cannot authorize any explicit session,
+    # even when the workspace key matches.
+    return bool(current_session) and supplied_session == current_session
+
+
 def _mcp_bridge_failure(code: str) -> dict[str, object]:
     """Return a bounded, non-durable bridge failure without echoing input."""
 
@@ -551,6 +568,7 @@ def _run_mcp_bridge(core: BrainCore, workspace_root: Path | None) -> object:
 def main() -> int:
     args = build_parser().parse_args()
     workspace_root: Path | None = None
+    original_cwd = Path.cwd().resolve()
     if args.workspace_root:
         candidate = Path(args.workspace_root).expanduser().resolve()
         if not candidate.is_dir():
@@ -559,6 +577,18 @@ def main() -> int:
                 "schema": "super-brain.turn-runtime.v1",
                 "available": False,
                 "code": "H7_WORKSPACE_ROOT_INVALID",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+            payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            sys.stdout.write(base64.b64encode(payload).decode("ascii") if args.base64 else payload.decode("utf-8"))
+            return 2
+        if args.command != "mcp-bridge" and candidate != original_cwd:
+            result = {
+                "ok": False,
+                "schema": "super-brain.turn-runtime.v1",
+                "available": False,
+                "code": "H7_WORKSPACE_ROOT_REBIND_REQUIRED",
                 "rawPromptStored": False,
                 "rawTranscriptStored": False,
             }
@@ -588,7 +618,7 @@ def main() -> int:
     activation = None
     # Status and health are observational.  They must never create an
     # activation receipt merely because a user asked to inspect the system.
-    if args.command not in {"activate", "turn-runtime", "mcp-bridge", "context", "status", "health"}:
+    if args.command not in {"activate", "turn-runtime", "mcp-bridge", "context", "status", "health", "turn-close"}:
         route = {
             "recall": "memory_recall",
             "recent": "memory_recall",
@@ -656,26 +686,55 @@ def main() -> int:
                 str(contract.get("taskInstanceId", "")),
             )
     elif args.command == "turn-close":
-        result = dispatch_turn_close(
-            core.package_root,
-            core.memory_base,
-            task_id=args.task_id,
-            workspace_key=args.workspace_key or core._context_workspace_key(),
-            session_key=args.session_key or core._context_session_key(),
-            turn_outcome=args.turn_outcome,
-            user_control=args.user_control,
-            completion_evidence_ref=args.completion_evidence_ref,
-            transition_id=args.transition_id,
-            timeout=args.timeout_seconds,
-        )
-        _ensure_core_activation(
-            core,
-            route="current_session_continue",
-            action_authorization="withheld",
-            task_id=args.task_id,
-            workspace_key=args.workspace_key,
-            session_key=args.session_key,
-        )
+        # Explicit CLI scope is a local assertion, never a selector for a
+        # foreign contract.  Check it before the dispatcher so Resolve,
+        # ResumeParent, and CloseTurn cannot mutate another scope before the
+        # CLI rejects the request.  Keep the post-dispatch check as a
+        # defensive race guard around the process-local scope binding.
+        explicit_scope = bool(args.workspace_key or args.session_key)
+        if explicit_scope and not _explicit_scope_matches_local(core, args.workspace_key, args.session_key):
+            result = {
+                "ok": False,
+                "schema": "super-brain.turn-close.v1",
+                "available": False,
+                "code": "H7_CLI_FOREIGN_SCOPE_FORBIDDEN",
+                "stateMutated": False,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        else:
+            result = dispatch_turn_close(
+                core.package_root,
+                core.memory_base,
+                task_id=args.task_id,
+                workspace_key=args.workspace_key or core._context_workspace_key(),
+                session_key=args.session_key or core._context_session_key(),
+                turn_outcome=args.turn_outcome,
+                user_control=args.user_control,
+                completion_evidence_ref=args.completion_evidence_ref,
+                transition_id=args.transition_id,
+                timeout=args.timeout_seconds,
+            )
+        # A dispatcher policy packet can be ``ok=true`` while withholding on
+        # a missing scope.  Never turn that observational response into an
+        # unscoped activation receipt; only a fully bound local workspace and
+        # session may refresh activation here.
+        local_workspace = core._context_workspace_key()
+        local_session = core._context_session_key()
+        if (
+            result.get("ok") is True
+            and local_workspace
+            and local_session
+            and _explicit_scope_matches_local(core, args.workspace_key, args.session_key)
+        ):
+            _ensure_core_activation(
+                core,
+                route="current_session_continue",
+                action_authorization="withheld",
+                task_id=args.task_id,
+                workspace_key=args.workspace_key,
+                session_key=args.session_key,
+            )
     elif args.command == "turn-runtime":
         result = _run_turn_runtime_command(core, args)
     elif args.command == "mcp-bridge":
@@ -683,18 +742,30 @@ def main() -> int:
     elif args.command == "status":
         result = core.status()
     elif args.command == "activate":
-        result = activate_brain(
-            args.package_root,
-            core.memory_base,
-            memory_root=core.memory_root,
-            workspace_key=args.workspace_key or core._context_workspace_key(),
-            session_key=args.session_key or core._context_session_key(),
-            task_id=args.task_id,
-            task_instance_id=args.task_instance_id,
-            route=args.route,
-            action_authorization=args.action_authorization,
-            require_scope=args.require_scope,
-        )
+        explicit_scope = bool(args.workspace_key or args.session_key)
+        effective_require_scope = bool(args.require_scope or explicit_scope)
+        if explicit_scope and not _explicit_scope_matches_local(core, args.workspace_key, args.session_key):
+            result = {
+                "ok": False,
+                "schema": "super-brain.activation-receipt.v1",
+                "available": False,
+                "code": "H7_CLI_FOREIGN_SCOPE_FORBIDDEN",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        else:
+            result = activate_brain(
+                args.package_root,
+                core.memory_base,
+                memory_root=core.memory_root,
+                workspace_key=args.workspace_key or core._context_workspace_key(),
+                session_key=args.session_key or core._context_session_key(),
+                task_id=args.task_id,
+                task_instance_id=args.task_instance_id,
+                route=args.route,
+                action_authorization=args.action_authorization,
+                require_scope=effective_require_scope,
+            )
     else:
         result = core.health()
     payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

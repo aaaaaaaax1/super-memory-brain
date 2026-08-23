@@ -32,6 +32,73 @@ try {
   }
 } catch {}
 
+# Route metadata is a bounded compatibility projection.  It describes which
+# local evidence tier a route may need; it never grants capability or action
+# authority.  The route map is the source of truth when its metadata is
+# present, while these conservative defaults keep older package maps/API
+# callers safe during an incremental refresh.
+$routeMapDocument = $null
+try {
+  $routeMapDocument = Get-Content -LiteralPath (Join-Path $Root 'route-map.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+} catch {}
+
+function New-DefaultRouteMetadata([string]$Route) {
+  $metadata = [ordered]@{
+    routeClass = 'direct'
+    activationTier = 'none'
+    requiresTaskPointer = $false
+    requiresProjectProof = $false
+    requiresCapabilityRoute = $false
+    userVisibleState = 'direct'
+  }
+  switch ($Route) {
+    'memory_recall' { $metadata.routeClass='memory'; $metadata.activationTier='memory_only'; $metadata.userVisibleState='memory' }
+    'privacy_memory_gate' { $metadata.routeClass='memory'; $metadata.activationTier='memory_only'; $metadata.userVisibleState='memory' }
+    'memory_write_candidate' { $metadata.routeClass='memory'; $metadata.activationTier='memory_only'; $metadata.requiresTaskPointer=$true; $metadata.userVisibleState='memory' }
+    'workflow_preference_recall' { $metadata.routeClass='memory'; $metadata.activationTier='memory_only'; $metadata.userVisibleState='memory' }
+    'bare_wake' { $metadata.routeClass='continuity'; $metadata.activationTier='continuity_light'; $metadata.userVisibleState='continuity' }
+    'current_session_continue' { $metadata.routeClass='continuity'; $metadata.activationTier='continuity_light'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.userVisibleState='continuity' }
+    'historical_recovery' { $metadata.routeClass='continuity'; $metadata.activationTier='continuity_light'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.userVisibleState='continuity' }
+    'current_task_status' { $metadata.routeClass='task'; $metadata.activationTier='task'; $metadata.requiresTaskPointer=$true; $metadata.userVisibleState='task' }
+    'browser_automation' { $metadata.routeClass='task'; $metadata.activationTier='task'; $metadata.requiresTaskPointer=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='task' }
+    'agent_bridge_channel' { $metadata.routeClass='task'; $metadata.activationTier='task'; $metadata.requiresTaskPointer=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='task' }
+    'orc_complex_routing' { $metadata.routeClass='task'; $metadata.activationTier='task'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='task' }
+    'collaborative_intent' { $metadata.routeClass='task'; $metadata.activationTier='task'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='task' }
+    'single_agent_subagent_workflow' { $metadata.routeClass='task'; $metadata.activationTier='task'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='task' }
+    'diagnostic' { $metadata.routeClass='diagnostic'; $metadata.activationTier='full_diagnostic'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='diagnostic' }
+    'fix_bug' { $metadata.routeClass='diagnostic'; $metadata.activationTier='full_diagnostic'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='diagnostic' }
+    'repository_readiness' { $metadata.routeClass='diagnostic'; $metadata.activationTier='full_diagnostic'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='diagnostic' }
+    'maintenance_hot_refresh' { $metadata.routeClass='diagnostic'; $metadata.activationTier='full_diagnostic'; $metadata.requiresTaskPointer=$true; $metadata.requiresProjectProof=$true; $metadata.requiresCapabilityRoute=$true; $metadata.userVisibleState='diagnostic' }
+    'system_status' { $metadata.routeClass='diagnostic'; $metadata.activationTier='full_diagnostic'; $metadata.userVisibleState='diagnostic' }
+  }
+  return [pscustomobject]$metadata
+}
+
+function Resolve-RouteMetadata([string]$Intent) {
+  $routeName = switch ($Intent) {
+    'general_task' { 'normal_chat'; break }
+    'continue' { 'current_session_continue'; break }
+    'status' { 'system_status'; break }
+    'add_or_optimize_feature' { 'collaborative_intent'; break }
+    'release' { 'maintenance_hot_refresh'; break }
+    default { $Intent; break }
+  }
+  $metadata = New-DefaultRouteMetadata $routeName
+  $routeEntry = $null
+  if ($routeMapDocument -and $routeMapDocument.PSObject.Properties['routes']) {
+    $routeEntry = @($routeMapDocument.routes | Where-Object { [string]$_.route -eq $routeName } | Select-Object -First 1)
+  }
+  if (@($routeEntry).Count -eq 1) {
+    foreach ($field in @('routeClass','activationTier','requiresTaskPointer','requiresProjectProof','requiresCapabilityRoute','userVisibleState')) {
+      if ($routeEntry[0].PSObject.Properties[$field]) {
+        if ($field -like 'requires*') { $metadata.$field = [bool]$routeEntry[0].$field }
+        else { $metadata.$field = [string]$routeEntry[0].$field }
+      }
+    }
+  }
+  return $metadata
+}
+
 function U([int[]]$Codes) {
   return -join ($Codes | ForEach-Object { [char]$_ })
 }
@@ -416,6 +483,8 @@ if ($isUserAgentQuestion -or $isAgentMeaningQuestion -or ($isAgentConceptQuestio
   $dispatchHints = @('logic_safety_required','verification_required')
 }
 
+$routeMetadata = Resolve-RouteMetadata $intent
+
 # Every non-trivial request receives one bounded automatic lookup of absorbed
 # Super Brain capabilities after its operation intent is known.  This is not a
 # user-facing skill menu: only high-confidence, compact cards are returned and
@@ -475,6 +544,12 @@ $result = [pscustomobject]@{
   input = $inputText
   workspace = $Workspace
   intent = $intent
+  routeClass = [string]$routeMetadata.routeClass
+  activationTier = [string]$routeMetadata.activationTier
+  requiresTaskPointer = [bool]$routeMetadata.requiresTaskPointer
+  requiresProjectProof = [bool]$routeMetadata.requiresProjectProof
+  requiresCapabilityRoute = [bool]$routeMetadata.requiresCapabilityRoute
+  userVisibleState = [string]$routeMetadata.userVisibleState
   confidence = $confidence
   recommendedAction = $recommendedAction
   dispatchHints = @($dispatchHints)

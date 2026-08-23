@@ -8,13 +8,17 @@ introducing a worker, a second state store, or prompt persistence.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
 import time
-from datetime import datetime, timezone
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +37,8 @@ from execution_assist import public_projection as public_execution_assist
 from execution_assist import project_knowledge_route_is_valid
 from execution_assist import receipt_is_valid as execution_assist_receipt_is_valid
 from execution_assist import resolve_execution_assist
+from failure_loop_guard import evaluate_failure_loop
+from failure_loop_guard import receipt_is_valid as failure_loop_receipt_is_valid
 from project_knowledge import public_projection as public_project_knowledge
 from project_knowledge import receipt_is_valid as project_knowledge_receipt_is_valid
 from project_knowledge import resolve_project_knowledge
@@ -54,6 +60,12 @@ RECEIPT_SCHEMA = "super-brain.turn-runtime-receipt.v1"
 TELEMETRY_SCHEMA = "super-brain.turn-runtime-telemetry.v1"
 MODE = "hookless_turn_runtime"
 MAX_TELEMETRY_EVENTS = 16
+MAX_FAILURE_LOOP_HISTORY = 256
+MAX_FAILURE_LOOP_RESERVATIONS = 32
+FAILURE_LOOP_LOCK_TIMEOUT_SECONDS = 2.0
+FAILURE_LOOP_RESERVATION_TTL_SECONDS = 120.0
+FAILURE_LOOP_RESERVATION_TIMEOUT_MULTIPLIER = 4.0
+FAILURE_LOOP_RESERVATION_GRACE_SECONDS = 30.0
 MAX_REFERENCE_CHARS = 240
 CAPABILITY_ROUTE_RECEIPT_SCHEMA = "super-brain.capability-route-receipt.v1"
 CAPABILITY_ROUTE_RECEIPT_FIELDS = {
@@ -108,7 +120,6 @@ ExecutionAssistBundle = tuple[dict[str, Any], dict[str, Any], dict[str, Any] | N
 NORMAL_CONTINUITY_INTENTS = {
     "task_status",
     "continuity",
-    "super_brain_issue_continuity",
     "user_correction",
 }
 
@@ -125,6 +136,51 @@ ACTION_AUTHORIZATION_REQUIRED_INTENTS = {"memory_write"}
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _utc_after(seconds: float) -> str:
+    try:
+        requested = max(0.0, float(seconds))
+        if not math.isfinite(requested):
+            requested = float("inf")
+        target = datetime.now(timezone.utc) + timedelta(seconds=requested)
+    except (TypeError, ValueError, OverflowError):
+        # A malformed or unbounded caller timeout must not crash the guarded
+        # side-effect path.  Saturate at the representable UTC ceiling; this
+        # keeps the reservation live until explicit reconciliation rather than
+        # accidentally expiring it early.
+        target = datetime.max.replace(tzinfo=timezone.utc)
+    return target.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    """Accept the compact UTC timestamps written by this runtime only."""
+
+    if not isinstance(value, str) or not value or not value.endswith("Z"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+
+
+def _reservation_ttl_for_timeout(value: Any = None) -> float:
+    """Keep a retry reservation live for the full bounded side-effect window."""
+
+    try:
+        requested = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return FAILURE_LOOP_RESERVATION_TTL_SECONDS
+    if not math.isfinite(requested) or requested <= 0:
+        return FAILURE_LOOP_RESERVATION_TTL_SECONDS
+    # A close may perform more than one authority transaction; retain the
+    # reservation across that bounded sequence plus a small scheduling margin.
+    return max(
+        FAILURE_LOOP_RESERVATION_TTL_SECONDS,
+        requested * FAILURE_LOOP_RESERVATION_TIMEOUT_MULTIPLIER
+        + FAILURE_LOOP_RESERVATION_GRACE_SECONDS,
+    )
 
 
 def _compact(value: Any, maximum: int = MAX_REFERENCE_CHARS) -> str:
@@ -624,11 +680,616 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             pass
 
 
+def _failure_loop_path(memory_base: Path, scope_ref: str) -> Path:
+    safe_scope = re.sub(r"[^A-Za-z0-9._-]+", "-", str(scope_ref or "")).strip("-") or "scope"
+    return memory_base / "workspace" / "runtime-state" / "turn-runtime" / "failure-loops" / f"{safe_scope}.json"
+
+
+def _scope_runtime_lock_path(memory_base: Path, scope_ref: str) -> Path:
+    safe_scope = re.sub(r"[^A-Za-z0-9._-]+", "-", str(scope_ref or "")).strip("-") or "scope"
+    return memory_base / "workspace" / "runtime-state" / "turn-runtime" / "locks" / f"{safe_scope}.lock"
+
+
+@contextmanager
+def _runtime_scope_lock(path: Path):
+    """Take one short cross-process lock for all scope-local journals."""
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        yield False
+        return
+
+    # The path is a persistent advisory-lock file, not an ownership marker.
+    # Releasing an O_EXCL/token lock by read-then-unlink has an unavoidable
+    # replacement race: an old owner can delete a repairer's new lock.  OS
+    # advisory locks instead belong to this open handle and are released on
+    # unlock/close (including process exit), so an orphaned path is harmless.
+    try:
+        handle = path.open("a+b")
+    except OSError:
+        yield False
+        return
+    try:
+        try:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                # ``msvcrt.locking`` needs a byte range on Windows.  The
+                # constant marker contains no owner or scope metadata.
+                handle.write(b"0")
+                handle.flush()
+        except OSError:
+            yield False
+            return
+
+        try:
+            if os.name == "nt":
+                import msvcrt
+            else:
+                import fcntl
+        except ImportError:
+            yield False
+            return
+
+        acquired = False
+        started = time.monotonic()
+        while time.monotonic() - started < FAILURE_LOOP_LOCK_TIMEOUT_SECONDS:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError as error:
+                # EACCES/EAGAIN are the cross-platform non-blocking-lock
+                # contention signals.  Other I/O failures cannot safely be
+                # retried as though another scope owner were merely slow.
+                if error.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                    break
+                time.sleep(0.01)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    # Closing the handle still releases the advisory lock.
+                    pass
+    finally:
+        handle.close()
+
+
+@contextmanager
+def _failure_loop_lock(path: Path):
+    """Compatibility wrapper for the failure-loop journal lock."""
+
+    # All scope-local journals share one lock so receipt, telemetry, and
+    # failure-loop read-modify-write operations cannot overwrite one another.
+    try:
+        memory_base = path.parents[4]
+    except IndexError:
+        memory_base = path.parent
+    scope_ref = path.stem
+    with _runtime_scope_lock(_scope_runtime_lock_path(memory_base, scope_ref)) as acquired:
+        yield acquired
+
+
+def _failure_loop_state_valid(value: Any, scope_ref: str) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    required = {
+        "schema",
+        "scopeRef",
+        "revision",
+        "history",
+        "reservations",
+        "updatedAt",
+        "rawPromptStored",
+        "rawTranscriptStored",
+        "payloadHash",
+    }
+    if set(value) != required:
+        return None
+    if value.get("schema") != "super-brain.turn-runtime-failure-loop.v1":
+        return None
+    if str(value.get("scopeRef", "")) != str(scope_ref):
+        return None
+    revision = value.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        return None
+    updated_at = value.get("updatedAt")
+    if _parse_utc_timestamp(updated_at) is None:
+        return None
+    history = value.get("history", [])
+    if not isinstance(history, list) or len(history) > MAX_FAILURE_LOOP_HISTORY:
+        return None
+    if any(not isinstance(item, dict) or not failure_loop_receipt_is_valid(item) for item in history):
+        return None
+    reservations = value.get("reservations", [])
+    if not isinstance(reservations, list) or len(reservations) > MAX_FAILURE_LOOP_RESERVATIONS:
+        return None
+    normalized_reservations: list[dict[str, Any]] = []
+    digest_names = (
+        "failureFingerprintDigest",
+        "evidenceFingerprintDigest",
+        "actionFingerprintDigest",
+        "phaseDigest",
+    )
+    for reservation in reservations:
+        if not isinstance(reservation, dict):
+            return None
+        legacy_required = {
+            "reservationId",
+            "failureFingerprintDigest",
+            "evidenceFingerprintDigest",
+            "actionFingerprintDigest",
+            "phaseDigest",
+            "contextDigest",
+            "userCorrection",
+            "guard",
+            "createdAt",
+        }
+        current_required = legacy_required | {"expiresAt"}
+        reservation_fields = set(reservation)
+        if reservation_fields != legacy_required and reservation_fields != current_required:
+            return None
+        reservation_id = str(reservation.get("reservationId", ""))
+        if not re.fullmatch(r"flr-[0-9a-f]{32}", reservation_id):
+            return None
+        if not isinstance(reservation.get("userCorrection"), bool):
+            return None
+        created_at = reservation.get("createdAt")
+        if _parse_utc_timestamp(created_at) is None:
+            return None
+        expires_at = reservation.get("expiresAt")
+        if expires_at is not None and _parse_utc_timestamp(expires_at) is None:
+            return None
+        if not all(
+            isinstance(reservation.get(field), str)
+            and re.fullmatch(r"[a-f0-9]{64}", str(reservation.get(field)))
+            for field in (*digest_names, "contextDigest")
+        ):
+            return None
+        guard = reservation.get("guard")
+        if not isinstance(guard, dict) or not failure_loop_receipt_is_valid(guard):
+            return None
+        if guard.get("state") != "retryable":
+            return None
+        if any(str(guard.get(field, "")) != str(reservation.get(field, "")) for field in (*digest_names, "contextDigest")):
+            return None
+        normalized_reservations.append(dict(reservation))
+    supplied_hash = value.get("payloadHash")
+    if value.get("rawPromptStored") is not False or value.get("rawTranscriptStored") is not False:
+        return None
+    if not isinstance(supplied_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", supplied_hash):
+        return None
+    body = {key: item for key, item in value.items() if key != "payloadHash"}
+    try:
+        if supplied_hash != canonical_hash(body):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return {
+        "schema": "super-brain.turn-runtime-failure-loop.v1",
+        "scopeRef": str(scope_ref),
+        "revision": revision,
+        "history": list(history),
+        "reservations": normalized_reservations,
+        "updatedAt": updated_at,
+        "rawPromptStored": value.get("rawPromptStored") is False,
+        "rawTranscriptStored": value.get("rawTranscriptStored") is False,
+        "payloadHash": supplied_hash,
+    }
+
+
+def _failure_loop_reservation_is_live(value: dict[str, Any]) -> bool:
+    created = _parse_utc_timestamp(value.get("createdAt"))
+    if created is None:
+        return False
+    now = datetime.now(timezone.utc)
+    age = (now - created).total_seconds()
+    # A future-dated reservation is not evidence of a live retry.  Treat it
+    # as stale so a tampered/clock-skewed journal cannot extend the retry
+    # window indefinitely; the caller will remove it under the scope lock.
+    if age < 0:
+        return False
+    if "expiresAt" in value:
+        expires = _parse_utc_timestamp(value.get("expiresAt"))
+        return expires is not None and now <= expires
+    return age <= FAILURE_LOOP_RESERVATION_TTL_SECONDS
+
+
+def _failure_loop_read_state(path: Path, scope_ref: str) -> dict[str, Any] | None:
+    raw = _read_json(path)
+    if raw is None:
+        return {} if not path.exists() else None
+    try:
+        return _failure_loop_state_valid(raw, scope_ref)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _failure_loop_write_state(
+    path: Path,
+    scope_ref: str,
+    state: dict[str, Any],
+    *,
+    expected_revision: int,
+    expected_payload_hash: str,
+) -> bool:
+    current = _failure_loop_read_state(path, scope_ref)
+    if current is None:
+        return False
+    actual_revision = int(current.get("revision", 0) or 0)
+    actual_hash = str(current.get("payloadHash", ""))
+    if actual_revision != expected_revision or actual_hash != expected_payload_hash:
+        return False
+    if len(state.get("history", [])) > MAX_FAILURE_LOOP_HISTORY:
+        return False
+    if len(state.get("reservations", [])) > MAX_FAILURE_LOOP_RESERVATIONS:
+        return False
+    body = {
+        "schema": "super-brain.turn-runtime-failure-loop.v1",
+        "scopeRef": str(scope_ref),
+        "revision": expected_revision + 1,
+        "history": list(state.get("history", [])),
+        "reservations": list(state.get("reservations", [])),
+        "updatedAt": _utc_now(),
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    body["payloadHash"] = canonical_hash(body)
+    try:
+        _atomic_json(path, body)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _reservation_record(reservation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "failureFingerprintDigest": str(reservation.get("failureFingerprintDigest", "")),
+        "evidenceFingerprintDigest": str(reservation.get("evidenceFingerprintDigest", "")),
+        "actionFingerprintDigest": str(reservation.get("actionFingerprintDigest", "")),
+        "phaseDigest": str(reservation.get("phaseDigest", "")),
+        "userCorrection": bool(reservation.get("userCorrection") is True),
+    }
+
+
+def _invalid_failure_loop_guard() -> dict[str, Any]:
+    """Return a valid, fused receipt for an unreadable guard state."""
+
+    body = {
+        "schema": "super-brain.failure-loop-guard.v1",
+        "state": "withheld",
+        "decision": "withhold",
+        "code": "H7_REPAIR_LOOP_GUARD_INVALID",
+        "retryAllowed": False,
+        "fused": True,
+        "contextChanged": False,
+        "resetApplied": False,
+        "occurrenceCount": 0,
+        "retryBudget": 1,
+        "retryBudgetRemaining": 0,
+        "failureFingerprintDigest": "",
+        "evidenceFingerprintDigest": "",
+        "actionFingerprintDigest": "",
+        "phaseDigest": "",
+        "contextDigest": "",
+        "nonAuthorizing": True,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    return {**body, "payloadHash": canonical_hash(body)}
+
+
+def _empty_failure_loop_state(scope_ref: str) -> dict[str, Any]:
+    body = {
+        "schema": "super-brain.turn-runtime-failure-loop.v1",
+        "scopeRef": str(scope_ref),
+        "revision": 0,
+        "history": [],
+        "reservations": [],
+        "updatedAt": _utc_now(),
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    return {**body, "payloadHash": canonical_hash(body)}
+
+
+def _failure_loop_guard_for_state(
+    state: dict[str, Any],
+    *,
+    failure_fingerprint: str,
+    evidence_fingerprint: str,
+    action_fingerprint: str,
+    phase: str,
+    user_correction: bool,
+) -> dict[str, Any]:
+    prior = list(state.get("history", []))
+    prior.extend(
+        reservation.get("guard")
+        for reservation in state.get("reservations", [])
+        if isinstance(reservation, dict) and isinstance(reservation.get("guard"), dict)
+    )
+    return evaluate_failure_loop(
+        failure_fingerprint,
+        prior,
+        evidence_fingerprint=evidence_fingerprint,
+        action_fingerprint=action_fingerprint,
+        phase=phase,
+        user_correction=user_correction,
+    )
+
+
+def _guard_reservation(
+    guard: dict[str, Any],
+    *,
+    reservation_id: str,
+    ttl_seconds: float = FAILURE_LOOP_RESERVATION_TTL_SECONDS,
+) -> dict[str, Any]:
+    return {
+        "reservationId": reservation_id,
+        "failureFingerprintDigest": str(guard.get("failureFingerprintDigest", "")),
+        "evidenceFingerprintDigest": str(guard.get("evidenceFingerprintDigest", "")),
+        "actionFingerprintDigest": str(guard.get("actionFingerprintDigest", "")),
+        "phaseDigest": str(guard.get("phaseDigest", "")),
+        "contextDigest": str(guard.get("contextDigest", "")),
+        "userCorrection": bool(guard.get("resetApplied") is True),
+        "guard": guard,
+        "createdAt": _utc_now(),
+        "expiresAt": _utc_after(ttl_seconds),
+    }
+
+
+def _reserve_failure_loop(
+    memory_base: Path,
+    scope_ref: str,
+    *,
+    failure_fingerprint: str,
+    evidence_fingerprint: str,
+    action_fingerprint: str,
+    phase: str,
+    user_correction: bool = False,
+    side_effect_timeout: float | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Reserve one retry slot before an external side effect is attempted."""
+
+    if not str(scope_ref).strip():
+        return "", _invalid_failure_loop_guard()
+    path = _failure_loop_path(memory_base, scope_ref)
+    with _failure_loop_lock(path) as acquired:
+        if not acquired:
+            return "", _invalid_failure_loop_guard()
+        state = _failure_loop_read_state(path, scope_ref)
+        if state is None:
+            return "", _invalid_failure_loop_guard()
+        reservations = [item for item in state.get("reservations", []) if _failure_loop_reservation_is_live(item)]
+        if len(reservations) != len(state.get("reservations", [])):
+            recovered = {**state, "reservations": reservations}
+            if not _failure_loop_write_state(
+                path,
+                scope_ref,
+                recovered,
+                expected_revision=int(state.get("revision", 0) or 0),
+                expected_payload_hash=str(state.get("payloadHash", "")),
+            ):
+                return "", _invalid_failure_loop_guard()
+            state = _failure_loop_read_state(path, scope_ref)
+            if state is None:
+                return "", _invalid_failure_loop_guard()
+        guard = _failure_loop_guard_for_state(
+            state,
+            failure_fingerprint=failure_fingerprint,
+            evidence_fingerprint=evidence_fingerprint,
+            action_fingerprint=action_fingerprint,
+            phase=phase,
+            user_correction=user_correction,
+        )
+        if not failure_loop_receipt_is_valid(guard):
+            return "", _invalid_failure_loop_guard()
+        if guard.get("retryAllowed") is not True:
+            return "", guard
+        reservation_id = "flr-" + uuid.uuid4().hex
+        reservation_ttl = _reservation_ttl_for_timeout(side_effect_timeout)
+        next_state = {
+            **state,
+            "reservations": list(state.get("reservations", [])) + [
+                _guard_reservation(
+                    guard,
+                    reservation_id=reservation_id,
+                    ttl_seconds=reservation_ttl,
+                )
+            ],
+        }
+        if not _failure_loop_write_state(
+            path,
+            scope_ref,
+            next_state,
+            expected_revision=int(state.get("revision", 0) or 0),
+            expected_payload_hash=str(state.get("payloadHash", "")),
+        ):
+            return "", _invalid_failure_loop_guard()
+        return reservation_id, guard
+
+
+def _finish_failure_loop_reservation(
+    memory_base: Path,
+    scope_ref: str,
+    reservation_id: str,
+    *,
+    commit: bool,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Commit a failed side effect or release a successful reservation."""
+
+    if not reservation_id:
+        return False, None
+    path = _failure_loop_path(memory_base, scope_ref)
+    with _failure_loop_lock(path) as acquired:
+        if not acquired:
+            return False, None
+        state = _failure_loop_read_state(path, scope_ref)
+        if state is None:
+            return False, None
+        reservations = list(state.get("reservations", []))
+        matching = [item for item in reservations if str(item.get("reservationId", "")) == reservation_id]
+        if len(matching) != 1:
+            return False, None
+        reservation = matching[0]
+        guard = reservation.get("guard") if isinstance(reservation.get("guard"), dict) else None
+        next_reservations = [item for item in reservations if str(item.get("reservationId", "")) != reservation_id]
+        next_history = list(state.get("history", []))
+        if commit and isinstance(guard, dict):
+            if len(next_history) >= MAX_FAILURE_LOOP_HISTORY:
+                return False, None
+            next_history.append(guard)
+        next_state = {**state, "history": next_history, "reservations": next_reservations}
+        written = _failure_loop_write_state(
+            path,
+            scope_ref,
+            next_state,
+            expected_revision=int(state.get("revision", 0) or 0),
+            expected_payload_hash=str(state.get("payloadHash", "")),
+        )
+        return written, guard if isinstance(guard, dict) else None
+
+
+def _record_failure_loop(
+    memory_base: Path,
+    scope_ref: str,
+    *,
+    failure_fingerprint: str,
+    evidence_fingerprint: str,
+    action_fingerprint: str,
+    phase: str,
+    user_correction: bool = False,
+) -> dict[str, Any]:
+    """Compatibility helper that reserves and immediately commits a failure."""
+
+    reservation_id, guard = _reserve_failure_loop(
+        memory_base,
+        scope_ref,
+        failure_fingerprint=failure_fingerprint,
+        evidence_fingerprint=evidence_fingerprint,
+        action_fingerprint=action_fingerprint,
+        phase=phase,
+        user_correction=user_correction,
+    )
+    if not reservation_id:
+        return guard
+    committed, committed_guard = _finish_failure_loop_reservation(
+        memory_base,
+        scope_ref,
+        reservation_id,
+        commit=True,
+    )
+    return committed_guard if committed and isinstance(committed_guard, dict) else _invalid_failure_loop_guard()
+
+
+def _apply_failure_loop_result(
+    result: dict[str, Any],
+    guard: dict[str, Any],
+    *,
+    original_code: str,
+) -> dict[str, Any]:
+    """Attach the guard and replace repeated failures with a fuse code."""
+
+    result["failureLoopGuard"] = guard
+    if guard.get("fused") is True:
+        result["code"] = "H7_REPAIR_LOOP_FUSE_OPEN"
+        result["operationState"] = "fused"
+        result["retrySafe"] = False
+        result["blockedFailureCode"] = original_code
+    return result
+
+
+def _reservation_release_failed_result(
+    phase: str,
+    context: dict[str, Any],
+    *,
+    operation: str,
+    checkpoint: dict[str, Any] | None = None,
+    dispatch: dict[str, Any] | None = None,
+    reservation_id: str = "",
+) -> dict[str, Any]:
+    """Withhold after an external success whose retry reservation was not cleared.
+
+    The authoritative side effect may already be committed.  Never flatten
+    that fact into an ordinary failure: callers must reconcile before retrying
+    rather than duplicate an idempotent-but-uncertain transition.
+    """
+
+    result = _withheld(phase, context, "H7_REPAIR_LOOP_RESERVATION_RELEASE_FAILED")
+    result["operationState"] = "partially_committed"
+    result["retrySafe"] = False
+    result["reconciliationRequired"] = True
+    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
+    scope_ref = str(scope.get("scopeRef", ""))
+    result["reservation"] = {
+        "state": "release_failed",
+        "operation": operation,
+        "scopeRef": scope_ref,
+        "reservationId": str(reservation_id or ""),
+    }
+    # Keep the recovery projection compact and non-authorizing.  It tells the
+    # caller exactly which scoped side effect must be re-read before retrying,
+    # without echoing checkpoint text or treating the local result as proof.
+    result["reconciliation"] = {
+        "state": "required",
+        "scopeRef": scope_ref,
+        "operation": operation,
+        "next": "read_current_contract_before_retry",
+        "retrySafe": False,
+    }
+    if isinstance(checkpoint, dict):
+        result["checkpoint"] = {
+            "code": str(checkpoint.get("code", "")),
+            "contractCode": str(checkpoint.get("contractCode", "")),
+            "stateMutated": bool(checkpoint.get("stateMutated") is True),
+        }
+        visible = checkpoint.get("visibleProgress") if isinstance(checkpoint.get("visibleProgress"), dict) else {}
+        result["reconciliation"].update(
+            {
+                "transitionId": str(checkpoint.get("transitionId", "")),
+                "stateMutated": bool(checkpoint.get("stateMutated") is True),
+                "visibleProgressPayloadHash": str(visible.get("payloadHash", "")),
+            }
+        )
+    if isinstance(dispatch, dict):
+        result["dispatch"] = {
+            "code": str(dispatch.get("code", "")),
+            "contractCode": str(dispatch.get("contractCode", "")),
+            "contractReason": str(dispatch.get("contractReason", "")),
+            "stateMutated": bool(dispatch.get("stateMutated") is True),
+        }
+        transition = dispatch.get("transition") if isinstance(dispatch.get("transition"), dict) else {}
+        result["reconciliation"].update(
+            {
+                "transitionId": str(dispatch.get("transitionId", "") or transition.get("transitionId", "")),
+                "stateMutated": bool(dispatch.get("stateMutated") is True),
+            }
+        )
+    return result
+
+
 def _scope_path(memory_base: Path, scope_ref: str, phase: str) -> Path:
+    if not re.fullmatch(r"[a-f0-9]{64}", str(scope_ref or "")):
+        raise ValueError("H7_RUNTIME_SCOPE_REF_INVALID")
+    if phase not in {"open", "close"}:
+        raise ValueError("H7_RUNTIME_PHASE_INVALID")
     return memory_base / "workspace" / "runtime-state" / "turn-runtime" / "receipts" / scope_ref / f"{phase}.json"
 
 
 def _telemetry_path(memory_base: Path, scope_ref: str) -> Path:
+    if not re.fullmatch(r"[a-f0-9]{64}", str(scope_ref or "")):
+        raise ValueError("H7_RUNTIME_SCOPE_REF_INVALID")
     return memory_base / "workspace" / "runtime-state" / "turn-runtime" / "telemetry" / f"{scope_ref}.json"
 
 
@@ -861,6 +1522,7 @@ def _activation(
     memory_mode: str,
     *,
     action_authorization: str = "withheld",
+    intent: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str, list[str]]:
     scope = context["scope"]
     typed_memory = context.get("typedMemory") if isinstance(context.get("typedMemory"), dict) else {}
@@ -869,6 +1531,17 @@ def _activation(
     continuation = contract.get("continuationReceipt") if isinstance(contract.get("continuationReceipt"), dict) else {}
     recovery = contract.get("recoveryCheckpoint") or contract.get("checkpoint")
     recovery = recovery if isinstance(recovery, dict) else {}
+    route = _activation_route_for_intent(intent)
+    if not route:
+        return {
+            "schema": "super-brain.activation-receipt.v1",
+            "activationState": "withheld",
+            "activationId": "",
+            "activationCode": "H7_TURN_INTENT_ROUTE_MISSING",
+            "actionAuthorization": "withheld",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }, "H7_TURN_INTENT_ROUTE_MISSING", refs
     receipt, code = ensure_current(
         core.package_root,
         core.memory_base,
@@ -877,7 +1550,7 @@ def _activation(
         session_key=str(scope.get("ownerSessionKey", "")),
         task_id=str(contract.get("taskId", "")),
         task_instance_id=str(contract.get("taskInstanceId", "")),
-        route="current_session_continue",
+        route=route,
         memory_mode=memory_mode,
         memory_snapshot_hash=str(typed_memory.get("snapshotPayloadHash", "")),
         memory_refs=refs,
@@ -896,6 +1569,13 @@ def _activation(
         require_scope=True,
     )
     return receipt, code, refs
+
+
+def _activation_route_for_intent(intent: dict[str, Any] | None) -> str:
+    """Read the route projection emitted by the canonical intent contract."""
+
+    route = str((intent or {}).get("activationRoute", "")).strip()
+    return route if re.fullmatch(r"[a-z][a-z0-9_]{2,63}", route) else ""
 
 
 def _bounded_contract_list(contract: dict[str, Any], field: str, *, limit: int = 8, maximum: int = 180) -> list[str]:
@@ -1085,21 +1765,43 @@ def _receipt_body(
 def _write_receipt(memory_base: Path, scope_ref: str, phase: str, body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     binding_hash = str(body.get("bindingHash", ""))
     path = _scope_path(memory_base, scope_ref, phase)
-    existing = _read_json(path)
-    if (
-        isinstance(existing, dict)
-        and existing.get("schema") == RECEIPT_SCHEMA
-        and existing.get("mode") == MODE
-        and existing.get("phase") == phase
-        and str(existing.get("bindingHash", "")) == binding_hash
-        and str(existing.get("receiptHash", "")) == canonical_hash({key: value for key, value in existing.items() if key != "receiptHash"})
-    ):
-        return existing, True
-    value = dict(body)
-    value["receiptId"] = f"tr-{phase}-{binding_hash[:24]}"
-    value["receiptHash"] = canonical_hash(value)
-    _atomic_json(path, value)
-    return value, False
+    with _runtime_scope_lock(_scope_runtime_lock_path(memory_base, scope_ref)) as acquired:
+        if not acquired:
+            return {"schema": RECEIPT_SCHEMA, "mode": MODE, "phase": phase, "scopeRef": scope_ref, "code": "H7_RUNTIME_SCOPE_LOCK_TIMEOUT"}, False
+        existing = _read_json(path)
+        path_exists = path.exists()
+        if path_exists and not isinstance(existing, dict):
+            return {"schema": RECEIPT_SCHEMA, "mode": MODE, "phase": phase, "scopeRef": scope_ref, "code": "H7_RUNTIME_RECEIPT_CORRUPT"}, False
+        existing_hash = ""
+        if isinstance(existing, dict):
+            existing_hash = canonical_hash({key: value for key, value in existing.items() if key != "receiptHash"})
+            if (
+                existing.get("schema") != RECEIPT_SCHEMA
+                or existing.get("mode") != MODE
+                or existing.get("phase") != phase
+                or not isinstance(existing.get("scope"), dict)
+                or str(existing.get("scope", {}).get("scopeRef", "")) != scope_ref
+                or not str(existing.get("receiptHash", ""))
+                or str(existing.get("receiptHash", "")) != existing_hash
+            ):
+                return {"schema": RECEIPT_SCHEMA, "mode": MODE, "phase": phase, "scopeRef": scope_ref, "code": "H7_RUNTIME_RECEIPT_CORRUPT"}, False
+        if (
+            isinstance(existing, dict)
+            and existing.get("schema") == RECEIPT_SCHEMA
+            and existing.get("mode") == MODE
+            and existing.get("phase") == phase
+            and str(existing.get("bindingHash", "")) == binding_hash
+            and str(existing.get("receiptHash", "")) == existing_hash
+        ):
+            return existing, True
+        value = dict(body)
+        value["receiptId"] = f"tr-{phase}-{binding_hash[:24]}"
+        value["receiptHash"] = canonical_hash(value)
+        try:
+            _atomic_json(path, value)
+        except (OSError, TypeError, ValueError):
+            return {"schema": RECEIPT_SCHEMA, "mode": MODE, "phase": phase, "scopeRef": scope_ref, "code": "H7_RUNTIME_STATE_WRITE_FAILED"}, False
+        return value, False
 
 
 def _record_telemetry(
@@ -1110,8 +1812,45 @@ def _record_telemetry(
     runtime_duration_ms: int | None = None,
 ) -> tuple[dict[str, Any], bool]:
     path = _telemetry_path(memory_base, scope_ref)
-    prior = _read_json(path) or {}
-    events = prior.get("events") if isinstance(prior.get("events"), list) else []
+    with _runtime_scope_lock(_scope_runtime_lock_path(memory_base, scope_ref)) as acquired:
+        if not acquired:
+            return {"schema": TELEMETRY_SCHEMA, "mode": MODE, "scopeRef": scope_ref, "code": "H7_RUNTIME_SCOPE_LOCK_TIMEOUT", "events": []}, False
+        return _record_telemetry_locked(memory_base, scope_ref, receipt, runtime_duration_ms=runtime_duration_ms)
+
+
+def _record_telemetry_locked(
+    memory_base: Path,
+    scope_ref: str,
+    receipt: dict[str, Any],
+    *,
+    runtime_duration_ms: int | None = None,
+) -> tuple[dict[str, Any], bool]:
+    path = _telemetry_path(memory_base, scope_ref)
+    prior_raw = _read_json(path)
+    path_exists = path.exists()
+    if path_exists and (not isinstance(prior_raw, dict) or not prior_raw):
+        return {"schema": TELEMETRY_SCHEMA, "mode": MODE, "scopeRef": scope_ref, "code": "H7_RUNTIME_TELEMETRY_CORRUPT", "events": []}, False
+    prior = prior_raw or {}
+    prior_hash = ""
+    if prior:
+        prior_hash = canonical_hash({key: item for key, item in prior.items() if key != "payloadHash"})
+        if (
+            prior.get("schema") != TELEMETRY_SCHEMA
+            or prior.get("mode") != MODE
+            or str(prior.get("scopeRef", "")) != scope_ref
+            or str(prior.get("payloadHash", "")) != prior_hash
+        ):
+            return {"schema": TELEMETRY_SCHEMA, "mode": MODE, "scopeRef": scope_ref, "code": "H7_RUNTIME_TELEMETRY_CORRUPT", "events": []}, False
+    events = prior.get("events") if isinstance(prior.get("events"), list) else None
+    if prior and (
+        events is None
+        or len(events) > MAX_TELEMETRY_EVENTS
+        or any(not isinstance(item, dict) for item in events)
+    ):
+        # Do not silently drop malformed history and append a fresh event:
+        # callers must repair the scope-local telemetry journal explicitly.
+        return {"schema": TELEMETRY_SCHEMA, "mode": MODE, "scopeRef": scope_ref, "code": "H7_RUNTIME_TELEMETRY_CORRUPT", "events": []}, False
+    events = events or []
     event = {
         "eventId": f"te-{str(receipt.get('receiptHash', ''))[:24]}",
         "at": str(receipt.get("issuedAt", "")),
@@ -1174,9 +1913,9 @@ def _record_telemetry(
                 "capabilityRouteCompatibilityOnly": compatibility.get("cannotSelectCapabilities") is True,
             }
         )
-    if events and isinstance(events[-1], dict) and events[-1].get("receiptHash") == event["receiptHash"]:
+    if any(isinstance(item, dict) and item.get("eventId") == event["eventId"] for item in events):
         return prior, True
-    next_events = [item for item in events if isinstance(item, dict)][-(MAX_TELEMETRY_EVENTS - 1) :] + [event]
+    next_events = events[-(MAX_TELEMETRY_EVENTS - 1) :] + [event]
     value: dict[str, Any] = {
         "schema": TELEMETRY_SCHEMA,
         "mode": MODE,
@@ -1191,7 +1930,10 @@ def _record_telemetry(
     # authority over continuation and execution.
     value["runObservability"] = summarize_run_observability(value, expected_scope_ref=scope_ref)
     value["payloadHash"] = canonical_hash({key: item for key, item in value.items() if key != "payloadHash"})
-    _atomic_json(path, value)
+    try:
+        _atomic_json(path, value)
+    except (OSError, TypeError, ValueError):
+        return {"schema": TELEMETRY_SCHEMA, "mode": MODE, "scopeRef": scope_ref, "code": "H7_RUNTIME_STATE_WRITE_FAILED", "events": []}, False
     return value, False
 
 
@@ -1597,6 +2339,100 @@ def _ordinary_no_task_open(
     return result
 
 
+def _lightweight_task_pointer_probe(core: BrainCore) -> dict[str, Any]:
+    """Read only the current local task pointer before a governed open.
+
+    Continuation and status routes need to distinguish a taskless turn from a
+    broken local scope, but they do not need the full core-rules, identity,
+    memory, project-proof, or capability pipeline to make that distinction.
+    The probe deliberately uses the runtime-owned current pointer and returns
+    opaque scope metadata only.
+    """
+
+    try:
+        workspace_key = str(core._current_workspace_key())
+        session_key = str(core._current_session_key())
+    except (AttributeError, OSError, RuntimeError):
+        return {"state": "unavailable", "code": "H7_LOCAL_TASK_POINTER_UNAVAILABLE"}
+    if not workspace_key:
+        return {"state": "unavailable", "code": "H7_WORKSPACE_UNAVAILABLE"}
+    if not session_key:
+        return {
+            "state": "unavailable",
+            "code": "H7_LOCAL_SESSION_MISSING",
+            "workspaceKey": workspace_key,
+        }
+    # A current-task pointer is a derived, non-authorizing hint, but a valid
+    # one is enough to avoid proving tasklessness here.  The caller performs
+    # the authoritative fresh contract read immediately afterwards through
+    # ``core.context``.  Checking this hint first therefore avoids parsing
+    # the hot index and contract twice on the common active-continuation path,
+    # without allowing a pointer to authorize a task or a transition.
+    try:
+        pointer = core._read_current_context_pointer(workspace_key, session_key)
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        pointer = None
+    if isinstance(pointer, dict):
+        return {
+            "state": "active",
+            "code": "H7_LOCAL_SCOPE_ACTIVE_TASK_POINTER",
+            "workspaceKey": workspace_key,
+            "ownerSessionKey": session_key,
+            "taskId": str(pointer.get("taskId", "")),
+            "taskInstanceId": str(pointer.get("taskInstanceId", "")),
+            "currentStep": str(pointer.get("currentStep", "")),
+            "nextAction": str(pointer.get("nextAction", "")),
+        }
+    try:
+        current, contract_code = core._read_context_contract(workspace_key, session_key)
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        return {
+            "state": "unavailable",
+            "code": "H7_LOCAL_TASK_POINTER_UNAVAILABLE",
+            "workspaceKey": workspace_key,
+            "ownerSessionKey": session_key,
+        }
+    if isinstance(current, dict):
+        return {
+            "state": "active",
+            "code": "H7_LOCAL_SCOPE_ACTIVE_TASK",
+            "workspaceKey": workspace_key,
+            "ownerSessionKey": session_key,
+            "taskId": str(current.get("taskId", "")),
+            "taskInstanceId": str(current.get("taskInstanceId", "")),
+            "currentStep": str(current.get("currentStep", "")),
+            "nextAction": str(current.get("nextAction", "")),
+        }
+    # A pending reconciliation is still an active task.  It must reach the
+    # existing reconciliation gate instead of being mistaken for a taskless
+    # continuation and silently downgraded.
+    if str(contract_code) == "BRAIN_CONTEXT_RECONCILIATION_REQUIRED":
+        return {
+            "state": "active",
+            "code": str(contract_code),
+            "workspaceKey": workspace_key,
+            "ownerSessionKey": session_key,
+        }
+    # Only the contract reader's explicit no-contract result proves that the
+    # current local scope is genuinely taskless.  A missing or mismatched hot
+    # index is a broken derived binding and must remain fail-closed; treating
+    # it as an empty task scope would silently downgrade repair to taskless.
+    if str(contract_code) != "BRAIN_CONTEXT_NO_ACTIVE_CONTRACT":
+        return {
+            "state": "unavailable",
+            "code": str(contract_code or "H7_LOCAL_TASK_POINTER_UNAVAILABLE"),
+            "workspaceKey": workspace_key,
+            "ownerSessionKey": session_key,
+        }
+    if not isinstance(pointer, dict):
+        return {
+            "state": "none",
+            "code": "H7_LOCAL_SCOPE_NO_ACTIVE_TASK",
+            "workspaceKey": workspace_key,
+            "ownerSessionKey": session_key,
+        }
+
+
 def _direct_local_path(phase: str, intent: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True,
@@ -1756,6 +2592,41 @@ def open_turn(
             {"turnIntent": public_turn_intent(intent)},
             "H7_OPEN_TELEMETRY_WITHOUT_PERSISTED_ENTRY_FORBIDDEN",
         )
+    normalized_recovery_event = str(recovery_event or "none")
+    if normalized_recovery_event not in RECOVERY_EVENTS:
+        return _withheld("open", {"turnIntent": public_turn_intent(intent)}, "H7_RECOVERY_EVENT_INVALID")
+
+    # Continuation/status is allowed to stop at the current task pointer.  A
+    # taskless scope must not pay for capability routing or a full context
+    # open just to discover that there is nothing to resume.
+    normal_continuity = str(intent.get("kind", "")) in NORMAL_CONTINUITY_INTENTS
+    if normal_continuity:
+        pointer = _lightweight_task_pointer_probe(core)
+        if pointer.get("state") == "none":
+            return _ordinary_no_task_open(
+                core,
+                intent=intent,
+                mapping={
+                    "state": "ordinary_no_task",
+                    "code": str(pointer.get("code", "H7_LOCAL_SCOPE_NO_ACTIVE_TASK")),
+                    "source": "scoped_local_task_pointer",
+                    "visibleContextAvailable": False,
+                    "stateCardUsed": False,
+                    "workspaceKey": str(pointer.get("workspaceKey", "")),
+                    "ownerSessionKey": str(pointer.get("ownerSessionKey", "")),
+                },
+                normalized_recovery_event=normalized_recovery_event,
+            )
+    if (
+        str(intent.get("kind", "")) == "direct"
+        and str(intent.get("memoryMode", memory_mode)) in {"auto", "off"}
+        and execution_assist_request is None
+        and capability_route_receipt is None
+        and _execution_assist_bundle is None
+    ):
+        pointer = _lightweight_task_pointer_probe(core)
+        if pointer.get("state") == "none":
+            return _direct_local_path("open", intent)
     reused_execution_assist = _validated_execution_assist_bundle(_execution_assist_bundle)
     if reused_execution_assist is not None:
         execution_assist, normalized_capability_route_receipt, capability_route_compatibility, execution_assist_code = (
@@ -1777,9 +2648,6 @@ def open_turn(
             {"turnIntent": public_turn_intent(intent)},
             execution_assist_code or "H7_EXECUTION_ASSIST_UNAVAILABLE",
         )
-    normalized_recovery_event = str(recovery_event or "none")
-    if normalized_recovery_event not in RECOVERY_EVENTS:
-        return _withheld("open", {"turnIntent": public_turn_intent(intent)}, "H7_RECOVERY_EVENT_INVALID")
     # Local-only continuity ---------------------------------------------------------
     #
     # External transport is permanently retired.  The current cwd/session scope,
@@ -1787,7 +2655,6 @@ def open_turn(
     # only continuity inputs.  Legacy Host fields were rejected above before
     # normalization, so this branch cannot accidentally reintroduce a tail
     # parser or a retrying bridge.
-    normal_continuity = str(intent.get("kind", "")) in NORMAL_CONTINUITY_INTENTS
     # A normal read-only continuation asks ``core.context`` for the exact local
     # contract and proof once. The private snapshot is call-local and avoids a
     # duplicate read/hash cycle without becoming durable authority.
@@ -2043,7 +2910,10 @@ def open_turn(
         contract,
         effective_memory_mode,
         action_authorization=str(contract_authorization.get("state", "withheld")),
+        intent=intent,
     )
+    if activation.get("activationState") != "full_brain_active":
+        return _withheld("open", context, activation_code or "H7_ACTIVATION_WITHHELD")
     binding = {
         "phase": "open",
         "scopeRef": str(context["scope"].get("scopeRef", "")),
@@ -2093,6 +2963,8 @@ def open_turn(
     scope_ref = str(context["scope"].get("scopeRef", ""))
     if persist_receipt:
         receipt, reused = _write_receipt(core.memory_base, scope_ref, "open", body)
+        if str(receipt.get("code", "")) in {"H7_RUNTIME_SCOPE_LOCK_TIMEOUT", "H7_RUNTIME_RECEIPT_CORRUPT", "H7_RUNTIME_STATE_WRITE_FAILED"}:
+            return _withheld("open", context, str(receipt.get("code")))
     else:
         receipt = dict(body)
         binding_hash = str(receipt.get("bindingHash", ""))
@@ -2108,6 +2980,8 @@ def open_turn(
             receipt,
             runtime_duration_ms=round((time.perf_counter() - started_at) * 1000),
         )
+        if str((telemetry or {}).get("code", "")) in {"H7_RUNTIME_SCOPE_LOCK_TIMEOUT", "H7_RUNTIME_TELEMETRY_CORRUPT", "H7_RUNTIME_STATE_WRITE_FAILED"}:
+            return _withheld("open", context, str((telemetry or {}).get("code")))
     result = {
         "ok": True,
         "schema": SCHEMA,
@@ -2302,7 +3176,7 @@ def checkpoint_turn(
                 context,
                 "H7_RECONCILIATION_CHECKPOINT_CONTEXT_INVALID",
             )
-        activation, _, _ = _activation(core, context, contract, str(intent.get("memoryMode", memory_mode)))
+        activation, _, _ = _activation(core, context, contract, str(intent.get("memoryMode", memory_mode)), intent=intent)
         capabilities = activation.get("capabilities") if isinstance(activation.get("capabilities"), dict) else {}
         if (
             activation.get("activationState") != "full_brain_active"
@@ -2329,6 +3203,32 @@ def checkpoint_turn(
         if isinstance(private_open_bundle, dict) and isinstance(private_open_bundle.get("contract"), dict)
         else None
     )
+    failure_evidence_fingerprint = context_hash(
+        {
+            "contractHash": str(task.get("contractHash", "")),
+            "projectProgressHash": str((task.get("projectProgress") or {}).get("payloadHash", "")),
+        }
+    )
+    failure_action_fingerprint = context_hash(
+        {"operation": "checkpoint", "transitionId": str(transition_id)},
+    )
+    checkpoint_reservation_id, checkpoint_reservation_guard = _reserve_failure_loop(
+        core.memory_base,
+        str(scope.get("scopeRef", "")),
+        failure_fingerprint="H7_PROGRESS_CHECKPOINT_FAILED",
+        evidence_fingerprint=failure_evidence_fingerprint,
+        action_fingerprint=failure_action_fingerprint,
+        phase=str(task.get("currentPhase", "")),
+        user_correction=str(requested_intent.get("kind", "")) == "user_correction",
+        side_effect_timeout=timeout,
+    )
+    if not checkpoint_reservation_id:
+        failed = _withheld("checkpoint", context, "H7_REPAIR_LOOP_FUSE_OPEN")
+        return _apply_failure_loop_result(
+            failed,
+            checkpoint_reservation_guard,
+            original_code="H7_PROGRESS_CHECKPOINT_FAILED",
+        )
     checkpoint = record_progress_checkpoint(
         core.package_root,
         core.memory_base,
@@ -2353,7 +3253,33 @@ def checkpoint_turn(
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
-        return failed
+        committed, guard = _finish_failure_loop_reservation(
+            core.memory_base,
+            str(scope.get("scopeRef", "")),
+            checkpoint_reservation_id,
+            commit=True,
+        )
+        if not committed or not isinstance(guard, dict):
+            return _apply_failure_loop_result(
+                failed,
+                _invalid_failure_loop_guard(),
+                original_code=failure_code,
+            )
+        return _apply_failure_loop_result(failed, guard, original_code=failure_code)
+    released, _ = _finish_failure_loop_reservation(
+        core.memory_base,
+        str(scope.get("scopeRef", "")),
+        checkpoint_reservation_id,
+        commit=False,
+    )
+    if not released:
+            return _reservation_release_failed_result(
+                "checkpoint",
+                context,
+                operation="progress_checkpoint",
+                checkpoint=checkpoint,
+                reservation_id=checkpoint_reservation_id,
+            )
     refreshed = open_turn(
         core,
         memory_mode=memory_mode,
@@ -2517,6 +3443,31 @@ def close_turn(
         initial_context = opened["context"]
         initial_scope = initial_context["scope"]
         initial_task = initial_context["task"]
+        close_checkpoint_evidence = context_hash(
+            {
+                "contractHash": str(initial_task.get("contractHash", "")),
+                "projectProgressHash": str((initial_task.get("projectProgress") or {}).get("payloadHash", "")),
+            }
+        )
+        close_checkpoint_action = context_hash(
+            {"operation": "close_checkpoint", "transitionId": str(checkpoint_transition_id)},
+        )
+        checkpoint_reservation_id, checkpoint_reservation_guard = _reserve_failure_loop(
+            core.memory_base,
+            str(initial_scope.get("scopeRef", "")),
+            failure_fingerprint="H7_PROGRESS_CHECKPOINT_FAILED",
+            evidence_fingerprint=close_checkpoint_evidence,
+            action_fingerprint=close_checkpoint_action,
+            phase=str(initial_task.get("currentPhase", "")),
+            user_correction=str(close_intent.get("kind", "")) == "user_correction",
+            side_effect_timeout=timeout,
+        )
+        if not checkpoint_reservation_id:
+            return _apply_failure_loop_result(
+                _withheld("close", initial_context, "H7_REPAIR_LOOP_FUSE_OPEN"),
+                checkpoint_reservation_guard,
+                original_code="H7_PROGRESS_CHECKPOINT_FAILED",
+            )
         checkpoint = record_progress_checkpoint(
             core.package_root,
             core.memory_base,
@@ -2537,10 +3488,34 @@ def close_turn(
             timeout=timeout,
         )
         if checkpoint.get("ok") is not True:
-            return _withheld(
+            failure_code = str(checkpoint.get("contractCode") or checkpoint.get("code") or "H7_PROGRESS_CHECKPOINT_FAILED")
+            failed = _withheld(
                 "close",
                 initial_context,
-                str(checkpoint.get("contractCode") or checkpoint.get("code") or "H7_PROGRESS_CHECKPOINT_FAILED"),
+                failure_code,
+            )
+            committed, guard = _finish_failure_loop_reservation(
+                core.memory_base,
+                str(initial_scope.get("scopeRef", "")),
+                checkpoint_reservation_id,
+                commit=True,
+            )
+            if not committed or not isinstance(guard, dict):
+                return _apply_failure_loop_result(failed, _invalid_failure_loop_guard(), original_code=failure_code)
+            return _apply_failure_loop_result(failed, guard, original_code=failure_code)
+        released, _ = _finish_failure_loop_reservation(
+            core.memory_base,
+            str(initial_scope.get("scopeRef", "")),
+            checkpoint_reservation_id,
+            commit=False,
+        )
+        if not released:
+            return _reservation_release_failed_result(
+                "close",
+                initial_context,
+                operation="close_progress_checkpoint",
+                checkpoint=checkpoint,
+                reservation_id=checkpoint_reservation_id,
             )
         opened = open_turn(
             core,
@@ -2577,6 +3552,8 @@ def close_turn(
     # race window, then avoid launching PowerShell solely to compute that pure
     # policy.  Any mismatch falls through to the authoritative dispatcher.
     dispatched: dict[str, Any] | None = None
+    dispatch_reservation_id = ""
+    dispatch_reservation_guard: dict[str, Any] = _invalid_failure_loop_guard()
     preflight_bundle = opened.get("_privateCloseBundle")
     if isinstance(preflight_bundle, dict):
         fresh_contract, fresh_contract_code = _contract_binding(core, context)
@@ -2617,6 +3594,34 @@ def close_turn(
                     "rawTranscriptStored": False,
                 }
     if dispatched is None:
+        dispatch_reservation_id, dispatch_reservation_guard = _reserve_failure_loop(
+            core.memory_base,
+            str(scope.get("scopeRef", "")),
+            failure_fingerprint="H7_CLOSE_DISPATCH_FAILED",
+            evidence_fingerprint=context_hash(
+                {
+                    "contractHash": str(task.get("contractHash", "")),
+                    "projectProgressHash": str((task.get("projectProgress") or {}).get("payloadHash", "")),
+                }
+            ),
+            action_fingerprint=context_hash(
+                {
+                    "operation": "close",
+                    "turnOutcome": str(turn_outcome),
+                    "userControl": str(user_control),
+                    "transitionId": str(close_transition_id),
+                }
+            ),
+            phase=str(task.get("currentPhase", "")),
+            user_correction=str(close_intent.get("kind", "")) == "user_correction",
+            side_effect_timeout=timeout,
+        )
+        if not dispatch_reservation_id:
+            return _apply_failure_loop_result(
+                _withheld("close", context, "H7_REPAIR_LOOP_FUSE_OPEN"),
+                dispatch_reservation_guard,
+                original_code="H7_CLOSE_DISPATCH_FAILED",
+            )
         dispatched = dispatch_turn_close(
             core.package_root,
             core.memory_base,
@@ -2633,10 +3638,11 @@ def close_turn(
         # Never report a failed authority transaction as an available close.
         # Preserve the bounded dispatch projection so the caller can
         # reconcile a possible partial commit instead of blindly retrying.
+        failure_code = str(dispatched.get("code", "H7_CLOSE_DISPATCH_FAILED"))
         failed = _withheld(
             "close",
             context,
-            str(dispatched.get("code", "H7_CLOSE_DISPATCH_FAILED")),
+            failure_code,
         )
         failed["dispatch"] = {
             "code": str(dispatched.get("code", "")),
@@ -2646,7 +3652,33 @@ def close_turn(
         }
         failed["operationState"] = "partially_committed" if dispatched.get("stateMutated") is True else "failed"
         failed["retrySafe"] = dispatched.get("stateMutated") is not True
-        return failed
+        if dispatch_reservation_id:
+            committed, guard = _finish_failure_loop_reservation(
+                core.memory_base,
+                str(scope.get("scopeRef", "")),
+                dispatch_reservation_id,
+                commit=True,
+            )
+        else:
+            committed, guard = False, None
+        if not committed or not isinstance(guard, dict):
+            return _apply_failure_loop_result(failed, _invalid_failure_loop_guard(), original_code=failure_code)
+        return _apply_failure_loop_result(failed, guard, original_code=failure_code)
+    if dispatch_reservation_id:
+        released, _ = _finish_failure_loop_reservation(
+            core.memory_base,
+            str(scope.get("scopeRef", "")),
+            dispatch_reservation_id,
+            commit=False,
+        )
+        if not released:
+            return _reservation_release_failed_result(
+                "close",
+                context,
+                operation="close_dispatch",
+                dispatch=dispatched,
+                reservation_id=dispatch_reservation_id,
+            )
     # A policy-only close has already run the authority Resolve but did not
     # mutate its contract.  Re-opening it used to repeat the entire context,
     # proof, project-knowledge, activation, receipt, and telemetry pipeline
@@ -2741,7 +3773,11 @@ def close_turn(
         if not isinstance(post_project_knowledge, dict) or not project_knowledge_receipt_is_valid(post_project_knowledge):
             return _withheld("close", post_context, "H7_PROJECT_KNOWLEDGE_POST_OPEN_RECEIPT_INVALID")
         post_context["projectKnowledge"] = post_project_knowledge
-        post_activation, activation_code, refs = _activation(core, post_context, post_contract, memory_mode)
+        post_activation, activation_code, refs = _activation(
+            core, post_context, post_contract, memory_mode, intent=close_intent
+        )
+    if post_activation.get("activationState") != "full_brain_active":
+        return _withheld("close", post_context, activation_code or "H7_ACTIVATION_WITHHELD")
     assert isinstance(post_contract, dict)
     assert isinstance(post_progress_status, dict)
     assert isinstance(post_project_knowledge, dict)
@@ -2821,12 +3857,16 @@ def close_turn(
     )
     scope_ref = str(post_context["scope"].get("scopeRef", ""))
     receipt, reused = _write_receipt(core.memory_base, scope_ref, "close", body)
+    if str(receipt.get("code", "")) in {"H7_RUNTIME_SCOPE_LOCK_TIMEOUT", "H7_RUNTIME_RECEIPT_CORRUPT", "H7_RUNTIME_STATE_WRITE_FAILED"}:
+        return _withheld("close", post_context, str(receipt.get("code")))
     telemetry, telemetry_reused = _record_telemetry(
         core.memory_base,
         scope_ref,
         receipt,
         runtime_duration_ms=round((time.perf_counter() - started_at) * 1000),
     )
+    if str(telemetry.get("code", "")) in {"H7_RUNTIME_SCOPE_LOCK_TIMEOUT", "H7_RUNTIME_TELEMETRY_CORRUPT", "H7_RUNTIME_STATE_WRITE_FAILED"}:
+        return _withheld("close", post_context, str(telemetry.get("code")))
     terminal_allowed = bool(policy.get("terminalReplyAllowed", True))
     return {
         "ok": True,
@@ -2867,7 +3907,12 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
 
     # Project the same H7-only guard used by the core status surface. Evidence
     # must not independently revive or assess retired prompt transports.
-    retired_transport_guard = core.status().get("retiredTransportGuard", {})
+    # Evidence needs only the transport-retirement invariant.  Calling the
+    # complete status projection here would additionally rebuild the MCP
+    # runtime identity, binding status, activation summary, and contract
+    # context immediately before this function reads its own scoped evidence.
+    # The dedicated guard has the exact status payload and remains fail-closed.
+    retired_transport_guard = core.retired_transport_guard()
     workspace = core._context_workspace_key()
     session = core._context_session_key()
     if not workspace or not session:
@@ -2960,6 +4005,14 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
     telemetry_events = (telemetry or {}).get("events", []) if isinstance((telemetry or {}).get("events", []), list) else []
     latest_telemetry = telemetry_events[-1] if telemetry_events and isinstance(telemetry_events[-1], dict) else {}
     telemetry_is_close = str(latest_telemetry.get("phase", "")) == "close"
+    expected_telemetry_receipt_hash = str(
+        ((close_receipt if telemetry_is_close else open_receipt) or {}).get("receiptHash", "")
+    )
+    telemetry_receipt_bound = bool(
+        expected_telemetry_receipt_hash
+        and str(latest_telemetry.get("receiptHash", "")) == expected_telemetry_receipt_hash
+        and (close_current if telemetry_is_close else entry_current)
+    )
     telemetry_execution_assist = close_execution_assist if telemetry_is_close else execution_assist
     telemetry_project_knowledge = close_project_knowledge if telemetry_is_close else project_knowledge
     telemetry_intent = (close_receipt or {}).get("turnIntent") if telemetry_is_close and isinstance((close_receipt or {}).get("turnIntent"), dict) else open_intent
@@ -2976,6 +4029,7 @@ def read_evidence(core: BrainCore) -> dict[str, Any]:
         project_knowledge=telemetry_project_knowledge,
         capability_route_receipt=telemetry_capability_route,
     )
+    telemetry_current = telemetry_current and telemetry_receipt_bound
     observed_run_observability = (
         (telemetry or {}).get("runObservability")
         if isinstance((telemetry or {}).get("runObservability"), dict)

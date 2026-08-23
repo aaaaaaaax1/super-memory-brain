@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import os
 import subprocess
 import sys
@@ -12,8 +13,34 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
 
 from activation_receipt import ACTIVE_RECEIPTS_DIRECTORY, activate, ensure_current, read_valid, receipt_path
+import activation_receipt as activation_module
+import brain_cli
+from brain_cli import _explicit_scope_matches_local
 from brain_core import BrainCore
 from core_rule_registry import canonical_hash
+
+
+def _probe_activation_lock(lock_path: Path) -> bool:
+    runtime_path = Path(__file__).resolve().parents[1] / "runtime"
+    probe = "\n".join(
+        (
+            "import sys",
+            f"sys.path.insert(0, {str(runtime_path)!r})",
+            "import activation_receipt as activation",
+            "activation.ACTIVATION_LOCK_TIMEOUT_SECONDS = 0.05",
+            "with activation._activation_lock(sys.argv[1], sys.argv[2]) as acquired:",
+            "    print('1' if acquired else '0')",
+        )
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe, str(lock_path.parent.parent.parent.parent), lock_path.stem],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip() == "1"
 
 
 def main() -> int:
@@ -49,6 +76,12 @@ def main() -> int:
         assert full["coreRules"]["payloadHash"]
         assert full["actionAuthorization"] == "not_applicable"
         assert full["memory"]["refsHash"]
+        assert full["route"]["routeClass"] == "continuity", full
+        assert full["route"]["activationTier"] == "continuity_light", full
+        assert full["route"]["requiresTaskPointer"] is False, full
+        assert full["route"]["requiresProjectProof"] is False, full
+        assert full["route"]["requiresCapabilityRoute"] is False, full
+        assert full["route"]["userVisibleState"] == "continuity", full
         assert full["rawPromptStored"] is False
         assert full["rawTranscriptStored"] is False
 
@@ -75,6 +108,25 @@ def main() -> int:
         )
         assert code == "ACTIVATION_RECEIPT_CURRENT", code
         assert current and current["receiptHash"] == full["receiptHash"]
+
+        # A route change in the same scope must not reuse a receipt carrying
+        # the old activation tier and evidence requirements.
+        changed_route, changed_route_code = ensure_current(
+            package_root,
+            memory_base,
+            memory_root=memory_root,
+            workspace_key="ws-activation-regression",
+            session_key="sid-activation-regression",
+            route="current_session_continue",
+            action_authorization="not_applicable",
+            memory_snapshot_hash="a" * 64,
+            memory_refs=["card-one@1", "card-two@2"],
+        )
+        assert changed_route_code == "ACTIVATION_RECEIPT_REISSUED", changed_route_code
+        assert changed_route["route"]["name"] == "current_session_continue", changed_route
+        assert changed_route["route"]["routeClass"] == "continuity", changed_route
+        assert changed_route["route"]["requiresTaskPointer"] is True, changed_route
+        assert changed_route["route"]["requiresProjectProof"] is True, changed_route
 
         withheld = activate(
             package_root,
@@ -146,6 +198,133 @@ def main() -> int:
         )
         assert receipts_after_status == receipts_before_status
 
+        # Explicit CLI scope is an assertion against the current local session,
+        # never a selector.  A missing process session must reject even a
+        # matching workspace plus an arbitrary explicit session.
+        scope_core = BrainCore(package_root, memory_root)
+        local_workspace = scope_core._context_workspace_key()
+        previous_local_session = os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+        try:
+            assert not _explicit_scope_matches_local(
+                scope_core,
+                local_workspace,
+                "sid-explicit-without-local-binding",
+            )
+        finally:
+            if previous_local_session is not None:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_local_session
+
+        # ``turn-close`` must reject every partially or wholly foreign
+        # explicit scope before either the dispatcher or activation can run.
+        # This is intentionally exercised through ``brain_cli.main`` so the
+        # ordering remains covered even if the dispatcher accepts a foreign
+        # scope for its own lower-level reconciliation tests.
+        class _BinaryStdout:
+            def __init__(self) -> None:
+                self.buffer = io.BytesIO()
+
+            def write(self, value: str) -> int:
+                return len(value)
+
+            def flush(self) -> None:
+                return None
+
+        cli_scope_core = BrainCore(package_root, memory_root)
+        cli_local_workspace = cli_scope_core._context_workspace_key()
+        previous_cwd = Path.cwd()
+        previous_argv = list(sys.argv)
+        previous_stdout = sys.stdout
+        previous_session = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        dispatch_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        activation_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def unexpected_dispatch(*args: object, **kwargs: object) -> dict[str, object]:
+            dispatch_calls.append((args, kwargs))
+            return {"ok": True}
+
+        def unexpected_activation(*args: object, **kwargs: object) -> dict[str, object]:
+            activation_calls.append((args, kwargs))
+            return {"activationState": "full_brain_active"}
+
+        original_dispatch = brain_cli.dispatch_turn_close
+        original_activation = brain_cli._ensure_core_activation
+        brain_cli.dispatch_turn_close = unexpected_dispatch
+        brain_cli._ensure_core_activation = unexpected_activation
+        try:
+            os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = "sid-cli-local-scope"
+            os.chdir(package_root)
+            for workspace_key, session_key in (
+                ("ws-cli-foreign-scope", "sid-cli-local-scope"),
+                (cli_local_workspace, "sid-cli-foreign-scope"),
+                (cli_local_workspace, ""),
+            ):
+                output = _BinaryStdout()
+                sys.stdout = output
+                sys.argv = [
+                    str(package_root / "runtime" / "brain_cli.py"),
+                    "--package-root",
+                    str(package_root),
+                    "--memory-root",
+                    str(memory_root),
+                    "turn-close",
+                    "--task-id",
+                    "task-cli-foreign-scope",
+                    "--workspace-key",
+                    workspace_key,
+                    "--session-key",
+                    session_key,
+                    "--turn-outcome",
+                    "side_branch_completed",
+                    "--completion-evidence-ref",
+                    "test:cli-foreign-scope",
+                ]
+                assert brain_cli.main() == 0
+                payload = json.loads(output.buffer.getvalue().decode("utf-8"))
+                assert payload["code"] == "H7_CLI_FOREIGN_SCOPE_FORBIDDEN", payload
+                assert payload["stateMutated"] is False, payload
+        finally:
+            brain_cli.dispatch_turn_close = original_dispatch
+            brain_cli._ensure_core_activation = original_activation
+            sys.stdout = previous_stdout
+            sys.argv = previous_argv
+            os.chdir(previous_cwd)
+            if previous_session is None:
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+            else:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_session
+        assert dispatch_calls == [], dispatch_calls
+        assert activation_calls == [], activation_calls
+
+        # The activation lock is handle-owned across processes.  A resident
+        # writer blocks a second writer, while process exit releases the OS
+        # lock without a dangerous stale-file unlink race.
+        lock_scope = "scope-lock-regression"
+        lock_path = (
+            memory_base
+            / "workspace"
+            / "runtime-state"
+            / "activation"
+            / f"{lock_scope}.lock"
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        original_timeout = activation_module.ACTIVATION_LOCK_TIMEOUT_SECONDS
+        activation_module.ACTIVATION_LOCK_TIMEOUT_SECONDS = 0.05
+        try:
+            lock_path.write_text("legacy-owner", encoding="ascii")
+            with activation_module._activation_lock(memory_base, lock_scope) as acquired:
+                assert acquired is False
+            assert lock_path.read_text(encoding="ascii") == "legacy-owner"
+            lock_path.unlink()
+            with activation_module._activation_lock(memory_base, lock_scope) as acquired:
+                assert acquired is True
+                assert _probe_activation_lock(lock_path) is False
+            assert lock_path.exists()
+            assert lock_path.read_bytes() == b"0"
+            assert _probe_activation_lock(lock_path) is True
+        finally:
+            activation_module.ACTIVATION_LOCK_TIMEOUT_SECONDS = original_timeout
+            lock_path.unlink(missing_ok=True)
+
         contract = {
             "taskId": "task-activation-refresh",
             "taskInstanceId": "ti-activation-refresh",
@@ -166,6 +345,18 @@ def main() -> int:
             require_scope=True,
         )
         assert first_code == "ACTIVATION_RECEIPT_CREATED", first_code
+        keyword_receipt, keyword_code = ensure_current(
+            package_root=package_root,
+            memory_base=memory_base,
+            memory_root=memory_root,
+            workspace_key="ws-activation-keyword",
+            session_key="sid-activation-keyword",
+            contract=contract,
+            action_authorization="withheld",
+            require_scope=True,
+        )
+        assert keyword_code == "ACTIVATION_RECEIPT_CREATED", keyword_code
+        assert keyword_receipt["activationState"] == "full_brain_active", keyword_receipt
         second, second_code = ensure_current(
             package_root,
             memory_base,
@@ -196,6 +387,132 @@ def main() -> int:
         assert refreshed_code == "ACTIVATION_RECEIPT_REISSUED", refreshed_code
         assert refreshed["task"]["contractRevision"] == 2, refreshed
         assert refreshed["receiptHash"] != first["receiptHash"]
+
+        # Authorization must be revalidated in both directions.  A previous
+        # allowed receipt must never survive a later contract resolution that
+        # is withheld for the same scope.
+        authorized_contract = {
+            **contract,
+            "taskId": "task-activation-authorization",
+            "taskInstanceId": "ti-activation-authorization",
+        }
+        authorized, authorized_code = ensure_current(
+            package_root,
+            memory_base,
+            memory_root=memory_root,
+            workspace_key="ws-activation-authorization",
+            session_key="sid-activation-authorization",
+            task_id=authorized_contract["taskId"],
+            task_instance_id=authorized_contract["taskInstanceId"],
+            contract=authorized_contract,
+            action_authorization="allowed",
+            require_scope=True,
+        )
+        assert authorized_code == "ACTIVATION_RECEIPT_CREATED", authorized_code
+        assert authorized["actionAuthorization"] == "allowed", authorized
+        withheld_authorized, withheld_authorized_code = ensure_current(
+            package_root,
+            memory_base,
+            memory_root=memory_root,
+            workspace_key="ws-activation-authorization",
+            session_key="sid-activation-authorization",
+            task_id=authorized_contract["taskId"],
+            task_instance_id=authorized_contract["taskInstanceId"],
+            contract=authorized_contract,
+            action_authorization="withheld",
+            require_scope=True,
+        )
+        assert withheld_authorized_code == "ACTIVATION_RECEIPT_REISSUED", withheld_authorized_code
+        assert withheld_authorized["actionAuthorization"] == "withheld", withheld_authorized
+        assert withheld_authorized["receiptHash"] != authorized["receiptHash"]
+
+        # A prior degraded receipt must self-heal once the caller removes the
+        # explicit degradation reason; it must not remain permanently withheld.
+        degraded, degraded_code = ensure_current(
+            package_root,
+            memory_base,
+            memory_root=memory_root,
+            workspace_key="ws-activation-degraded",
+            session_key="sid-activation-degraded",
+            route="bare_wake",
+            degraded_reasons=["temporary-repair-needed"],
+        )
+        assert degraded_code == "ACTIVATION_RECEIPT_CREATED", degraded_code
+        assert degraded["activationState"] == "withheld", degraded
+        healed, healed_code = ensure_current(
+            package_root,
+            memory_base,
+            memory_root=memory_root,
+            workspace_key="ws-activation-degraded",
+            session_key="sid-activation-degraded",
+            route="bare_wake",
+        )
+        assert healed_code == "ACTIVATION_RECEIPT_REISSUED", healed_code
+        assert healed["activationState"] == "full_brain_active", healed
+        assert healed["receiptHash"] != degraded["receiptHash"]
+
+        # A structurally malformed but correctly rehashed receipt must fail
+        # closed rather than raising while inspecting nested scope fields.
+        malformed_contract = {
+            **contract,
+            "taskId": "task-activation-malformed",
+            "taskInstanceId": "ti-activation-malformed",
+        }
+        malformed, _ = ensure_current(
+            package_root,
+            memory_base,
+            memory_root=memory_root,
+            workspace_key="ws-activation-malformed",
+            session_key="sid-activation-malformed",
+            task_id=malformed_contract["taskId"],
+            task_instance_id=malformed_contract["taskInstanceId"],
+            contract=malformed_contract,
+            action_authorization="withheld",
+            require_scope=True,
+        )
+        malformed_path = receipt_path(
+            memory_base,
+            malformed["scope"]["scopeRef"],
+        )
+        malformed_value = json.loads(malformed_path.read_text(encoding="utf-8"))
+        malformed_value["scope"] = []
+        malformed_value["receiptHash"] = activation_module._receipt_hash(malformed_value)
+        malformed_path.write_text(json.dumps(malformed_value), encoding="utf-8")
+        malformed_read, malformed_code = read_valid(
+            memory_base,
+            workspace_key="ws-activation-malformed",
+            session_key="sid-activation-malformed",
+            task_id=malformed_contract["taskId"],
+            task_instance_id=malformed_contract["taskInstanceId"],
+            package_root=package_root,
+        )
+        assert malformed_read is None
+        assert malformed_code == "ACTIVATION_RECEIPT_SCOPE_INVALID", malformed_code
+
+        # A correctly rehashed receipt with an unknown activation state or
+        # authorization must still fail closed; the hash only protects
+        # consistency, not the receipt schema or policy enum.
+        invalid_state, _ = ensure_current(
+            package_root,
+            memory_base,
+            memory_root=memory_root,
+            workspace_key="ws-activation-invalid-state",
+            session_key="sid-activation-invalid-state",
+            route="bare_wake",
+        )
+        invalid_state_path = receipt_path(memory_base, invalid_state["scope"]["scopeRef"])
+        invalid_state_value = json.loads(invalid_state_path.read_text(encoding="utf-8"))
+        invalid_state_value["activationState"] = "degraded"
+        invalid_state_value["receiptHash"] = activation_module._receipt_hash(invalid_state_value)
+        invalid_state_path.write_text(json.dumps(invalid_state_value), encoding="utf-8")
+        invalid_state_read, invalid_state_code = read_valid(
+            memory_base,
+            workspace_key="ws-activation-invalid-state",
+            session_key="sid-activation-invalid-state",
+            package_root=package_root,
+        )
+        assert invalid_state_read is None
+        assert invalid_state_code == "ACTIVATION_RECEIPT_STATE_INVALID", invalid_state_code
 
         # A signed registry change invalidates the old activation identity even
         # when the package manifest itself did not change.  The next governed

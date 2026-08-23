@@ -73,6 +73,7 @@ Describe 'Super Memory Brain package manifest' {
     @($manifest.nativeRuntimeFiles) -contains 'runtime\brain_mcp.py' | Should Be $true
     @($manifest.nativeRuntimeFiles) -contains 'runtime\core_rule_registry.py' | Should Be $true
     @($manifest.nativeRuntimeFiles) -contains 'runtime\turn_intent.py' | Should Be $true
+    @($manifest.nativeRuntimeFiles) -contains 'runtime\failure_loop_guard.py' | Should Be $true
     $manifest.coreRuleRegistry.path | Should Be 'super-brain-rules.json'
     $manifest.coreRuleRegistry.schema | Should Be 'super-brain.core-rule-registry.v1'
     $manifest.coreRuleRegistry.hashAlgorithm | Should Be 'sha256(canonical-json-without-payloadHash)'
@@ -86,6 +87,7 @@ Describe 'Super Memory Brain package manifest' {
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\run_observability.py' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'scripts\work-dag.ps1' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\turn_intent.py' | Should Be $true
+    @($manifest.intelligenceBehaviorFiles) -contains 'runtime\failure_loop_guard.py' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'scripts\routing-kernel.ps1' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'scripts\internal\hook-runtime-common.ps1' | Should Be $false
     @($manifest.legacyCompatibilityFiles) -contains 'scripts\internal\hook-runtime-common.ps1' | Should Be $true

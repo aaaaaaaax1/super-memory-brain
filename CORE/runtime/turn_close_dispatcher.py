@@ -449,7 +449,24 @@ def _invoke_warm_authority(
     if os.environ.get(_AUTHORITY_WORKER_TRANSPORT_ENV, "").strip() != _AUTHORITY_WORKER_TRANSPORT_VALUE:
         return None
     global _AUTHORITY_CHANNEL, _AUTHORITY_CHANNEL_KEY
-    key = os.path.normcase(str(package_root))
+    # A resident PowerShell process dot-sources the package scripts once at
+    # startup.  Rebind it when the package is updated in place; otherwise a
+    # stale worker could execute old authority code while the Python identity
+    # layer already observes the new package.  The stamp is only a routing
+    # key, never an authorization decision; the authority still validates its
+    # own manifest and contract on every request.
+    key_parts = [os.path.normcase(str(package_root))]
+    for source in (
+        package_root / "manifest.json",
+        package_root / "scripts" / "execution-contract.ps1",
+        package_root / "scripts" / "execution-contract-worker.ps1",
+    ):
+        try:
+            stat = source.stat()
+            key_parts.append(f"{stat.st_mtime_ns}:{stat.st_size}:{getattr(stat, 'st_ctime_ns', 0)}")
+        except OSError:
+            key_parts.append("missing")
+    key = "|".join(key_parts)
     with _AUTHORITY_CHANNEL_LOCK:
         if _AUTHORITY_CHANNEL is None or _AUTHORITY_CHANNEL_KEY != key:
             previous = _AUTHORITY_CHANNEL

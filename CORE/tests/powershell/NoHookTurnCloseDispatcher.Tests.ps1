@@ -9,6 +9,8 @@ function Invoke-DispatcherContract([string[]]$Arguments) {
 }
 
 function Invoke-NoHookDispatcher([string]$PackageRoot,[string]$MemoryRoot,[string]$ProjectRoot,[string]$TaskId,[string]$WorkspaceKey,[string]$SessionKey,[string]$Outcome,[string]$Evidence,[string]$UserControl='none') {
+  $previousLocalSession = $env:SUPER_BRAIN_LOCAL_SESSION_ID
+  $env:SUPER_BRAIN_LOCAL_SESSION_ID = $SessionKey
   Push-Location $ProjectRoot
   try {
     $raw = @(& python -X utf8 $brainCli --package-root $PackageRoot --memory-root $MemoryRoot turn-close --task-id $TaskId --workspace-key $WorkspaceKey --session-key $SessionKey --turn-outcome $Outcome --user-control $UserControl --completion-evidence-ref $Evidence 2>$null)
@@ -16,6 +18,7 @@ function Invoke-NoHookDispatcher([string]$PackageRoot,[string]$MemoryRoot,[strin
     $text = ($raw | ForEach-Object { [string]$_ }) -join "`n"
   } finally {
     Pop-Location
+    if ($null -eq $previousLocalSession) { Remove-Item Env:SUPER_BRAIN_LOCAL_SESSION_ID -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_LOCAL_SESSION_ID = $previousLocalSession }
   }
   return [pscustomobject]@{ exitCode=$exitCode; value=if($text){$text|ConvertFrom-Json}else{$null}; text=$text }
 }

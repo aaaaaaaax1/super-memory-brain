@@ -6,6 +6,12 @@
     "routes":  [
                     {
                         "route":  "normal_chat",
+                        "routeClass":  "direct",
+                        "activationTier":  "none",
+                        "requiresTaskPointer":  false,
+                        "requiresProjectProof":  false,
+                        "requiresCapabilityRoute":  false,
+                        "userVisibleState":  "direct",
                        "triggers":  [
                                         "ordinary chat",
                                         "simple explanation",
@@ -24,6 +30,12 @@
                     },
                     {
                         "route":  "browser_automation",
+                        "routeClass":  "task",
+                        "activationTier":  "task",
+                        "requiresTaskPointer":  true,
+                        "requiresProjectProof":  false,
+                        "requiresCapabilityRoute":  true,
+                        "userVisibleState":  "task",
                         "triggers":  [
                                          "browser automation",
                                          "Playwright",
@@ -48,6 +60,12 @@
                     },
                     {
                         "route":  "bare_wake",
+                       "routeClass":  "continuity",
+                       "activationTier":  "continuity_light",
+                       "requiresTaskPointer":  false,
+                       "requiresProjectProof":  false,
+                       "requiresCapabilityRoute":  false,
+                       "userVisibleState":  "continuity",
                        "triggers":  [
                                         "Super Brain",
                                         "G1",
@@ -79,8 +97,14 @@
                        "userVisibleNoise":  "short state-aware activation/control response; never a bare G1"
                    },
                    {
-                       "route":  "current_task_status",
-                       "triggers":  [
+                      "route":  "current_task_status",
+                      "routeClass":  "task",
+                      "activationTier":  "task",
+                      "requiresTaskPointer":  true,
+                      "requiresProjectProof":  false,
+                      "requiresCapabilityRoute":  false,
+                      "userVisibleState":  "task",
+                      "triggers":  [
                                         "task status",
                                         "current progress",
                                         "where are we",
@@ -102,8 +126,14 @@
                                                    ]
                    },
                    {
-                       "route":  "system_status",
-                       "triggers":  [
+                      "route":  "system_status",
+                      "routeClass":  "diagnostic",
+                      "activationTier":  "full_diagnostic",
+                      "requiresTaskPointer":  false,
+                      "requiresProjectProof":  false,
+                      "requiresCapabilityRoute":  false,
+                      "userVisibleState":  "diagnostic",
+                      "triggers":  [
                                         "Super Brain status",
                                         "version status",
                                         "G1 health"
@@ -121,8 +151,44 @@
                        "userVisibleNoise":  "compact health/state summary"
                    },
                    {
-                       "route":  "current_session_continue",
-                       "triggers":  [
+                      "route":  "fix_bug",
+                      "routeClass":  "diagnostic",
+                      "activationTier":  "full_diagnostic",
+                      "requiresTaskPointer":  true,
+                      "requiresProjectProof":  true,
+                      "requiresCapabilityRoute":  true,
+                      "userVisibleState":  "diagnostic",
+                      "triggers":  [
+                                        "diagnose",
+                                        "debug",
+                                        "bug",
+                                        "failure",
+                                        "root cause",
+                                        "repair",
+                                        "修复",
+                                        "问题根因"
+                                    ],
+                       "read":  [
+                                    "references/status-recovery.md",
+                                    "references/collaborative-intent.md"
+                                ],
+                       "doNotRead":  [
+                                         "full project history",
+                                         "all memory bodies",
+                                         "load-all-skills"
+                                     ],
+                       "memoryBehavior":  "core rule and bounded project evidence first; no raw prompt or transcript",
+                       "userVisibleNoise":  "problem essence, FACT/INFERENCE/UNKNOWN, repair direction, and next action"
+                   },
+                   {
+                      "route":  "current_session_continue",
+                      "routeClass":  "continuity",
+                      "activationTier":  "continuity_light",
+                      "requiresTaskPointer":  true,
+                      "requiresProjectProof":  true,
+                      "requiresCapabilityRoute":  false,
+                      "userVisibleState":  "continuity",
+                      "triggers":  [
                                         "continue current explanation",
                                         "resume visible task"
                                     ],
@@ -139,6 +205,12 @@
                    },
                    {
                        "route":  "historical_recovery",
+                       "routeClass":  "continuity",
+                       "activationTier":  "continuity_light",
+                       "requiresTaskPointer":  true,
+                       "requiresProjectProof":  true,
+                       "requiresCapabilityRoute":  false,
+                       "userVisibleState":  "continuity",
                        "triggers":  [
                                         "continue previous",
                                         "last time",
@@ -158,8 +230,14 @@
                                                    ]
                    },
                    {
-                       "route":  "memory_recall",
-                       "triggers":  [
+                      "route":  "memory_recall",
+                      "routeClass":  "memory",
+                      "activationTier":  "memory_only",
+                      "requiresTaskPointer":  false,
+                      "requiresProjectProof":  false,
+                      "requiresCapabilityRoute":  false,
+                      "userVisibleState":  "memory",
+                      "triggers":  [
                                         "还记得",
                                         "do you remember",
                                         "recall a stable preference, decision, or rule"
@@ -176,8 +254,14 @@
                        "userVisibleNoise":  "answer from current verified evidence or abstain"
                    },
                    {
-                       "route":  "agent_bridge_channel",
-                       "triggers":  [
+                      "route":  "agent_bridge_channel",
+                      "routeClass":  "task",
+                      "activationTier":  "task",
+                      "requiresTaskPointer":  true,
+                      "requiresProjectProof":  false,
+                      "requiresCapabilityRoute":  true,
+                      "userVisibleState":  "task",
+                      "triggers":  [
                                         "explicit agent channel",
                                         "explicit subagent channel",
                                         "agent bridge",
@@ -194,8 +278,14 @@
                        "userVisibleNoise":  "legacy/manual-only bridge route only"
                    },
                    {
-                       "route":  "privacy_memory_gate",
-                       "triggers":  [
+                      "route":  "privacy_memory_gate",
+                      "routeClass":  "memory",
+                      "activationTier":  "memory_only",
+                      "requiresTaskPointer":  false,
+                      "requiresProjectProof":  false,
+                      "requiresCapabilityRoute":  false,
+                      "userVisibleState":  "memory",
+                      "triggers":  [
                                         "remember API key",
                                         "remember token",
                                         "store secret"
@@ -211,8 +301,14 @@
                        "userVisibleNoise":  "brief privacy boundary"
                    },
                    {
-                       "route":  "memory_write_candidate",
-                       "triggers":  [
+                                         "route":  "memory_write_candidate",
+                      "routeClass":  "memory",
+                      "activationTier":  "memory_only",
+                                         "requiresTaskPointer":  true,
+                      "requiresProjectProof":  false,
+                      "requiresCapabilityRoute":  false,
+                      "userVisibleState":  "memory",
+                      "triggers":  [
                                         "remember preference",
                                         "stable rule",
                                         "project decision"
@@ -228,8 +324,14 @@
                        "userVisibleNoise":  "brief confirmation only"
                    },
                    {
-                       "route":  "workflow_preference_recall",
-                       "triggers":  [
+                      "route":  "workflow_preference_recall",
+                      "routeClass":  "memory",
+                      "activationTier":  "memory_only",
+                      "requiresTaskPointer":  false,
+                      "requiresProjectProof":  false,
+                      "requiresCapabilityRoute":  false,
+                      "userVisibleState":  "memory",
+                      "triggers":  [
                                         "terse request matching a configured canonical workflow preference",
                                         "git怎么写",
                                         "git呢",
@@ -248,8 +350,14 @@
                        "userVisibleNoise":  "return the canonical requested format directly"
                    },
                    {
-                       "route":  "direct_answer",
-                       "triggers":  [
+                      "route":  "direct_answer",
+                      "routeClass":  "direct",
+                      "activationTier":  "none",
+                      "requiresTaskPointer":  false,
+                      "requiresProjectProof":  false,
+                      "requiresCapabilityRoute":  false,
+                      "userVisibleState":  "direct",
+                      "triggers":  [
                                         "simple code",
                                         "small regex",
                                         "single direct answer"
@@ -266,8 +374,14 @@
                        "userVisibleNoise":  "no route narration"
                    },
                    {
-                       "route":  "orc_complex_routing",
-                       "triggers":  [
+                      "route":  "orc_complex_routing",
+                      "routeClass":  "task",
+                      "activationTier":  "task",
+                      "requiresTaskPointer":  true,
+                      "requiresProjectProof":  true,
+                      "requiresCapabilityRoute":  true,
+                      "userVisibleState":  "task",
+                      "triggers":  [
                                         "multi-step",
                                         "migration",
                                         "tests",
@@ -285,8 +399,14 @@
                        "userVisibleNoise":  "concise route plan"
                    },
                    {
-                       "route":  "collaborative_intent",
-                       "triggers":  [
+                      "route":  "collaborative_intent",
+                      "routeClass":  "task",
+                      "activationTier":  "task",
+                      "requiresTaskPointer":  true,
+                      "requiresProjectProof":  true,
+                      "requiresCapabilityRoute":  true,
+                      "userVisibleState":  "task",
+                      "triggers":  [
                                         "add feature",
                                         "feature request",
                                         "product behavior",
@@ -313,8 +433,14 @@
                        "userVisibleNoise":  "two-to-four sentence intent contract for meaningful feature work"
                    },
                    {
-                       "route":  "maintenance_hot_refresh",
-                       "triggers":  [
+                      "route":  "maintenance_hot_refresh",
+                      "routeClass":  "diagnostic",
+                      "activationTier":  "full_diagnostic",
+                      "requiresTaskPointer":  true,
+                      "requiresProjectProof":  true,
+                      "requiresCapabilityRoute":  true,
+                      "userVisibleState":  "diagnostic",
+                      "triggers":  [
                                         "refresh Super Brain",
                                         "hot-refresh",
                                         "install",
@@ -334,8 +460,14 @@
                                                    ]
                    },
                    {
-                       "route":  "single_agent_subagent_workflow",
-                       "triggers":  [
+                      "route":  "single_agent_subagent_workflow",
+                      "routeClass":  "task",
+                      "activationTier":  "task",
+                      "requiresTaskPointer":  true,
+                      "requiresProjectProof":  true,
+                      "requiresCapabilityRoute":  true,
+                      "userVisibleState":  "task",
+                      "triggers":  [
                                         "subagent execution",
                                         "subagent review",
                                         "subagent verification",

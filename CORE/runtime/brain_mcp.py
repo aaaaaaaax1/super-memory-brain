@@ -358,7 +358,7 @@ def control_plane_status(snapshot_path: Path | None) -> dict[str, Any]:
     }
 
 
-def _task_scope(arguments: dict[str, Any]) -> tuple[str, str] | None:
+def _task_scope(arguments: dict[str, Any], core: BrainCore) -> tuple[str, str] | None:
     value = arguments.get("task_scope")
     if value is None:
         return None
@@ -370,6 +370,12 @@ def _task_scope(arguments: dict[str, Any]) -> tuple[str, str] | None:
         r"sid-[a-f0-9]{16,64}", owner_session_key
     ):
         raise ValueError("task_scope is invalid")
+    current_workspace = str(core._context_workspace_key()).strip().lower()
+    current_session = str(core._context_session_key()).strip().lower()
+    if not current_workspace or not current_session:
+        raise ValueError("H7_TASK_SCOPE_LOCAL_SCOPE_REQUIRED")
+    if workspace_key != current_workspace or owner_session_key != current_session:
+        raise ValueError("H7_TASK_SCOPE_FOREIGN_SCOPE")
     return workspace_key, owner_session_key
 
 
@@ -686,10 +692,15 @@ def _run_current_cli_bridge(
         # absent session is intentionally propagated as empty so brain_recent
         # fails closed instead of reading another conversation's tail.
         local_session_key = core._context_session_key()
-    if name == "brain_turn":
+    if name in {"brain_turn", "brain_recent"}:
         bridge_workspace_root = _mcp_cli_bridge_workspace_root(core)
+        # ``brain_recent`` is workspace-scoped as well as session-scoped.
+        # The child CLI otherwise starts in ``core.package_root`` and derives
+        # a different workspace key, causing a stale MCP worker to return an
+        # empty (or unrelated) recent tail after a package refresh.
         if bridge_workspace_root is None:
             return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_LOCAL_SCOPE_REQUIRED"), True)
+    if name == "brain_turn":
         if not local_session_key:
             return tool_result(_mcp_cli_bridge_failure("H7_MCP_CLI_BRIDGE_LOCAL_SESSION_REQUIRED"), True)
     cli_path = core.package_root / "runtime" / "brain_cli.py"
@@ -717,7 +728,7 @@ def _run_current_cli_bridge(
         "--memory-root",
         str(core.memory_root),
     ]
-    if name == "brain_turn":
+    if name in {"brain_turn", "brain_recent"}:
         assert bridge_workspace_root is not None
         command.extend(("--workspace-root", str(bridge_workspace_root)))
     command.append("mcp-bridge")
@@ -814,7 +825,23 @@ def handle_tool(
         )
     if name == "brain_recall":
         _ensure_scoped_activation(core)
-        scope = _task_scope(arguments)
+        try:
+            scope = _task_scope(arguments, core)
+        except ValueError as exc:
+            code = str(exc) or "H7_TASK_SCOPE_INVALID"
+            if code == "task_scope is invalid":
+                code = "H7_TASK_SCOPE_INVALID"
+            return tool_result(
+                {
+                    "schema": "super-brain.mcp-task-projection.v1",
+                    "available": False,
+                    "code": code,
+                    "projection": [],
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                },
+                True,
+            )
         if scope is not None:
             if snapshot_path is None:
                 return tool_result([])

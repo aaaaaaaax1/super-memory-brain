@@ -343,6 +343,159 @@ def local_scope(project_root: Path, session_key: str):
     return Scope()
 
 
+def test_taskless_continuation_short_circuits_execution_assist() -> None:
+    """A taskless continuation reads only the local pointer and stops."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-layered-route-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        project_root = Path(directory) / "project"
+        memory_root.mkdir(parents=True)
+        project_root.mkdir(parents=True)
+        core = BrainCore(ROOT, memory_root)
+        calls = 0
+        original = turn_runtime._resolve_execution_assist_for_turn
+
+        def counted(*args: object, **kwargs: object):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        turn_runtime._resolve_execution_assist_for_turn = counted
+        try:
+            with local_scope(project_root, "sid-1234567890abcdef"):
+                workspace_key = core._current_workspace_key()
+                session_key = core._current_session_key()
+                write_json(
+                    core.workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json",
+                    {
+                        "schema": "super-brain.execution-hot-index.v1",
+                        "packageVersion": package_version(),
+                        "workspaceKey": workspace_key,
+                        "ownerSessionKey": session_key,
+                        "entries": [],
+                    },
+                )
+                result = turn_runtime.open_turn(core, turn_intent="continuity")
+                direct = turn_runtime.open_turn(core, turn_intent="direct")
+        finally:
+            turn_runtime._resolve_execution_assist_for_turn = original
+
+    assert result["available"] is True, result
+    assert result["code"] == "TURN_RUNTIME_OPEN_NO_TASK_READY", result
+    assert result["continuityMapping"]["state"] == "ordinary_no_task", result
+    assert direct["code"] == "TURN_INTENT_DIRECT_PATH", direct
+    assert calls == 0, calls
+
+
+def test_taskless_probe_fails_closed_for_missing_or_foreign_hot_index() -> None:
+    """Derived-index damage is a repair state, never proof of no task."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-taskless-index-guard-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        project_root = Path(directory) / "project"
+        memory_root.mkdir(parents=True)
+        project_root.mkdir(parents=True)
+        core = BrainCore(ROOT, memory_root)
+        with local_scope(project_root, "sid-abcdef1234567890"):
+            missing = turn_runtime._lightweight_task_pointer_probe(core)
+            workspace_key = core._current_workspace_key()
+            session_key = core._current_session_key()
+            write_json(
+                core.workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json",
+                {
+                    "schema": "super-brain.execution-hot-index.v1",
+                    "packageVersion": package_version(),
+                    "workspaceKey": "ws-" + "0" * 24,
+                    "ownerSessionKey": session_key,
+                    "entries": [],
+                },
+            )
+            mismatched = turn_runtime._lightweight_task_pointer_probe(core)
+
+    assert missing["state"] == "unavailable", missing
+    assert missing["code"] == "BRAIN_CONTEXT_HOT_INDEX_MISSING", missing
+    assert mismatched["state"] == "unavailable", mismatched
+    assert mismatched["code"] == "BRAIN_CONTEXT_HOT_INDEX_SCOPE_MISMATCH", mismatched
+
+
+def test_active_pointer_avoids_duplicate_authority_probe() -> None:
+    """A valid derived pointer only skips the preflight duplicate read.
+
+    ``open_turn`` still calls ``core.context`` after this probe, so this is a
+    performance shortcut rather than an authorization shortcut.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-active-pointer-fast-path-") as directory:
+        core = BrainCore(ROOT, Path(directory) / "shared")
+        calls = 0
+
+        core._current_workspace_key = lambda: "ws-" + "1" * 24  # type: ignore[method-assign]
+        core._current_session_key = lambda: "sid-" + "2" * 24  # type: ignore[method-assign]
+        core._read_current_context_pointer = lambda *_args: {  # type: ignore[method-assign]
+            "taskId": "task-pointer-fast-path",
+            "taskInstanceId": "instance-pointer-fast-path",
+            "currentStep": "verify authority through context",
+            "nextAction": "read the current contract",
+        }
+
+        def unexpected_contract_read(*_args: object, **_kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            raise AssertionError("active pointer must not run the duplicate preflight contract read")
+
+        core._read_context_contract = unexpected_contract_read  # type: ignore[method-assign]
+        result = turn_runtime._lightweight_task_pointer_probe(core)
+
+    assert result["state"] == "active", result
+    assert result["code"] == "H7_LOCAL_SCOPE_ACTIVE_TASK_POINTER", result
+    assert result["taskId"] == "task-pointer-fast-path", result
+    assert calls == 0, calls
+
+
+def test_diagnostic_continuity_never_downgrades_to_taskless_fast_path() -> None:
+    """A Super Brain continuity issue must run its diagnostic route."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-diagnostic-route-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        project_root = Path(directory) / "project"
+        memory_root.mkdir(parents=True)
+        project_root.mkdir(parents=True)
+        core = BrainCore(ROOT, memory_root)
+        calls = 0
+        original = turn_runtime._resolve_execution_assist_for_turn
+
+        def counted(*args: object, **kwargs: object):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        turn_runtime._resolve_execution_assist_for_turn = counted
+        try:
+            with local_scope(project_root, "sid-fedcba0987654321"):
+                workspace_key = core._current_workspace_key()
+                session_key = core._current_session_key()
+                write_json(
+                    core.workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json",
+                    {
+                        "schema": "super-brain.execution-hot-index.v1",
+                        "packageVersion": package_version(),
+                        "workspaceKey": workspace_key,
+                        "ownerSessionKey": session_key,
+                        "entries": [],
+                    },
+                )
+                result = turn_runtime.open_turn(core, turn_intent="super_brain_issue_continuity")
+        finally:
+            turn_runtime._resolve_execution_assist_for_turn = original
+
+    assert result["available"] is False, result
+    assert result["code"] != "TURN_RUNTIME_OPEN_NO_TASK_READY", result
+    assert calls == 1, calls
+
+
 def test_open_is_idempotent_and_binds_typed_memory() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-turn-runtime-open-") as directory:
         state_root = Path(directory) / "state"
@@ -896,6 +1049,34 @@ def test_telemetry_requires_a_persisted_open_entry() -> None:
     assert invalid["available"] is False, invalid
     assert invalid["code"] == "H7_OPEN_TELEMETRY_WITHOUT_PERSISTED_ENTRY_FORBIDDEN", invalid
     assert not (state_root / "workspace" / "runtime-state" / "turn-runtime").exists()
+
+
+def test_telemetry_rejects_non_object_history_entries() -> None:
+    """A rehashed journal with malformed event history must fail closed."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-telemetry-malformed-events-") as directory:
+        memory_base = Path(directory)
+        scope = "a" * 64
+        telemetry_path = turn_runtime._telemetry_path(memory_base, scope)
+        prior = {
+            "schema": TELEMETRY_SCHEMA,
+            "mode": turn_runtime.MODE,
+            "scopeRef": scope,
+            "updatedAt": now(),
+            "events": ["malformed"],
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+        prior["payloadHash"] = canonical_hash(prior)
+        write_json(telemetry_path, prior)
+        telemetry, reused = turn_runtime._record_telemetry(
+            memory_base,
+            scope,
+            {"receiptHash": "b" * 64, "issuedAt": now(), "phase": "open"},
+        )
+
+    assert reused is False
+    assert telemetry["code"] == "H7_RUNTIME_TELEMETRY_CORRUPT", telemetry
 
 
 def test_close_checkpoint_preflight_failure_preserves_current_h7_evidence() -> None:
@@ -2332,6 +2513,10 @@ def test_checkpoint_set_replay_is_never_misreported_as_a_parent_return() -> None
 
 
 def main() -> int:
+    test_taskless_continuation_short_circuits_execution_assist()
+    test_taskless_probe_fails_closed_for_missing_or_foreign_hot_index()
+    test_active_pointer_avoids_duplicate_authority_probe()
+    test_diagnostic_continuity_never_downgrades_to_taskless_fast_path()
     test_open_is_idempotent_and_binds_typed_memory()
     test_memory_write_projects_exact_contract_authorization_and_fails_closed()
     test_native_capability_route_receipt_is_h7_bound_without_authorization()
@@ -2342,6 +2527,7 @@ def main() -> int:
     test_run_observability_tamper_withholds_h7_evidence()
     test_internal_unrecorded_open_preserves_current_h7_evidence()
     test_telemetry_requires_a_persisted_open_entry()
+    test_telemetry_rejects_non_object_history_entries()
     test_close_checkpoint_preflight_failure_preserves_current_h7_evidence()
     test_h7_accepts_the_actual_compact_router_receipt()
     test_project_progress_proof_fails_closed_on_missing_or_drift()
@@ -2360,7 +2546,7 @@ def main() -> int:
     test_checkpoint_instruction_mapping_uses_real_powershell_authority_and_replays_idempotently()
     test_checkpoint_is_the_only_h7_path_that_clears_a_pending_same_scope_contract()
     test_checkpoint_set_replay_is_never_misreported_as_a_parent_return()
-    print("runtime turn-runtime regression: passed (29/29)")
+    print("runtime turn-runtime regression: passed (31/31)")
     return 0
 
 

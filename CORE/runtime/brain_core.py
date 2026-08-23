@@ -8,10 +8,11 @@ import os
 import re
 import sqlite3
 from collections import Counter, deque
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from brain_context import (
     canonical_hash as context_canonical_hash,
@@ -29,6 +30,15 @@ from layout_paths import configured_state_root, state_root as resolve_state_root
 
 TURN_RUNTIME_CONTEXT_SNAPSHOT_KEY = "_turnRuntimeSnapshot"
 TURN_RUNTIME_CONTEXT_SNAPSHOT_SCHEMA = "super-brain.turn-runtime-context-snapshot.v1"
+
+# A recall-local handoff lets the bounded full-scan path share its already
+# parsed sandglass prefix with the recent-tail fallback. It is a ContextVar so
+# concurrent BrainCore calls do not share mutable request state.
+_RECALL_SANDGLASS_CACHE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "super_brain_recall_sandglass_cache", default=None
+)
+_CONTRACT_UNSET = object()
+_RUNTIME_SOURCE_PROJECTION_MAX = 8
 
 
 TAG_RE = re.compile(r"\[[A-Z_]+\]")
@@ -118,6 +128,20 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return ""
+
+
+def _runtime_source_stamps(package_root: Path) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """Return the manifest/registry stamps used by the source-rule cache."""
+
+    paths = (package_root / "manifest.json", package_root / "super-brain-rules.json")
+    stamps: list[tuple[int, int]] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        stamps.append((stat.st_mtime_ns, stat.st_size))
+    return stamps[0], stamps[1]
 
 
 def _mcp_runtime_identity(package_root: Path) -> str:
@@ -437,6 +461,16 @@ class BrainCore:
         # package changes underneath this startup snapshot.
         self._core_rule_registry = load_registry(self.package_root, manifest=self.manifest)
         self._mcp_runtime_identity_startup = _mcp_runtime_identity(self.package_root)
+        # Recall-side JSON projections are immutable within one request and
+        # cheap to invalidate with the source file stamp.  Keep each source
+        # family separate so a malformed file can never poison another one.
+        self._experience_json_cache: dict[str, Any] = {}
+        self._profile_card_json_cache: dict[str, Any] = {}
+        self._self_model_json_cache: dict[str, Any] = {}
+        # One bounded, process-local source projection cache.  Every lookup
+        # still stats manifest.json and super-brain-rules.json; the cache only
+        # avoids reparsing/revalidating unchanged package-owned rule inputs.
+        self._runtime_source_projection_cache: dict[str, Any] | None = None
         self._graph_cache_key: tuple[int, int] | None = None
         self._graph_cache: list[GraphEdge] = []
 
@@ -459,14 +493,54 @@ class BrainCore:
         must restart/re-register the one MCP transport or use the same H7 CLI.
         """
 
-        served = served_core_rules if isinstance(served_core_rules, dict) else self.core_rules(signals)
-        source_manifest = _read_json(self.package_root / "manifest.json")
-        if isinstance(source_manifest, dict):
-            source = project_core_rules(load_registry(self.package_root, manifest=source_manifest), signals=signals)
+        signal_values = tuple(signals)
+        served = served_core_rules if isinstance(served_core_rules, dict) else self.core_rules(signal_values)
+        source_stamps = _runtime_source_stamps(self.package_root)
+        source: dict[str, Any]
+        cache = self._runtime_source_projection_cache
+        if source_stamps is not None and isinstance(cache, dict) and cache.get("stamps") == source_stamps:
+            source_manifest = cache.get("manifest")
+            registry = cache.get("registry")
+            projections = cache.get("projections")
+            signal_key = tuple(str(item) for item in signal_values)
+            source = projections.get(signal_key) if isinstance(projections, dict) else None
+            if not isinstance(source, dict):
+                source = project_core_rules(registry, signals=signal_values)
+                if isinstance(projections, dict) and source.get("status") == "current":
+                    projections.pop(signal_key, None)
+                    projections[signal_key] = source
+                    while len(projections) > _RUNTIME_SOURCE_PROJECTION_MAX:
+                        projections.pop(next(iter(projections)))
+        elif source_stamps is None:
+            # A missing/unstatable source input is itself a currentness
+            # failure. Do not optimistically parse through a transient race;
+            # the next request will retry after the package is readable.
+            source_manifest = None
+            registry = {"status": "withheld", "code": "H7_RUNTIME_SOURCE_RULES_UNAVAILABLE"}
+            source = project_core_rules(registry, signals=signal_values)
         else:
-            source = project_core_rules(
-                {"status": "withheld", "code": "H7_RUNTIME_MANIFEST_UNAVAILABLE"}, signals=signals
-            )
+            source_manifest = _read_json(self.package_root / "manifest.json")
+            if isinstance(source_manifest, dict):
+                registry = load_registry(self.package_root, manifest=source_manifest)
+                source = project_core_rules(registry, signals=signal_values)
+            else:
+                registry = {"status": "withheld", "code": "H7_RUNTIME_MANIFEST_UNAVAILABLE"}
+                source = project_core_rules(registry, signals=signal_values)
+            # Never cache missing, malformed, or withheld inputs. A repaired
+            # package must be retried on the very next request.
+            if (
+                source_stamps is not None
+                and isinstance(source_manifest, dict)
+                and isinstance(registry, dict)
+                and registry.get("status") == "current"
+                and source.get("status") == "current"
+            ):
+                self._runtime_source_projection_cache = {
+                    "stamps": source_stamps,
+                    "manifest": source_manifest,
+                    "registry": registry,
+                    "projections": {tuple(str(item) for item in signal_values): source},
+                }
         startup_identity = str(self._mcp_runtime_identity_startup or "")
         source_identity = _mcp_runtime_identity(self.package_root)
 
@@ -1190,6 +1264,29 @@ class BrainCore:
             return None
 
         package_version = str(self.manifest.get("version", ""))
+        contract_cache: dict[str, Any] = {}
+
+        def cached_contract(contract_name: str) -> Any:
+            if contract_name not in contract_cache:
+                contract_cache[contract_name] = _read_json(
+                    self.workspace / "runtime-state" / "execution-contracts" / contract_name
+                )
+            return contract_cache[contract_name]
+
+        def entry_contract(entry: dict[str, Any]) -> Any:
+            contract_name = Path(str(entry.get("contractFileName", ""))).name
+            return cached_contract(contract_name) if contract_name else None
+
+        def selected_contract(contract_name: str) -> Any:
+            # Candidate filtering may reuse a request-local read, but the
+            # contract that authorizes this return must be read fresh.  A
+            # contract can be atomically replaced between the terminal scan
+            # and final selection; reusing the screening value would hide that
+            # change and could return stale task/proof/authorization fields.
+            return _read_json(
+                self.workspace / "runtime-state" / "execution-contracts" / contract_name
+            )
+
         entries = [
             entry
             for entry in index.get("entries", []) or []
@@ -1216,6 +1313,7 @@ class BrainCore:
                 workspace_key=workspace_key,
                 session_key=session_key,
                 package_version=package_version,
+                contract=entry_contract(entry),
             )
         ]
         if len(entries) != 1:
@@ -1228,9 +1326,7 @@ class BrainCore:
         contract_name = Path(str(entry.get("contractFileName", ""))).name
         if not contract_name:
             return None
-        contract = _read_json(
-            self.workspace / "runtime-state" / "execution-contracts" / contract_name
-        )
+        contract = selected_contract(contract_name)
         if (
             not isinstance(contract, dict)
             or contract.get("schema") != "super-brain.execution-contract.v1"
@@ -1524,6 +1620,7 @@ class BrainCore:
         workspace_key: str,
         session_key: str,
         package_version: str,
+        contract: Any = _CONTRACT_UNSET,
     ) -> bool:
         """Return whether one active-looking index entry is terminal in authority.
 
@@ -1535,7 +1632,8 @@ class BrainCore:
         contract_name = Path(str(entry.get("contractFileName", ""))).name
         if not contract_name:
             return False
-        contract = _read_json(self.workspace / "runtime-state" / "execution-contracts" / contract_name)
+        if contract is _CONTRACT_UNSET:
+            contract = _read_json(self.workspace / "runtime-state" / "execution-contracts" / contract_name)
         return bool(
             isinstance(contract, dict)
             and str(contract.get("schema", "")) == "super-brain.execution-contract.v1"
@@ -1598,6 +1696,17 @@ class BrainCore:
     ) -> tuple[dict[str, Any] | None, str]:
         """Read one unique current execution contract without touching SQLite or pointers."""
 
+        # Scope values become filename components below.  Keep this reader
+        # fail-closed even when an internal adapter hands it malformed or
+        # path-like input; public adapters normally pre-validate the same
+        # H7 keys, but the authority boundary should not rely on every caller
+        # remembering that check.
+        workspace_key = str(workspace_key or "").strip().lower()
+        session_key = str(session_key or "").strip().lower()
+        if not re.fullmatch(r"ws-[0-9a-f]{24}", workspace_key) or not re.fullmatch(
+            r"sid-[0-9a-f]{16,64}", session_key
+        ):
+            return None, "BRAIN_CONTEXT_SCOPE_INVALID"
         index_path = self.workspace / "runtime-state" / "execution-hot-index" / f"{session_key}--{workspace_key}.json"
         index = _read_json(index_path)
         if not isinstance(index, dict):
@@ -1609,6 +1718,27 @@ class BrainCore:
         ):
             return None, "BRAIN_CONTEXT_HOT_INDEX_SCOPE_MISMATCH"
         package_version = str(self.manifest.get("version", ""))
+        contract_cache: dict[str, Any] = {}
+
+        def cached_contract(contract_name: str) -> Any:
+            if contract_name not in contract_cache:
+                contract_cache[contract_name] = _read_json(
+                    self.workspace / "runtime-state" / "execution-contracts" / contract_name
+                )
+            return contract_cache[contract_name]
+
+        def entry_contract(entry: dict[str, Any]) -> Any:
+            contract_name = Path(str(entry.get("contractFileName", ""))).name
+            return cached_contract(contract_name) if contract_name else None
+
+        def selected_contract(contract_name: str) -> Any:
+            # Keep the fast request-local screening cache, but never use it for
+            # the final authority read.  This preserves the old freshness
+            # boundary when a contract is replaced during selection.
+            return _read_json(
+                self.workspace / "runtime-state" / "execution-contracts" / contract_name
+            )
+
         scoped_entries = [
             entry
             for entry in index.get("entries", []) or []
@@ -1630,6 +1760,7 @@ class BrainCore:
                 workspace_key=workspace_key,
                 session_key=session_key,
                 package_version=package_version,
+                contract=entry_contract(entry),
             )
         ]
         terminal_finalization = False
@@ -1644,9 +1775,7 @@ class BrainCore:
                 contract_name = Path(str(candidate.get("contractFileName", ""))).name
                 if not contract_name:
                     continue
-                terminal_contract = _read_json(
-                    self.workspace / "runtime-state" / "execution-contracts" / contract_name
-                )
+                terminal_contract = cached_contract(contract_name)
                 if (
                     isinstance(terminal_contract, dict)
                     and str(terminal_contract.get("schema", "")) == "super-brain.execution-contract.v1"
@@ -1688,7 +1817,7 @@ class BrainCore:
         contract_name = Path(str(entry.get("contractFileName", ""))).name
         if not contract_name:
             return None, "BRAIN_CONTEXT_CONTRACT_NAME_INVALID"
-        contract = _read_json(self.workspace / "runtime-state" / "execution-contracts" / contract_name)
+        contract = selected_contract(contract_name)
         if (
             not isinstance(contract, dict)
             or contract.get("schema") != "super-brain.execution-contract.v1"
@@ -2252,7 +2381,14 @@ class BrainCore:
             index = min(indexes) if indexes else 0
             start = max(0, index - 220)
             snippet = text[start : start + 600].strip()
-            timestamp = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            # A package/state file can be atomically replaced between the
+            # bounded read above and this metadata lookup.  Keep recall
+            # fail-closed for that candidate instead of leaking an OSError
+            # through the whole state query.
+            try:
+                timestamp = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            except (OSError, OverflowError, ValueError):
+                continue
             tags = "[PROJECT][CURRENT][VERIFIED][SUMMARY]" if authoritative else "[PROJECT][HISTORICAL][UNVERIFIED][SUMMARY]"
             value = f"{tags} subject=super-memory-brain {source} timestamp={timestamp} {snippet}"
             candidates.append(
@@ -2316,29 +2452,122 @@ class BrainCore:
         tokens.update(chars[index : index + 2] for index in range(max(0, len(chars) - 1)))
         return " ".join(sorted(token for token in tokens if token))
 
-    def _read_only_fts_rows(self, query: str, limit: int) -> list[tuple[int, str, str, str]]:
-        db_path = self.memory_root / "sandglass.db"
-        tokens = self._fts_tokens(query)
-        if not db_path.is_file() or not tokens:
-            return []
+    @classmethod
+    def _fts_match_query(cls, query: str) -> str:
+        """Build one safe FTS expression without opening the database."""
+
+        tokens = cls._fts_tokens(query)
+        if not tokens:
+            return ""
         if any(character.isascii() and character.isalpha() for character in query):
-            tokens = " OR ".join(tokens.split())
+            return " OR ".join(tokens.split())
+        return tokens
+
+    @staticmethod
+    def _fts_rows_from_connection(
+        connection: sqlite3.Connection,
+        match_query: str,
+        limit: int,
+    ) -> list[tuple[int, str, str, str]]:
+        statement = (
+            "SELECT s.id, s.ts, s.sender, s.text "
+            "FROM sandglass_fts f JOIN sandglass s ON s.id=f.rowid "
+            "WHERE sandglass_fts MATCH ? ORDER BY rank LIMIT ?"
+        )
+        rows = connection.execute(statement, (match_query, limit)).fetchall()
+        return [(int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
+
+    def _read_only_fts_rows_batch(
+        self,
+        queries: Iterable[str],
+        limit: int,
+    ) -> list[list[tuple[int, str, str, str]]]:
+        """Read multiple recall variants through one immutable SQLite handle.
+
+        A normal semantic recall can construct several equivalent query
+        variants.  They all target the same immutable snapshot, so opening a
+        separate connection for each is pure overhead.  This helper is scoped
+        to one call and closes the handle before returning; it neither caches
+        result rows nor weakens the existing read-only behavior.
+        """
+
+        source_queries = list(queries)
+        results: list[list[tuple[int, str, str, str]]] = [[] for _ in source_queries]
+        if not source_queries:
+            return results
+        db_path = self.memory_root / "sandglass.db"
+        if not db_path.is_file():
+            return results
+        match_queries = [self._fts_match_query(query) for query in source_queries]
+        if not any(match_queries):
+            return results
+
+        def retry_variants_individually() -> list[list[tuple[int, str, str, str]]]:
+            # The old implementation opened one connection per variant. Keep
+            # that behavior as a failure-only fallback so a transient first
+            # connection error does not suppress later valid variants, while
+            # the healthy path still pays for one immutable handle.
+            for index, match_query in enumerate(match_queries):
+                if not match_query:
+                    continue
+                retry_connection: sqlite3.Connection | None = None
+                try:
+                    retry_connection = sqlite3.connect(
+                        db_path.resolve().as_uri() + "?mode=ro&immutable=1",
+                        uri=True,
+                    )
+                    retry_connection.execute("PRAGMA query_only=ON")
+                    results[index] = self._fts_rows_from_connection(
+                        retry_connection,
+                        match_query,
+                        limit,
+                    )
+                except (OSError, sqlite3.Error, ValueError):
+                    continue
+                finally:
+                    if retry_connection is not None:
+                        retry_connection.close()
+            return results
+
         connection: sqlite3.Connection | None = None
+        batch_ready = False
+        retry_after_close = False
         try:
             connection = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
             connection.execute("PRAGMA query_only=ON")
-            statement = (
-                "SELECT s.id, s.ts, s.sender, s.text "
-                "FROM sandglass_fts f JOIN sandglass s ON s.id=f.rowid "
-                "WHERE sandglass_fts MATCH ? ORDER BY rank LIMIT ?"
-            )
-            rows = connection.execute(statement, (tokens, limit)).fetchall()
-            return [(int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
+            batch_ready = True
+            rows_by_match: dict[str, list[tuple[int, str, str, str]]] = {}
+            for index, match_query in enumerate(match_queries):
+                if not match_query:
+                    continue
+                rows = rows_by_match.get(match_query)
+                if rows is not None:
+                    # Query variants that compile to the same FTS expression
+                    # are exactly equivalent against this immutable snapshot.
+                    results[index] = rows
+                    continue
+                try:
+                    rows = self._fts_rows_from_connection(connection, match_query, limit)
+                except (sqlite3.Error, ValueError):
+                    # Preserve the former per-variant fail-closed behavior:
+                    # one malformed/unavailable FTS lookup must not suppress
+                    # independently valid variants in the same recall.
+                    continue
+                rows_by_match[match_query] = rows
+                results[index] = rows
         except (OSError, sqlite3.Error, ValueError):
-            return []
+            retry_after_close = not batch_ready
         finally:
             if connection is not None:
                 connection.close()
+        if retry_after_close:
+            return retry_variants_individually()
+        return results
+
+    def _read_only_fts_rows(self, query: str, limit: int) -> list[tuple[int, str, str, str]]:
+        """Read one FTS variant through the same bounded batch implementation."""
+
+        return self._read_only_fts_rows_batch((query,), limit)[0]
 
     def _scan_sandglass_candidates(
         self,
@@ -2353,18 +2582,48 @@ class BrainCore:
         if not scan_terms or not path.is_file():
             return []
         values: list[Candidate] = []
+        recall_cache = _RECALL_SANDGLASS_CACHE.get()
+        cached_lines: dict[int, str] | None = None
+        cached_records: dict[int, SandglassRecord | None] | None = None
+        cached_stamp: tuple[int, int] | None = None
+        if isinstance(recall_cache, dict):
+            try:
+                stat = path.stat()
+                cached_stamp = (stat.st_mtime_ns, stat.st_size)
+                cached_lines = {}
+                cached_records = {}
+                recall_cache["sandglass"] = {
+                    "path": path,
+                    "stamp": cached_stamp,
+                    "lines": cached_lines,
+                    "records": cached_records,
+                    "scanComplete": False,
+                }
+            except OSError:
+                recall_cache.pop("sandglass", None)
+        scan_complete = False
         try:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
                 for line_number, line in enumerate(handle, 1):
                     if line_number > scan_limit:
                         break
+                    if cached_lines is not None:
+                        # Keep raw lines, including malformed/empty records, so
+                        # the recent-tail projection preserves its historical
+                        # physical-line semantics when it reuses this prefix.
+                        cached_lines[line_number] = line
+                    record = _parse_sandglass_record_details(line)
+                    if cached_records is not None:
+                        cached_records[line_number] = record
                     if line_number in seen:
                         continue
-                    record = _parse_sandglass_record_details(line)
                     if record is None:
                         continue
                     timestamp, text = record.timestamp, record.text
-                    session_date = self._session_date(line)
+                    # Date parsing is only relevant for a temporal query.
+                    # Avoid a regex pass for every scanned record on the
+                    # ordinary lexical fallback path.
+                    session_date = self._session_date(line) if temporal_target is not None else None
                     query_hit = any(_contains_term(text, term) for term in scan_terms)
                     temporal_hit = (
                         temporal_target is not None
@@ -2387,8 +2646,16 @@ class BrainCore:
                         )
                     )
                     seen.add(line_number)
+                else:
+                    scan_complete = True
         except (OSError, UnicodeError):
+            if isinstance(recall_cache, dict):
+                recall_cache.pop("sandglass", None)
             return []
+        if isinstance(recall_cache, dict) and cached_lines is not None and cached_stamp is not None:
+            entry = recall_cache.get("sandglass")
+            if isinstance(entry, dict):
+                entry["scanComplete"] = scan_complete
         return values
 
     def _sandglass_candidates(self, query: str, top_k: int, query_date: str = "") -> list[Candidate]:
@@ -2411,18 +2678,13 @@ class BrainCore:
         )
 
         if adaptive_enabled and search_queries:
-            self._append_sandglass_rows(
-                values,
-                seen,
-                self._read_only_fts_rows(search_queries[0], limit),
-                "sandglass_fts5_readonly",
-            )
-            for search_query in search_queries[1:]:
+            fts_rows = self._read_only_fts_rows_batch(search_queries, limit)
+            for index, rows in enumerate(fts_rows):
                 self._append_sandglass_rows(
                     values,
                     seen,
-                    self._read_only_fts_rows(search_query, limit),
-                    "sandglass_fts5_variant",
+                    rows,
+                    "sandglass_fts5_readonly" if index == 0 else "sandglass_fts5_variant",
                 )
 
         # The retrieval path never rebuilds derived indexes. Accepted memory
@@ -2445,6 +2707,49 @@ class BrainCore:
             )
         return values
 
+    @staticmethod
+    def _cached_json_dict(path: Path, cache: dict[str, Any]) -> dict[str, Any] | None:
+        """Read one JSON object with a stamp-aware, fail-closed cache."""
+
+        try:
+            absolute_path = path.expanduser().resolve()
+        except RuntimeError:
+            # A symlink loop or otherwise unresolvable path cannot be an
+            # authority.  The cache key may not be canonical in this branch,
+            # so evict the caller-visible spelling as a best effort.
+            cache.pop(str(path.expanduser()), None)
+            return None
+
+        key = str(absolute_path)
+        try:
+            stat = absolute_path.stat()
+        except OSError:
+            # Missing/unreadable inputs cannot remain an authority.
+            # Evict the canonical key (the normal cache key).  Previously this
+            # used the unresolved spelling and could leave a stale entry after
+            # deletion, causing unnecessary memory growth and risking reuse if
+            # a path was later recreated with the same stamp.
+            cache.pop(key, None)
+            return None
+
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = cache.get(key)
+        if (
+            isinstance(cached, dict)
+            and cached.get("stamp") == stamp
+            and isinstance(cached.get("value"), dict)
+        ):
+            return cached["value"]
+
+        item = _read_json(absolute_path)
+        if not isinstance(item, dict):
+            # Do not cache missing, malformed, or non-object JSON.  In
+            # particular, a repaired file must be reread on the next call.
+            cache.pop(key, None)
+            return None
+        cache[key] = {"stamp": stamp, "value": item}
+        return item
+
     def _self_model_candidates(self, query: str) -> list[Candidate]:
         policy = self.policy.get("selfModel", {})
         policy = policy if isinstance(policy, dict) else {}
@@ -2453,7 +2758,7 @@ class BrainCore:
         except (TypeError, ValueError):
             max_age_hours = 24
 
-        item = _read_json(self.workspace / "self-model.json")
+        item = self._cached_json_dict(self.workspace / "self-model.json", self._self_model_json_cache)
         snapshot_status = "missing"
         verification_status = "unknown"
         valid_snapshot = False
@@ -2789,9 +3094,24 @@ class BrainCore:
         values: list[Candidate] = []
         root = self.workspace / "experiences"
         if not root.exists():
+            # The cache is process-local and keyed by canonical path.  Remove
+            # entries whose source family disappeared so repeated workspace
+            # repairs do not grow the cache without bound.
+            self._experience_json_cache.clear()
             return values
-        for path in root.glob("*.json"):
-            item = _read_json(path)
+        paths = list(root.glob("*.json"))
+        active_keys: set[str] = set()
+        for path in paths:
+            try:
+                active_keys.add(str(path.expanduser().resolve()))
+            except RuntimeError:
+                continue
+        for key in tuple(self._experience_json_cache):
+            if key not in active_keys:
+                self._experience_json_cache.pop(key, None)
+
+        for path in paths:
+            item = self._cached_json_dict(path, self._experience_json_cache)
             if not isinstance(item, dict):
                 continue
             searchable = " ".join(
@@ -2829,7 +3149,10 @@ class BrainCore:
     def _profile_card_candidates(self, query: str, terms: set[str]) -> list[Candidate]:
         if not self._is_profile_query(query):
             return []
-        item = _read_json(self.workspace / "profile-card.json")
+        item = self._cached_json_dict(
+            self.workspace / "profile-card.json",
+            self._profile_card_json_cache,
+        )
         if not isinstance(item, dict):
             return []
         values: list[Candidate] = []
@@ -2901,10 +3224,38 @@ class BrainCore:
         ) or any(marker in query for marker in ("\u53e6\u4e00\u4e2a\u4f1a\u8bdd", "\u4e0a\u4e2a\u4f1a\u8bdd", "\u4e4b\u524d\u4f1a\u8bdd"))
 
     def _session_scope_allowed(self, candidate: Candidate, query: str, layer: str) -> bool:
-        if layer != "session" or not candidate.session_key or self._is_cross_session_query(query):
+        # The request's ``layer=all`` is not permission to merge a
+        # session-scoped record into another cwd/session scope. Scope the
+        # candidate by its own declared layer instead.
+        if _layer(candidate.text) != "session" or not candidate.session_key:
             return True
-        current = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID", "")
-        return not current or candidate.session_key == self._scope_hash(current)
+        current_workspace = self._context_workspace_key()
+        # Session provenance is subordinate to the current local workspace.
+        # Keep legacy records without a workspace marker readable for backward
+        # compatibility, but never admit an explicitly foreign workspace.
+        if candidate.workspace_key:
+            # A scoped record cannot become cross-workspace evidence merely
+            # because the caller's cwd is currently unavailable.  Keep only
+            # genuinely legacy records (without a workspace marker) readable
+            # in that degraded local-state condition.
+            if not current_workspace:
+                return False
+            if candidate.workspace_key.lower() not in self._workspace_provenance_keys(current_workspace):
+                return False
+        # A session-scoped record is never readable without a current local
+        # session identity.  In particular, an explicit "previous session"
+        # query must not turn a missing identity into a wildcard over every
+        # session in the shared sandglass.
+        current = self._context_session_key()
+        if not current:
+            return False
+        if self._is_cross_session_query(query):
+            return True
+        # Sandglass writers have used both the legacy 16-hex hash and the
+        # current ``sid-<24-hex>`` provenance form. Reuse the same bounded
+        # compatibility set as ``recent()`` instead of rejecting a valid
+        # current-session record merely because its writer format changed.
+        return candidate.session_key.lower() in self._session_provenance_keys(current)
 
     @staticmethod
     def _is_unverified_current_task_memory(candidate: Candidate) -> bool:
@@ -2990,8 +3341,14 @@ class BrainCore:
         anchors: set[str] | None = None,
         alias_terms: set[str] | None = None,
         identity_terms: set[str] | None = None,
+        contains_term: Callable[[str, str], bool] | None = None,
     ) -> Candidate | None:
         text = candidate.text
+        # Resolve the default at call time so ordinary callers preserve the
+        # existing module-global lookup behavior (including focused test
+        # instrumentation).  ``recall`` explicitly supplies its call-local
+        # memoizer below.
+        matcher = contains_term if contains_term is not None else _contains_term
         if not text or _looks_corrupt(text) or "[STALE]" in text:
             return None
         lowered = text.lower()
@@ -3005,9 +3362,9 @@ class BrainCore:
         ) or any(marker in query for marker in ("\u5386\u53f2", "\u4ee5\u524d", "\u5df2\u62d2\u7edd", "\u88ab\u66ff\u4ee3"))
         if candidate.rejected_record and not historical_request:
             return None
-        candidate.matched_terms = sorted(term for term in terms if _contains_term(text, term))
+        candidate.matched_terms = sorted(term for term in terms if matcher(text, term))
         anchors = anchors if anchors is not None else self._query_anchors(query, terms)
-        candidate.anchor_matches = sorted(term for term in anchors if _contains_term(text, term))
+        candidate.anchor_matches = sorted(term for term in anchors if matcher(text, term))
         candidate.exact_match = bool(query.strip()) and query.lower() in lowered
         identity_match = re.search(
             r"(?i)\bdecision:([a-z0-9._-]+)|\b(?:decision_key|key)=([a-z0-9._-]+)",
@@ -3077,7 +3434,7 @@ class BrainCore:
         }
         specific_anchor_match = any(term in candidate.anchor_matches for term in specific_terms)
         alias_terms = alias_terms if alias_terms is not None else _meaningful_terms(" ".join(self._matched_aliases(query)))
-        alias_match_count = sum(_contains_term(text, term) for term in alias_terms)
+        alias_match_count = sum(matcher(text, term) for term in alias_terms)
         alias_required = min(3, max(2, math.ceil(len(alias_terms) * 0.2))) if alias_terms else 0
         alias_supported = bool(alias_terms) and alias_match_count >= alias_required
         generic_only = bool(candidate.matched_terms) and not candidate.anchor_matches
@@ -3243,6 +3600,7 @@ class BrainCore:
         limit: int,
         *,
         session_keys: set[str] | None = None,
+        workspace_keys: set[str] | None = None,
         include_legacy: bool = False,
     ) -> list[tuple[int, str, str, str, str, str, str]]:
         """Read a bounded recent tail, optionally restricted to provenance.
@@ -3258,6 +3616,92 @@ class BrainCore:
         path = self.memory_root / "sandglass.txt"
         if not path.is_file():
             return []
+        # ``None`` means that dimension is intentionally unscoped.  An empty
+        # supplied set instead means its required local provenance could not
+        # be derived, which must fail closed rather than widen to every
+        # workspace/session in the shared tail.
+        if (session_keys is not None and not session_keys) or (workspace_keys is not None and not workspace_keys):
+            return []
+        recall_cache = _RECALL_SANDGLASS_CACHE.get()
+        cached_entry = recall_cache.get("sandglass") if isinstance(recall_cache, dict) else None
+        cached_records = cached_entry.get("records") if isinstance(cached_entry, dict) else None
+
+        def rows_from_tail(
+            tail: deque[tuple[int, str]],
+            record_cache: dict[int, SandglassRecord | None] | None = None,
+        ) -> list[tuple[int, str, str, str, str, str, str]]:
+            rows: list[tuple[int, str, str, str, str, str, str]] = []
+            for line_number, line in tail:
+                if isinstance(record_cache, dict) and line_number in record_cache:
+                    record = record_cache[line_number]
+                else:
+                    record = _parse_sandglass_record_details(line)
+                if record is None:
+                    continue
+                rows.append(
+                    (
+                        line_number,
+                        record.timestamp,
+                        record.sender,
+                        record.text,
+                        record.session_key,
+                        record.task_key,
+                        record.workspace_key,
+                    )
+                )
+            return rows
+
+        if isinstance(cached_entry, dict) and cached_entry.get("scanComplete") is True:
+            cached_path = cached_entry.get("path")
+            cached_stamp = cached_entry.get("stamp")
+            cached_lines = cached_entry.get("lines")
+            try:
+                current_stat = path.stat()
+                current_stamp = (current_stat.st_mtime_ns, current_stat.st_size)
+            except OSError:
+                current_stamp = None
+            if (
+                isinstance(cached_path, Path)
+                and cached_path == path
+                and isinstance(cached_stamp, tuple)
+                and current_stamp == cached_stamp
+                and isinstance(cached_lines, dict)
+            ):
+                # Replay physical lines, including malformed/empty records,
+                # so deque(maxlen=limit) has exactly the same tail semantics as
+                # a fresh file pass.  Scope filtering remains unchanged.
+                tail = deque(maxlen=limit)
+                # `_scan_sandglass_candidates` inserts physical lines in
+                # ascending order; preserve that order directly instead of
+                # sorting the bounded prefix on every fallback.
+                for line_number, line in cached_lines.items():
+                    if not isinstance(line_number, int) or not isinstance(line, str):
+                        continue
+                    if session_keys is not None:
+                        if isinstance(cached_records, dict) and line_number in cached_records:
+                            record = cached_records[line_number]
+                        else:
+                            record = _parse_sandglass_record_details(line)
+                        if record is None:
+                            continue
+                        if record.session_key:
+                            if record.session_key.lower() not in session_keys:
+                                continue
+                        elif not include_legacy:
+                            continue
+                        if workspace_keys and (
+                            not record.workspace_key
+                            or record.workspace_key.lower() not in workspace_keys
+                        ):
+                            # A scoped recent read requires both provenance
+                            # dimensions.  Session-only legacy lines remain
+                            # readable through the unscoped compatibility
+                            # path, but must never enter a workspace-bound
+                            # projection.
+                            continue
+                    tail.append((line_number, line))
+                return rows_from_tail(tail, cached_records if isinstance(cached_records, dict) else None)
+
         tail: deque[tuple[int, str]] = deque(maxlen=limit)
         try:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -3271,26 +3715,18 @@ class BrainCore:
                                 continue
                         elif not include_legacy:
                             continue
+                        if workspace_keys and (
+                            not record.workspace_key
+                            or record.workspace_key.lower() not in workspace_keys
+                        ):
+                            continue
                     tail.append((line_number, line))
         except (OSError, UnicodeError):
             return []
-        rows: list[tuple[int, str, str, str, str, str, str]] = []
-        for line_number, line in tail:
-            record = _parse_sandglass_record_details(line)
-            if record is None:
-                continue
-            rows.append(
-                (
-                    line_number,
-                    record.timestamp,
-                    record.sender,
-                    record.text,
-                    record.session_key,
-                    record.task_key,
-                    record.workspace_key,
-                )
-            )
-        return rows
+        # A partial/invalid prior scan cannot supply authority for this fresh
+        # pass. Parse the lines just read, even when their physical numbers
+        # overlap stale entries in the request-local cache.
+        return rows_from_tail(tail)
 
     def _recent_candidates(self, terms: set[str], limit: int) -> list[Candidate]:
         rows = self._recent_sandglass_rows(limit)
@@ -3311,6 +3747,29 @@ class BrainCore:
         ]
 
     def recall(
+        self,
+        query: str,
+        top_k: int = 3,
+        max_tokens: int = DEFAULT_RECALL_MAX_TOKENS,
+        layer: str = "all",
+        query_date: str = "",
+        _evaluation_top_k: int = 0,
+    ) -> list[dict[str, Any]]:
+        sandglass_cache: dict[str, Any] = {}
+        token = _RECALL_SANDGLASS_CACHE.set(sandglass_cache)
+        try:
+            return self._recall_impl(
+                query,
+                top_k=top_k,
+                max_tokens=max_tokens,
+                layer=layer,
+                query_date=query_date,
+                _evaluation_top_k=_evaluation_top_k,
+            )
+        finally:
+            _RECALL_SANDGLASS_CACHE.reset(token)
+
+    def _recall_impl(
         self,
         query: str,
         top_k: int = 3,
@@ -3378,13 +3837,28 @@ class BrainCore:
             candidates.extend(self._experience_candidates(query, terms))
             candidates.extend(self._profile_card_candidates(query, terms))
 
+        # A recall ranks the same bounded candidate texts more than once:
+        # first for document frequency and then for terms, anchors, and
+        # aliases in ``_score``.  Cache only this call's exact
+        # ``_contains_term`` results.  The underlying matcher remains the
+        # authority for lexical/boundary semantics; no state escapes recall.
+        lexical_matches: dict[tuple[str, str], bool] = {}
+
+        def contains_term_once(text: str, term: str) -> bool:
+            key = (text, term)
+            matched = lexical_matches.get(key)
+            if matched is None:
+                matched = _contains_term(text, term)
+                lexical_matches[key] = matched
+            return matched
+
         scored: list[Candidate] = []
         seen_text: set[str] = set()
         document_frequency = Counter(
             term
             for term in terms
             for candidate in candidates
-            if _contains_term(candidate.text, term)
+            if contains_term_once(candidate.text, term)
         )
         corpus_size = len(candidates)
         scoring_anchors = self._query_anchors(query, terms)
@@ -3402,6 +3876,7 @@ class BrainCore:
                 anchors=scoring_anchors,
                 alias_terms=scoring_alias_terms,
                 identity_terms=scoring_identity_terms,
+                contains_term=contains_term_once,
             )
             if value is None:
                 continue
@@ -3437,6 +3912,7 @@ class BrainCore:
                     anchors=scoring_anchors,
                     alias_terms=scoring_alias_terms,
                     identity_terms=scoring_identity_terms,
+                    contains_term=contains_term_once,
                 )
                 if value is None:
                     continue
@@ -3636,22 +4112,14 @@ class BrainCore:
             for index, item in enumerate(items, 1)
         ]
 
-    def status(self) -> dict[str, Any]:
-        state = _read_json(self.workspace / "super-brain-state.json") or {}
-        status_card = _read_json(self.workspace / "status-card.json") or {}
-        version = str(self.manifest.get("version", "unknown"))
-        active_contract = self._execution_contract_context()
-        activation = self._activation_summary(
-            str((active_contract or {}).get("taskId", "")),
-            str((active_contract or {}).get("taskInstanceId", "")),
-        )
-        core_rules = self.core_rules()
-        runtime_identity = self.runtime_identity_status(served_core_rules=core_rules)
-        # One fresh identity proof per status request is enough.  The binding
-        # check consumes that exact proof instead of stat/hash-scanning the
-        # 31-file MCP identity closure a second time.
-        mcp_runtime_binding = self.mcp_runtime_binding_status(runtime_identity=runtime_identity)
+    def retired_transport_guard(self) -> dict[str, Any]:
+        """Return the narrow retired-transport invariant without status work.
 
+        Evidence reads need this guard but do not need a status projection.
+        Keeping it independent avoids a duplicate MCP identity, binding,
+        activation, and contract pass while preserving the same fail-closed
+        check and public payload used by :meth:`status`.
+        """
         # H7-only transport is a runtime invariant, not a historical status
         # hint. Keep the registration check narrow so unrelated Codex hooks
         # remain untouched.
@@ -3684,7 +4152,7 @@ class BrainCore:
             if hook_registered
             else "H7_RETIRED_TRANSPORT_GUARD_CURRENT"
         )
-        retired_transport_guard = {
+        return {
             "schema": "super-brain.retired-transport-guard.v1",
             "state": "ready" if guard_code == "H7_RETIRED_TRANSPORT_GUARD_CURRENT" else "withheld",
             "code": guard_code,
@@ -3704,6 +4172,32 @@ class BrainCore:
             "legacyDependency": "none",
             "rawPromptStored": False,
             "rawTranscriptStored": False,
+        }
+
+    def status(self) -> dict[str, Any]:
+        state = _read_json(self.workspace / "super-brain-state.json") or {}
+        status_card = _read_json(self.workspace / "status-card.json") or {}
+        version = str(self.manifest.get("version", "unknown"))
+        active_contract = self._execution_contract_context()
+        activation = self._activation_summary(
+            str((active_contract or {}).get("taskId", "")),
+            str((active_contract or {}).get("taskInstanceId", "")),
+        )
+        core_rules = self.core_rules()
+        runtime_identity = self.runtime_identity_status(served_core_rules=core_rules)
+        # One fresh identity proof per status request is enough.  The binding
+        # check consumes that exact proof instead of stat/hash-scanning the
+        # 31-file MCP identity closure a second time.
+        mcp_runtime_binding = self.mcp_runtime_binding_status(runtime_identity=runtime_identity)
+        retired_transport_guard = self.retired_transport_guard()
+        hook_registration = retired_transport_guard.get("superBrainHookRegistration", {})
+        turn_runtime = {
+            "available": retired_transport_guard.get("state") == "ready",
+            "state": "available" if retired_transport_guard.get("state") == "ready" else "withheld",
+            "mode": "hookless_turn_runtime",
+            "requiredForCore": True,
+            "hookRegistrationAbsent": hook_registration.get("state") == "absent",
+            "configurationReadable": hook_registration.get("state") != "unverifiable",
         }
 
         def verification_axis(payload: dict[str, Any], fallback: Any = None) -> dict[str, Any]:
@@ -3833,13 +4327,26 @@ class BrainCore:
         keys.add(hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16])
         return {item for item in keys if item}
 
+    @staticmethod
+    def _workspace_provenance_keys(workspace_key: str) -> set[str]:
+        """Accept current and legacy opaque workspace provenance forms."""
+
+        normalized = str(workspace_key or "").strip().lower()
+        if not normalized:
+            return set()
+        keys = {normalized}
+        if normalized.startswith("ws-") and re.fullmatch(r"ws-[0-9a-f]{16,64}", normalized):
+            keys.add(normalized[3:])
+        keys.add(hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16])
+        return {item for item in keys if item}
+
     def recent(self, limit: int = 5, *, session_key: str | None = None) -> list[dict[str, Any]]:
         """Return recent memory, fail-closed when a scoped session is absent.
 
         ``session_key=None`` preserves the ordinary CLI's legacy unscoped
-        read.  Runtime/MCP callers must pass the current local session (or an
-        explicit empty string); an empty scoped value returns no records and
-        can never fall back to another conversation's tail.
+        read.  A scoped caller must name the current local session (or an
+        explicit empty string); an absent or foreign scoped value returns no
+        records and can never fall back to another conversation's tail.
         """
 
         limit = min(max(1, int(limit)), 20)
@@ -3849,9 +4356,19 @@ class BrainCore:
             requested = str(session_key or "").strip()
             if not requested:
                 return []
+            current_session = self._context_session_key()
+            requested_session_keys = self._session_provenance_keys(requested)
+            if not current_session or not requested_session_keys.intersection(
+                self._session_provenance_keys(current_session)
+            ):
+                return []
+            current_workspace = self._context_workspace_key()
+            if not current_workspace:
+                return []
             rows = self._recent_sandglass_rows(
                 limit,
-                session_keys=self._session_provenance_keys(requested),
+                session_keys=requested_session_keys,
+                workspace_keys=self._workspace_provenance_keys(current_workspace),
             )
         return [
             {"line": int(row[0]), "timestamp": str(row[1]), "text": _compact(str(row[3]), 320)}

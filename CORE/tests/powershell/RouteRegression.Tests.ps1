@@ -32,4 +32,40 @@ Describe 'Route regression scaffold' {
     $result.failed | Should Be 0
     $result.knownBaselineGapCount | Should Be 0
   }
+
+  It 'keeps route metadata complete and bounded across the route map' {
+    $path = Join-Path $Root 'route-map.json'
+    $doc = Get-Content -Raw -LiteralPath $path -Encoding UTF8 | ConvertFrom-Json
+    $classes = @('direct','memory','task','continuity','diagnostic')
+    $tiers = @('none','memory_only','task','continuity_light','full_diagnostic')
+    @($doc.routes).Count | Should BeGreaterThan 10
+    foreach ($route in @($doc.routes)) {
+      [string]$route.route | Should Not BeNullOrEmpty
+      (@($classes) -contains [string]$route.routeClass) | Should Be $true
+      (@($tiers) -contains [string]$route.activationTier) | Should Be $true
+      $route.requiresTaskPointer.GetType().Name | Should Match 'Boolean'
+      $route.requiresProjectProof.GetType().Name | Should Match 'Boolean'
+      $route.requiresCapabilityRoute.GetType().Name | Should Match 'Boolean'
+      (@($classes) -contains [string]$route.userVisibleState) | Should Be $true
+    }
+  }
+
+  It 'projects metadata without changing legacy intent output' {
+    $router = Join-Path $Root 'scripts\intent-router.ps1'
+    $continuation = (& $router -Text 'continue' -Json -SkipCapabilityRoute) | ConvertFrom-Json
+    $continuation.intent | Should Be 'continue'
+    $continuation.routeClass | Should Be 'continuity'
+    $continuation.activationTier | Should Be 'continuity_light'
+    $continuation.requiresTaskPointer | Should Be $true
+    $continuation.requiresProjectProof | Should Be $true
+    $continuation.requiresCapabilityRoute | Should Be $false
+
+    $direct = (& $router -Text 'hello' -Json -SkipCapabilityRoute) | ConvertFrom-Json
+    $direct.intent | Should Be 'general_task'
+    $direct.routeClass | Should Be 'direct'
+    $direct.activationTier | Should Be 'none'
+    $direct.requiresTaskPointer | Should Be $false
+    $direct.requiresProjectProof | Should Be $false
+    $direct.requiresCapabilityRoute | Should Be $false
+  }
 }

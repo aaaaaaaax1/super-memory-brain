@@ -1269,7 +1269,11 @@ def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(
     control = BrainControl(state_root)
     thread_id = "019fbc52-79e6-7941-af97-c1c2d40be451"
     owner_session_key = "sid-" + hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:24]
-    workspace_key = "ws-" + "c" * 24
+    host_project = state_root / "host-project"
+    host_project.mkdir(parents=True, exist_ok=True)
+    workspace_key = "ws-" + hashlib.sha256(
+        str(host_project.resolve()).rstrip("/\\").lower().encode("utf-8")
+    ).hexdigest()[:24]
 
     def import_scoped(command_id: str, task_id: str, instance_digit: str, next_action: str) -> None:
         request = task_request(command_id, initial_revision=0, next_action=next_action)
@@ -1333,6 +1337,7 @@ def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(
                 str(state_root / "shared"),
             ],
             input=requests,
+            cwd=str(host_project),
             capture_output=True,
             text=True,
             check=False,

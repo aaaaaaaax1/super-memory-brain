@@ -4,7 +4,9 @@ $Cli = Join-Path $Root 'runtime\brain_cli.py'
 function Invoke-ActivationCli([string]$StateRoot,[string[]]$Extra = @()) {
   $memoryRoot = Join-Path $StateRoot 'shared'
   New-Item -ItemType Directory -Force -Path $memoryRoot | Out-Null
-  $raw = @(& python -X utf8 $Cli --package-root $Root --memory-root $memoryRoot activate --route bare_wake --workspace-key 'ws-activation-pester-424242424242424242424242' --session-key 'sid-activation-pester-424242424242424242' @Extra 2>&1)
+  # Bare-wake activation is intentionally unscoped; explicit scope flags are
+  # assertions and must match the current local cwd/session.
+  $raw = @(& python -X utf8 $Cli --package-root $Root --memory-root $memoryRoot activate --route bare_wake @Extra 2>&1)
   $exitCode = $LASTEXITCODE
   $text = ($raw | ForEach-Object { [string]$_ }) -join "`n"
   return [pscustomobject]@{ exitCode=$exitCode; value=if($text){$text | ConvertFrom-Json}else{$null}; text=$text }

@@ -3,9 +3,11 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +17,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from brain_control import BrainControl
 from brain_context import canonical_hash, intent_context_projection_path, scope_ref
+import brain_core as brain_core_module
 from brain_core import BrainCore, Candidate, GraphEdge
 from brain_mcp import TOOLS as MCP_TOOLS, handle_tool
 from continuation_policy import decide_turn_close
@@ -208,7 +211,9 @@ def test_adaptive_sparse_recall_uses_fts_before_heavier_backends() -> None:
             searches.append((query, limit))
             return [(7, "2026-07-18", "browser automation uses Playwright first")]
 
-        core._read_only_fts_rows = read_only_fts
+        core._read_only_fts_rows_batch = lambda queries, limit: [
+            read_only_fts(query, limit) for query in queries
+        ]
 
         results = core._sandglass_candidates("browser automation", top_k=3)
 
@@ -239,12 +244,402 @@ def test_adaptive_sparse_recall_uses_bounded_scan_after_fts_miss() -> None:
         }
         core.policy = policy
 
-        core._read_only_fts_rows = lambda query, limit: []
+        core._read_only_fts_rows_batch = lambda queries, limit: [[] for _ in queries]
 
         results = core._sandglass_candidates("fuzzy memory", top_k=3)
 
         assert results
         assert results[0].reason == "sandglass_anchor_scan"
+
+
+def test_adaptive_sparse_recall_reuses_one_read_only_sqlite_connection() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-adaptive-fts-batch-") as directory:
+        memory_root = Path(directory) / "shared"
+        memory_root.mkdir(parents=True)
+        database = memory_root / "sandglass.db"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "CREATE TABLE sandglass (id INTEGER PRIMARY KEY, ts TEXT, sender TEXT, text TEXT)"
+            )
+            connection.execute("CREATE VIRTUAL TABLE sandglass_fts USING fts5(tokens)")
+            connection.execute(
+                "INSERT INTO sandglass (id, ts, sender, text) VALUES (1, '2026-07-18', 'user', 'alpha marker')"
+            )
+            connection.execute(
+                "INSERT INTO sandglass (id, ts, sender, text) VALUES (2, '2026-07-18', 'user', 'beta marker')"
+            )
+            connection.execute("INSERT INTO sandglass_fts (rowid, tokens) VALUES (1, 'alpha marker')")
+            connection.execute("INSERT INTO sandglass_fts (rowid, tokens) VALUES (2, 'beta marker')")
+            connection.commit()
+        finally:
+            connection.close()
+
+        core = BrainCore(ROOT, memory_root)
+        policy = copy_policy(core)
+        policy["retrieval"]["dynamic"]["fullScanFallback"] = False
+        core.policy = policy
+        core._search_queries = lambda query: ["alpha", "beta", "alpha"]
+        original_connect = sqlite3.connect
+        with mock.patch.object(sqlite3, "connect", wraps=original_connect) as connect:
+            candidates = core._sandglass_candidates("irrelevant query", top_k=3)
+
+        assert connect.call_count == 1
+        assert [candidate.text for candidate in candidates] == ["alpha marker", "beta marker"]
+    assert [candidate.reason for candidate in candidates] == [
+        "sandglass_fts5_readonly",
+        "sandglass_fts5_variant",
+    ]
+
+
+def test_adaptive_sparse_recall_retries_variants_after_transient_batch_connect_failure() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-adaptive-fts-retry-") as directory:
+        memory_root = Path(directory) / "shared"
+        memory_root.mkdir(parents=True)
+        database = memory_root / "sandglass.db"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("CREATE TABLE sandglass (id INTEGER PRIMARY KEY, ts TEXT, sender TEXT, text TEXT)")
+            connection.execute("CREATE VIRTUAL TABLE sandglass_fts USING fts5(tokens)")
+            connection.execute(
+                "INSERT INTO sandglass (id, ts, sender, text) VALUES (1, '2026-07-18', 'user', 'alpha marker')"
+            )
+            connection.execute(
+                "INSERT INTO sandglass (id, ts, sender, text) VALUES (2, '2026-07-18', 'user', 'beta marker')"
+            )
+            connection.execute("INSERT INTO sandglass_fts (rowid, tokens) VALUES (1, 'alpha marker')")
+            connection.execute("INSERT INTO sandglass_fts (rowid, tokens) VALUES (2, 'beta marker')")
+            connection.commit()
+        finally:
+            connection.close()
+
+        core = BrainCore(ROOT, memory_root)
+        original_connect = sqlite3.connect
+        calls = 0
+
+        def flaky_connect(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise sqlite3.OperationalError("transient batch connection failure")
+            return original_connect(*args, **kwargs)
+
+        with mock.patch.object(sqlite3, "connect", side_effect=flaky_connect):
+            rows = core._read_only_fts_rows_batch(["alpha", "beta"], 3)
+
+        assert calls == 3
+        assert rows[0][0][3] == "alpha marker"
+        assert rows[1][0][3] == "beta marker"
+
+
+def test_recall_lexical_match_cache_is_call_scoped_and_score_equivalent() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-recall-lexical-cache-") as directory:
+        core = make_isolated_recall_core(Path(directory))
+        query = "alpha marker"
+        terms = core._query_terms(query)
+        anchors = core._query_anchors(query, terms)
+        aliases: set[str] = set()
+        identity_terms = core._query_identity_terms(query, terms)
+        text = "[VERIFIED] alpha marker evidence remains exact."
+
+        # The cached matcher is an exact memoization of the existing function;
+        # score projections must stay byte-for-byte equivalent to the direct
+        # matcher before it is used by the full recall path.
+        direct = core._score(
+            Candidate(text=text, source="direct", source_type="sandglass", reason="fixture"),
+            query, terms, False, {}, 1, None,
+            anchors=anchors, alias_terms=aliases, identity_terms=identity_terms,
+        )
+        score_cache: dict[tuple[str, str], bool] = {}
+
+        def cached_match(value: str, term: str) -> bool:
+            key = (value, term)
+            if key not in score_cache:
+                score_cache[key] = brain_core_module._contains_term(value, term)
+            return score_cache[key]
+
+        cached = core._score(
+            Candidate(text=text, source="direct", source_type="sandglass", reason="fixture"),
+            query, terms, False, {}, 1, None,
+            anchors=anchors, alias_terms=aliases, identity_terms=identity_terms,
+            contains_term=cached_match,
+        )
+        assert direct is not None and cached is not None
+        assert vars(cached) == vars(direct)
+
+        # Duplicate candidate text exercises document-frequency plus both score
+        # passes.  One recall must invoke the boundary matcher once per unique
+        # (text, term), while emitting the same deduplicated result.
+        def fixture_candidates(_query: str, _top_k: int, _query_date: str = "") -> list[Candidate]:
+            return [
+                Candidate(text=text, source="1", source_type="sandglass", reason="fixture"),
+                Candidate(text=text, source="2", source_type="sandglass", reason="fixture"),
+            ]
+
+        core._sandglass_candidates = fixture_candidates
+        original_contains = brain_core_module._contains_term
+        with mock.patch.object(brain_core_module, "_contains_term", wraps=original_contains) as contains:
+            results = core.recall(query, top_k=2, max_tokens=200)
+        assert contains.call_count == len(terms)
+        assert len(results) == 1
+        assert results[0]["text"] == text
+        assert results[0]["matchedTerms"] == sorted(terms)
+
+        # Force a reference recall to keep direct matching inside ``_score``.
+        # It receives the same candidates and query but intentionally discards
+        # the call-local matcher injection; public output must not change.
+        reference = make_isolated_recall_core(Path(directory) / "reference")
+        reference._sandglass_candidates = fixture_candidates
+        direct_score = BrainCore._score
+
+        def score_without_cache(*args, **kwargs):
+            kwargs.pop("contains_term", None)
+            return direct_score(reference, *args, **kwargs)
+
+        reference._score = score_without_cache
+        assert reference.recall(query, top_k=2, max_tokens=200) == results
+
+
+def test_recall_scan_and_recent_fallback_share_request_local_sandglass_read() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-recall-sandglass-cache-") as directory:
+        root = Path(directory)
+        memory_root = root / "shared"
+        memory_root.mkdir(parents=True)
+        sandglass = memory_root / "sandglass.txt"
+        sandglass.write_text(
+            "2026-07-18 09:00:00 | user | fallback-anchor evidence\n",
+            encoding="utf-8",
+        )
+        core = BrainCore(ROOT, memory_root)
+        core.workspace = root / "workspace"
+        core._graph_candidates = lambda terms: []
+        core._experience_candidates = lambda query, terms: []
+        core._profile_card_candidates = lambda query, terms: []
+        core._read_only_fts_rows_batch = lambda queries, limit: [[] for _ in queries]
+
+        cache_ids: list[int] = []
+
+        def full_scan(query: str, top_k: int, query_date: str = "") -> list[Candidate]:
+            cache_ids.append(id(brain_core_module._RECALL_SANDGLASS_CACHE.get()))
+            # Populate the same request-local raw-line cache used by the real
+            # sandglass candidate path, then return no scored candidates so the
+            # recent fallback is exercised.
+            core._scan_sandglass_candidates(
+                {"fallback-anchor"},
+                {"fallback-anchor"},
+                None,
+                set(),
+                100,
+            )
+            return []
+
+        def recent_fallback(terms: set[str], limit: int) -> list[Candidate]:
+            cache_ids.append(id(brain_core_module._RECALL_SANDGLASS_CACHE.get()))
+            rows = core._recent_sandglass_rows(limit)
+            return [
+                Candidate(
+                    text=str(row[3]),
+                    source=f"{row[0]}:{row[1]}",
+                    source_type="recent",
+                    reason="recent_fallback",
+                    timestamp=str(row[1]),
+                    sender=str(row[2]),
+                    session_key=str(row[4]),
+                    task_key=str(row[5]),
+                    workspace_key=str(row[6]),
+                )
+                for row in rows
+            ]
+
+        core._sandglass_candidates = full_scan
+        core._recent_candidates = recent_fallback
+        original_open = Path.open
+        open_count = 0
+
+        def counting_open(path: Path, *args, **kwargs):
+            nonlocal open_count
+            if path == sandglass:
+                open_count += 1
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", counting_open):
+            results = core.recall("fallback-anchor", top_k=2, max_tokens=300)
+
+        assert open_count == 1
+        assert len(cache_ids) == 2 and cache_ids[0] == cache_ids[1]
+        assert results and "fallback-anchor evidence" in results[0]["text"]
+        assert brain_core_module._RECALL_SANDGLASS_CACHE.get() is None
+
+
+def test_recall_sandglass_reuse_requires_complete_unchanged_scan() -> None:
+    """The fallback may reuse only a complete scan of the same file stamp."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-recall-sandglass-reuse-guards-") as directory:
+        root = Path(directory)
+        memory_root = root / "shared"
+        memory_root.mkdir(parents=True)
+        sandglass = memory_root / "sandglass.txt"
+        sandglass.write_text(
+            "\n".join(
+                [
+                    "2026-07-18 09:00:00 | user | first marker",
+                    "2026-07-18 09:01:00 | user | second marker",
+                    "2026-07-18 09:02:00 | user | third marker",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        core = BrainCore(ROOT, memory_root)
+        original_content = sandglass.read_text(encoding="utf-8")
+        original_open = Path.open
+        open_count = 0
+        count_opens = True
+
+        def counting_open(path: Path, *args, **kwargs):
+            nonlocal open_count
+            if count_opens and path == sandglass:
+                open_count += 1
+            return original_open(path, *args, **kwargs)
+
+        token = brain_core_module._RECALL_SANDGLASS_CACHE.set({})
+        try:
+            with mock.patch.object(Path, "open", counting_open):
+                core._scan_sandglass_candidates(set(), {"marker"}, None, set(), 10)
+                rows = core._recent_sandglass_rows(2)
+                assert len(rows) == 2
+                assert open_count == 1
+
+                # A file stamp change invalidates the request-local replay.
+                count_opens = False
+                sandglass.write_text(
+                    original_content + "2026-07-18 09:03:00 | user | changed marker\n",
+                    encoding="utf-8",
+                )
+                count_opens = True
+                changed_rows = core._recent_sandglass_rows(2)
+                assert open_count == 2, open_count
+                assert any(row[3] == "changed marker" for row in changed_rows)
+        finally:
+            brain_core_module._RECALL_SANDGLASS_CACHE.reset(token)
+
+        # A bounded prefix that stops at scan_limit cannot represent the real
+        # tail, so the fallback must perform its own complete pass.
+        sandglass.write_text(
+            "\n".join(
+                [
+                    "2026-07-18 09:00:00 | user | first marker",
+                    "2026-07-18 09:01:00 | user | second marker",
+                    "2026-07-18 09:02:00 | user | third marker",
+                    "2026-07-18 09:03:00 | user | fourth marker",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        open_count = 0
+        token = brain_core_module._RECALL_SANDGLASS_CACHE.set({})
+        try:
+            with mock.patch.object(Path, "open", counting_open):
+                core._scan_sandglass_candidates(set(), {"marker"}, None, set(), 2)
+                count_opens = False
+                sandglass.write_text(
+                    "2026-07-18 09:00:00 | user | replaced first marker\n"
+                    "2026-07-18 09:01:00 | user | replaced second marker\n"
+                    "2026-07-18 09:02:00 | user | replaced third marker\n"
+                    "2026-07-18 09:03:00 | user | replaced fourth marker\n",
+                    encoding="utf-8",
+                )
+                count_opens = True
+                fresh_rows = core._recent_sandglass_rows(4)
+                assert open_count == 2, open_count
+                assert any(row[3] == "replaced first marker" for row in fresh_rows)
+        finally:
+            brain_core_module._RECALL_SANDGLASS_CACHE.reset(token)
+
+
+def test_recall_json_projection_caches_are_stamp_aware_and_fail_closed() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-recall-json-cache-") as directory:
+        root = Path(directory)
+        workspace = root / "workspace"
+        package_version_value = package_version()
+        now = datetime.now().isoformat(timespec="seconds")
+        self_model = workspace / "self-model.json"
+        profile_card = workspace / "profile-card.json"
+        experience = workspace / "experiences" / "fixture.json"
+        write_json(
+            self_model,
+            {
+                "schema": "super-brain.self-model.v1",
+                "updatedAt": now,
+                "packageVersion": package_version_value,
+                "evidence": ["fixture evidence"],
+                "evidenceStatus": "verified",
+                "rawPromptStored": False,
+                "verifiedCapabilities": ["bounded recall"],
+                "currentState": "ready",
+            },
+        )
+        write_json(
+            profile_card,
+            {"evidenceCards": [{"claim": "[PROFILE][VERIFIED] preference fixture"}]},
+        )
+        write_json(
+            experience,
+            {
+                "id": "fixture",
+                "title": "deploy lesson",
+                "status": "current",
+                "recallQuery": "deploy lesson",
+                "updatedAt": now,
+                "evidence": ["fixture"],
+            },
+        )
+        core = BrainCore(ROOT, root / "shared")
+        core.workspace = workspace
+        original_read_json = brain_core_module._read_json
+        with mock.patch.object(brain_core_module, "_read_json", wraps=original_read_json) as reader:
+            assert core._self_model_candidates("who are you")
+            assert core._profile_card_candidates("my preference", {"preference"})
+            assert core._experience_candidates("deploy lesson", {"deploy", "lesson"})
+            first_count = reader.call_count
+            assert first_count == 3
+
+            # Same (mtime_ns, size) stamps reuse the parsed objects.
+            core._self_model_candidates("who are you")
+            core._profile_card_candidates("my preference", {"preference"})
+            core._experience_candidates("deploy lesson", {"deploy", "lesson"})
+            assert reader.call_count == first_count
+
+            def bump(path: Path) -> None:
+                stat = path.stat()
+                os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+            write_json(profile_card, {"evidenceCards": [{"claim": "[PROFILE][VERIFIED] changed preference"}]})
+            bump(profile_card)
+            assert core._profile_card_candidates("my preference", {"preference"})
+            assert reader.call_count == first_count + 1
+
+            # A damaged source is read again but never reuses the prior
+            # authority; repairing it then reads the replacement once more.
+            self_model.write_text("{not-json", encoding="utf-8")
+            bump(self_model)
+            assert core._self_model_candidates("who are you")[0].snapshot_status == "missing"
+            assert reader.call_count == first_count + 2
+            write_json(
+                self_model,
+                {
+                    "schema": "super-brain.self-model.v1",
+                    "updatedAt": now,
+                    "packageVersion": package_version_value,
+                    "evidence": ["repaired"],
+                    "evidenceStatus": "verified",
+                    "rawPromptStored": False,
+                },
+            )
+            bump(self_model)
+            assert core._self_model_candidates("who are you")[0].snapshot_status == "verified"
+            assert reader.call_count == first_count + 3
 
 
 def test_brain_core_keeps_memory_roots_process_isolated() -> None:
@@ -963,6 +1358,87 @@ def test_execution_contract_context_filters_misprojected_completed_terminal_cont
         assert routed_contract["taskId"] == "task-runnable-current"
 
 
+def test_contract_screening_cache_never_authorizes_a_replaced_contract() -> None:
+    """The final contract read must observe an atomic replacement after screening."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-contract-fresh-read-") as directory:
+        state_root = Path(directory)
+        workspace = state_root / "workspace"
+        host_project = state_root / "host-project"
+        host_project.mkdir()
+        workspace_key = cwd_workspace_key(host_project)
+        thread_id = "brain-core-contract-fresh-read-thread"
+        task_id = "task-contract-fresh-read"
+        session_key = write_authoritative_task_contract(
+            workspace,
+            workspace_key,
+            thread_id,
+            task_id,
+            task_name="Fresh contract read",
+            current_step="screen the current contract",
+            next_action="return only the freshly validated contract",
+            updated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+        contract_name = f"{task_id}--fixture.json"
+        original_read_json = brain_core_module._read_json
+
+        def run_with_replacement(reader):
+            reads = 0
+
+            def replacing_read(path):
+                nonlocal reads
+                value = original_read_json(path)
+                if Path(path).name != contract_name:
+                    return value
+                reads += 1
+                if reads < 2 or not isinstance(value, dict):
+                    return value
+                replacement = dict(value)
+                replacement["taskId"] = "foreign-replaced-contract"
+                return replacement
+
+            with mock.patch.object(brain_core_module, "_read_json", side_effect=replacing_read):
+                return reader(), reads
+
+        core = make_core(workspace)
+        context, context_reads = run_with_replacement(
+            lambda: core._read_context_contract(workspace_key, session_key)
+        )
+        assert context[0] is None
+        assert context[1] == "BRAIN_CONTEXT_CONTRACT_SCOPE_MISMATCH"
+        assert context_reads == 2
+
+        previous_thread = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        previous_cwd = Path.cwd()
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = thread_id
+        os.chdir(host_project)
+        try:
+            execution_context, execution_reads = run_with_replacement(
+                core._execution_contract_context
+            )
+        finally:
+            os.chdir(previous_cwd)
+            if previous_thread is None:
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+            else:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_thread
+        assert execution_context is None
+        assert execution_reads == 2
+
+
+def test_context_contract_reader_rejects_path_like_scope_values() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-context-scope-guard-") as directory:
+        state_root = Path(directory)
+        core = BrainCore(ROOT, state_root / "shared")
+        contract, code = core._read_context_contract(
+            "../../foreign-workspace",
+            "sid-" + "a" * 24,
+        )
+        assert contract is None
+        assert code == "BRAIN_CONTEXT_SCOPE_INVALID"
+        assert not (state_root / "foreign-workspace").exists()
+
+
 def test_terminal_finalization_context_is_opt_in_unique_and_never_auto_wakes() -> None:
     """One verified terminal task may re-enter H7 only to publish its final close."""
 
@@ -1664,6 +2140,99 @@ def test_mcp_status_stays_truthful_while_stale_worker_uses_current_cli() -> None
         bridged_recent = handle_tool(core, "brain_recent", {})
         assert bridged_recent["isError"] is False, bridged_recent
         assert json.loads(bridged_recent["content"][0]["text"]) == [], bridged_recent
+
+
+def test_stale_mcp_recent_bridge_preserves_local_workspace_scope() -> None:
+    """A fresh CLI child must inherit the resident MCP's cwd for scoped recent."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-mcp-recent-scope-") as directory:
+        root = Path(directory)
+        package_root = root / "package"
+        memory_root = root / "state" / "shared"
+        workspace_root = root / "project"
+        package_root.mkdir(parents=True)
+        memory_root.mkdir(parents=True)
+        workspace_root.mkdir(parents=True)
+        for name in ("manifest.json", "route-map.json", "capabilities.json", "super-brain-rules.json"):
+            (package_root / name).write_bytes((ROOT / name).read_bytes())
+        for relative_path in (*runtime_dependency_paths(ROOT), "runtime/brain_cli.py"):
+            destination = package_root / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((ROOT / relative_path).read_bytes())
+
+        session = "stale-mcp-local-session"
+        workspace_key = cwd_workspace_key(workspace_root)
+        sender = provenance_sender(
+            "assistant",
+            sessionKey=BrainCore._scope_hash(session),
+            workspaceKey=workspace_key,
+        )
+        marker = "stale MCP local workspace recent marker"
+        (memory_root / "sandglass.txt").write_text(
+            f"2026-07-20 09:00:00 | {sender} | [SESSION][VERIFIED] {marker}\n",
+            encoding="utf-8",
+        )
+        registry_path = package_root / "super-brain-rules.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        registry["rules"][0]["revision"] = int(registry["rules"][0]["revision"]) + 1
+        registry["payloadHash"] = canonical_hash(
+            {key: value for key, value in registry.items() if key != "payloadHash"}
+        )
+        write_json(registry_path, registry)
+
+        previous_cwd = Path.cwd()
+        previous_session = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        os.chdir(workspace_root)
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = session
+        try:
+            core = BrainCore(package_root, memory_root)
+            result = handle_tool(core, "brain_recent", {})
+            assert result["isError"] is False, result
+            payload = json.loads(result["content"][0]["text"])
+            assert [item["text"] for item in payload] == [f"[SESSION][VERIFIED] {marker}"], payload
+        finally:
+            os.chdir(previous_cwd)
+            if previous_session is None:
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+            else:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous_session
+
+
+def test_runtime_identity_source_projection_cache_is_stamp_aware() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-runtime-source-cache-") as directory:
+        core = BrainCore(ROOT, Path(directory) / "shared")
+        original_stamps = brain_core_module._runtime_source_stamps(core.package_root)
+        assert original_stamps is not None
+
+        with mock.patch.object(
+            brain_core_module,
+            "load_registry",
+            wraps=brain_core_module.load_registry,
+        ) as loader:
+            first = core.runtime_identity_status(signals=("control_plane_agent",))
+            second = core.runtime_identity_status(signals=("control_plane_agent",))
+            assert first == second
+            # BrainCore.__init__ happened before patching; unchanged source
+            # stamps therefore reuse the one cached source registry.
+            assert loader.call_count == 1
+
+            changed_stamps = (
+                (original_stamps[0][0] + 1, original_stamps[0][1]),
+                original_stamps[1],
+            )
+            with mock.patch.object(
+                brain_core_module,
+                "_runtime_source_stamps",
+                side_effect=[original_stamps, changed_stamps],
+            ):
+                core.runtime_identity_status()
+                core.runtime_identity_status()
+            assert loader.call_count == 2
+
+        with mock.patch.object(brain_core_module, "_runtime_source_stamps", return_value=None):
+            withheld = core.runtime_identity_status()
+        assert withheld["state"] == "withheld"
+        assert withheld["code"] == "H7_MCP_RUNTIME_SOURCE_RULES_WITHHELD"
 
 
 def test_turn_close_policy_requires_current_turn_attestation_and_never_echoes_input() -> None:
@@ -2394,23 +2963,33 @@ def test_scoped_session_provenance_preserves_assistant_role_and_isolates_session
         state_root = Path(directory)
         memory_root = state_root / "shared"
         memory_root.mkdir(parents=True)
+        local_workspace = "ws-" + hashlib.sha256(
+            str(Path.cwd().resolve()).rstrip("/\\").lower().encode("utf-8")
+        ).hexdigest()[:24]
         local_sender = provenance_sender(
             "assistant",
             sessionKey=BrainCore._scope_hash("session-local"),
             taskKey=BrainCore._scope_hash("task-local"),
-            workspaceKey=BrainCore._scope_hash("workspace-local"),
+            workspaceKey=local_workspace,
         )
         foreign_sender = provenance_sender(
             "assistant",
             sessionKey=BrainCore._scope_hash("session-foreign"),
             taskKey=BrainCore._scope_hash("task-foreign"),
-            workspaceKey=BrainCore._scope_hash("workspace-local"),
+            workspaceKey="ws-foreign-workspace",
+        )
+        same_session_foreign_workspace_sender = provenance_sender(
+            "assistant",
+            sessionKey=BrainCore._scope_hash("session-local"),
+            taskKey=BrainCore._scope_hash("task-foreign-workspace"),
+            workspaceKey="ws-foreign-workspace",
         )
         (memory_root / "sandglass.txt").write_text(
             "\n".join(
                 [
                     f"2026-07-20 09:00:00 | {local_sender} | [SESSION][VERIFIED] assistant route recommendation is local-route",
                     f"2026-07-20 09:01:00 | {foreign_sender} | [SESSION][VERIFIED] assistant route recommendation is foreign-route",
+                    f"2026-07-20 09:02:00 | {same_session_foreign_workspace_sender} | [SESSION][VERIFIED] assistant route recommendation is same-session-foreign-workspace",
                 ]
             )
             + "\n",
@@ -2421,6 +3000,7 @@ def test_scoped_session_provenance_preserves_assistant_role_and_isolates_session
         try:
             core = BrainCore(ROOT, memory_root)
             results = core.recall("what did you recommend route?", top_k=3, max_tokens=500, layer="session")
+            all_results = core.recall("what did you recommend route?", top_k=3, max_tokens=500, layer="all")
         finally:
             if original_session is None:
                 os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
@@ -2430,8 +3010,137 @@ def test_scoped_session_provenance_preserves_assistant_role_and_isolates_session
         assert len(results) == 1
         assert "local-route" in results[0]["text"]
         assert "foreign-route" not in results[0]["text"]
+        assert all("same-session-foreign-workspace" not in item["text"] for item in all_results)
         assert results[0]["evidenceCard"]["senderRole"] == "assistant"
         assert results[0]["evidenceCard"]["provenanceScope"] == "scoped"
+
+
+def test_session_scope_accepts_current_sid_provenance_form() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-session-sid-scope-") as directory:
+        previous = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = "modern-session"
+        try:
+            core = BrainCore(ROOT, Path(directory) / "shared")
+            candidate = Candidate(
+                text="[SESSION][VERIFIED] modern session evidence",
+                source="fixture",
+                source_type="sandglass",
+                reason="fixture",
+                session_key=core._session_key_from_value("modern-session"),
+            )
+            assert core._session_scope_allowed(candidate, "modern session evidence", "session") is True
+        finally:
+            if previous is None:
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+            else:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous
+
+
+def test_session_scope_fails_closed_without_current_session_even_for_cross_session_query() -> None:
+    """A missing local session is not a wildcard for shared session memory."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-session-missing-identity-") as directory:
+        previous = os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+        try:
+            core = BrainCore(ROOT, Path(directory) / "shared")
+            candidate = Candidate(
+                text="[SESSION][VERIFIED] foreign session evidence",
+                source="fixture",
+                source_type="sandglass",
+                reason="fixture",
+                session_key=BrainCore._scope_hash("foreign-session"),
+                workspace_key=core._context_workspace_key(),
+            )
+            assert core._session_scope_allowed(candidate, "previous session", "all") is False
+        finally:
+            if previous is not None:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous
+
+
+def test_session_scope_rejects_explicit_foreign_workspace() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-session-workspace-scope-") as directory:
+        previous = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = "modern-session"
+        try:
+            core = BrainCore(ROOT, Path(directory) / "shared")
+            local = Candidate(
+                text="[SESSION][VERIFIED] local workspace evidence",
+                source="fixture",
+                source_type="sandglass",
+                reason="fixture",
+                session_key=core._session_key_from_value("modern-session"),
+                workspace_key=core._context_workspace_key(),
+            )
+            foreign = Candidate(
+                text="[SESSION][VERIFIED] foreign workspace evidence",
+                source="fixture",
+                source_type="sandglass",
+                reason="fixture",
+                session_key=core._session_key_from_value("modern-session"),
+                workspace_key="ws-foreign-workspace",
+            )
+            legacy_local = Candidate(
+                text="[SESSION][VERIFIED] legacy local workspace evidence",
+                source="fixture",
+                source_type="sandglass",
+                reason="fixture",
+                session_key=core._session_key_from_value("modern-session"),
+                workspace_key=BrainCore._scope_hash(core._context_workspace_key()),
+            )
+            assert core._session_scope_allowed(local, "workspace evidence", "session") is True
+            assert core._session_scope_allowed(legacy_local, "workspace evidence", "session") is True
+            assert core._session_scope_allowed(foreign, "workspace evidence", "session") is False
+        finally:
+            if previous is None:
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+            else:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous
+
+
+def test_session_scope_fails_closed_when_current_workspace_is_unavailable() -> None:
+    """A missing cwd scope must not widen session evidence to every workspace."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-session-workspace-unavailable-") as directory:
+        memory_root = Path(directory) / "shared"
+        memory_root.mkdir(parents=True)
+        local_session = "session-local"
+        sender = provenance_sender(
+            "assistant",
+            sessionKey=BrainCore._scope_hash(local_session),
+            workspaceKey="ws-foreign-workspace",
+        )
+        marker = "workspace-unavailable-session-marker"
+        (memory_root / "sandglass.txt").write_text(
+            f"2026-07-20 09:00:00 | {sender} | [SESSION][VERIFIED] {marker}\n",
+            encoding="utf-8",
+        )
+        previous = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID")
+        os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = local_session
+        try:
+            core = BrainCore(ROOT, memory_root)
+            core._context_workspace_key = lambda: ""
+            candidate = Candidate(
+                text=f"[SESSION][VERIFIED] {marker}",
+                source="fixture",
+                source_type="sandglass",
+                reason="fixture",
+                session_key=BrainCore._scope_hash(local_session),
+                workspace_key="ws-foreign-workspace",
+            )
+
+            assert core._session_scope_allowed(candidate, marker, "all") is False
+            assert core.recall(marker, top_k=1, max_tokens=300, layer="all") == []
+            assert core._recent_sandglass_rows(
+                5,
+                session_keys=core._session_provenance_keys(core._context_session_key()),
+                workspace_keys=set(),
+            ) == []
+            assert core.recent(5, session_key=core._context_session_key()) == []
+        finally:
+            if previous is None:
+                os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+            else:
+                os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = previous
 
 
 def test_brain_recent_isolated_to_current_session_and_fail_closed_without_one() -> None:
@@ -2440,20 +3149,32 @@ def test_brain_recent_isolated_to_current_session_and_fail_closed_without_one() 
         memory_root.mkdir(parents=True)
         local_session = "session-local"
         foreign_session = "session-foreign"
+        local_workspace = "ws-" + hashlib.sha256(
+            str(Path.cwd().resolve()).rstrip("/\\").lower().encode("utf-8")
+        ).hexdigest()[:24]
         local_sender = provenance_sender(
             "assistant",
             sessionKey=BrainCore._scope_hash(local_session),
+            workspaceKey=local_workspace,
         )
         foreign_sender = provenance_sender(
             "assistant",
             sessionKey=BrainCore._scope_hash(foreign_session),
+            workspaceKey=local_workspace,
+        )
+        same_session_foreign_workspace_sender = provenance_sender(
+            "assistant",
+            sessionKey=BrainCore._scope_hash(local_session),
+            workspaceKey="ws-foreign-workspace",
         )
         (memory_root / "sandglass.txt").write_text(
             "\n".join(
                 [
                     "2026-07-20 09:00:00 | user | legacy tail must stay hidden",
+                    f"2026-07-20 09:00:30 | {local_sender} | [SESSION][VERIFIED] session-only legacy marker",
                     f"2026-07-20 09:01:00 | {local_sender} | [SESSION][VERIFIED] local recent marker",
                     f"2026-07-20 09:02:00 | {foreign_sender} | [SESSION][VERIFIED] foreign recent marker",
+                    f"2026-07-20 09:03:00 | {same_session_foreign_workspace_sender} | [SESSION][VERIFIED] same session foreign workspace recent marker",
                 ]
             )
             + "\n",
@@ -2466,6 +3187,12 @@ def test_brain_recent_isolated_to_current_session_and_fail_closed_without_one() 
             core = BrainCore(ROOT, memory_root)
             scoped = core.recent(5, session_key=core._context_session_key())
             assert [item["text"] for item in scoped] == ["[SESSION][VERIFIED] local recent marker"]
+            # A matching session marker without a workspace marker is legacy
+            # compatibility data, not proof for the current workspace.
+            assert all("session-only legacy marker" not in item["text"] for item in scoped)
+            # ``recent`` is current-session only.  An internal caller cannot
+            # repurpose its optional scope parameter to read a foreign tail.
+            assert core.recent(5, session_key=foreign_session) == []
 
             mcp_result = handle_tool(core, "brain_recent", {})
             mcp_payload = json.loads(mcp_result["content"][0]["text"])
@@ -2479,7 +3206,7 @@ def test_brain_recent_isolated_to_current_session_and_fail_closed_without_one() 
             # Ordinary CLI compatibility remains available only when the
             # caller intentionally omits the scope argument altogether.
             unscoped = core.recent(5)
-            assert len(unscoped) == 3
+            assert len(unscoped) == 5
         finally:
             if original_session is None:
                 os.environ.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
@@ -2681,6 +3408,121 @@ def test_stale_self_model_snapshot_downgrades_to_unknown() -> None:
         assert "[VERIFIED]" not in results[0]["text"]
         assert card["relevanceStatus"] == "self_model_stale"
         assert card["verificationStatus"] == "unknown"
+
+
+def test_recall_json_projection_caches_reuse_and_invalidate_on_source_stamp() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-recall-json-cache-") as directory:
+        workspace = Path(directory)
+        self_model_path = workspace / "self-model.json"
+        profile_path = workspace / "profile-card.json"
+        experience_path = workspace / "experiences" / "cache-fixture.json"
+
+        write_json(
+            self_model_path,
+            {
+                "schema": "super-brain.self-model.v1",
+                "packageVersion": package_version(),
+                "updatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "evidenceStatus": "verified",
+                "identity": "cache identity",
+                "role": "cache role",
+                "evidence": ["cache-fixture"],
+                "rawPromptStored": False,
+            },
+        )
+        write_json(
+            profile_path,
+            {
+                "evidenceCards": [
+                    {
+                        "claim": "cache marker preference",
+                    }
+                ]
+            },
+        )
+        write_json(
+            experience_path,
+            {
+                "id": "cache-fixture",
+                "title": "cache marker experience",
+                "status": "verified",
+                "recallQuery": "cache marker",
+                "updatedAt": "2026-08-23 12:00:00",
+                "evidence": ["cache-fixture"],
+            },
+        )
+        core = make_core(workspace)
+        original_read_json = brain_core_module._read_json
+
+        with mock.patch.object(
+            brain_core_module,
+            "_read_json",
+            wraps=original_read_json,
+        ) as read_json:
+            first_self = core._self_model_candidates("who are you")
+            second_self = core._self_model_candidates("who are you")
+            assert read_json.call_count == 1
+            assert first_self == second_self
+
+            write_json(
+                self_model_path,
+                {
+                    "schema": "super-brain.self-model.v1",
+                    "packageVersion": package_version(),
+                    "updatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "evidenceStatus": "verified",
+                    "identity": "cache identity updated",
+                    "role": "cache role updated",
+                    "evidence": ["cache-fixture"],
+                    "rawPromptStored": False,
+                },
+            )
+            updated_self = core._self_model_candidates("who are you")
+            assert read_json.call_count == 2
+            assert "cache identity updated" in updated_self[0].text
+
+            first_profile = core._profile_card_candidates("my preference cache marker", {"cache", "marker"})
+            second_profile = core._profile_card_candidates("my preference cache marker", {"cache", "marker"})
+            assert read_json.call_count == 3
+            assert first_profile == second_profile
+
+            write_json(
+                profile_path,
+                {
+                    "evidenceCards": [
+                        {
+                            "claim": "cache marker preference updated",
+                        }
+                    ]
+                },
+            )
+            updated_profile = core._profile_card_candidates("my preference cache marker", {"cache", "marker"})
+            assert read_json.call_count == 4
+            assert updated_profile[0].text == "cache marker preference updated"
+
+            first_experience = core._experience_candidates("cache marker", {"cache", "marker"})
+            second_experience = core._experience_candidates("cache marker", {"cache", "marker"})
+            assert read_json.call_count == 5
+            assert first_experience == second_experience
+
+            write_json(
+                experience_path,
+                {
+                    "id": "cache-fixture",
+                    "title": "cache marker experience updated",
+                    "status": "verified",
+                    "recallQuery": "cache marker",
+                    "updatedAt": "2026-08-23 12:00:00",
+                    "evidence": ["cache-fixture"],
+                },
+            )
+            updated_experience = core._experience_candidates("cache marker", {"cache", "marker"})
+            assert read_json.call_count == 6
+            assert "cache marker experience updated" in updated_experience[0].text
+
+            experience_path.unlink()
+            assert core._experience_candidates("cache marker", {"cache", "marker"}) == []
+            assert core._experience_json_cache == {}
 
 
 def test_newer_task_context_beats_an_older_matching_checkpoint() -> None:
@@ -2939,10 +3781,17 @@ def test_h7_control_plane_is_host_model_neutral() -> None:
 if __name__ == "__main__":
     test_adaptive_sparse_recall_uses_fts_before_heavier_backends()
     test_adaptive_sparse_recall_uses_bounded_scan_after_fts_miss()
+    test_adaptive_sparse_recall_reuses_one_read_only_sqlite_connection()
+    test_adaptive_sparse_recall_retries_variants_after_transient_batch_connect_failure()
+    test_recall_lexical_match_cache_is_call_scoped_and_score_equivalent()
+    test_recall_scan_and_recent_fallback_share_request_local_sandglass_read()
+    test_recall_sandglass_reuse_requires_complete_unchanged_scan()
     test_brain_core_keeps_memory_roots_process_isolated()
     test_brain_core_projects_retired_agent_and_group_roots_to_shared()
     test_runtime_layout_beats_a_stale_nexsandbase_environment_root()
     test_execution_contract_context_filters_misprojected_completed_terminal_contracts()
+    test_contract_screening_cache_never_authorizes_a_replaced_contract()
+    test_context_contract_reader_rejects_path_like_scope_values()
     test_current_task_recall_rejects_stale_global_checkpoint()
     test_current_workspace_scope_uses_cwd_not_derived_status_card()
     test_terminal_finalization_context_is_opt_in_unique_and_never_auto_wakes()
@@ -2952,6 +3801,7 @@ if __name__ == "__main__":
     test_context_recovers_from_a_lagging_hot_index_after_a_committed_transition()
     test_turn_close_policy_requires_current_turn_attestation_and_never_echoes_input()
     test_mcp_does_not_expose_untrusted_host_context()
+    test_stale_mcp_recent_bridge_preserves_local_workspace_scope()
     test_unbound_task_pointer_without_current_session_fails_closed()
     test_session_bound_pointer_without_execution_contract_fails_closed()
     test_bound_context_without_current_session_fails_closed()
@@ -2980,15 +3830,21 @@ if __name__ == "__main__":
     test_graph_expansion_is_one_hop_and_skips_stale_edges()
     test_graph_subject_prefilter_avoids_materializing_unrelated_edges()
     test_scoped_session_provenance_preserves_assistant_role_and_isolates_sessions()
+    test_session_scope_accepts_current_sid_provenance_form()
+    test_session_scope_fails_closed_without_current_session_even_for_cross_session_query()
+    test_session_scope_fails_closed_when_current_workspace_is_unavailable()
     test_missing_self_model_snapshot_is_explicitly_unknown()
     test_fresh_evidence_backed_self_model_is_verified()
     test_shared_memory_root_uses_its_control_plane_workspace_for_self_model()
     test_status_projects_current_h7_retired_transport_guard()
     test_stale_self_model_snapshot_downgrades_to_unknown()
+    test_recall_json_projection_caches_are_stamp_aware_and_fail_closed()
+    test_recall_json_projection_caches_reuse_and_invalidate_on_source_stamp()
     test_newer_task_context_beats_an_older_matching_checkpoint()
     test_rejected_memory_is_not_default_recall_evidence()
     test_stale_status_snapshot_cannot_beat_live_manifest_version()
     test_live_status_snapshot_wins_combined_version_and_status_query()
+    test_runtime_identity_source_projection_cache_is_stamp_aware()
     test_session_snippet_selects_the_turn_that_contains_the_answer()
     test_mcp_only_probe_replays_the_narrow_stdio_contract()
     test_retired_prompt_hook_never_observes_or_mutates_state()
