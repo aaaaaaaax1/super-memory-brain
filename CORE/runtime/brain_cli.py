@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import os
 import sys
@@ -14,6 +15,7 @@ from activation_receipt import activate as activate_brain, ensure_current
 from turn_close_dispatcher import dispatch_turn_close
 from turn_runtime import run_turn
 from turn_intent import TURN_INTENTS, public_projection as public_turn_intent, resolve_turn_intent
+from scope_broker_ipc import ScopeBrokerControlClient
 
 
 _MCP_CLI_BRIDGE_SCHEMA = "super-brain.mcp-cli-bridge-request.v1"
@@ -206,6 +208,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status")
     sub.add_parser("health")
+    scope = sub.add_parser("scope", help="Local Scope Broker control surface")
+    scope.add_argument(
+        "--action",
+        choices=("list", "status", "register", "bind"),
+        default="list",
+    )
+    scope.add_argument("--channel-id", default="")
+    scope.add_argument("--workline-id", default="")
+    scope.add_argument("--contract-file", default="")
+    scope.add_argument("--project-root", default="")
+    scope.add_argument("--access-mode", choices=("read", "write"), default="write")
+    scope.add_argument("--ttl-seconds", type=int, default=60)
+    scope.add_argument("--lease-seconds", type=int, default=300)
     activate = sub.add_parser("activate")
     activate.add_argument("--route", default="bare_wake")
     activate.add_argument("--workspace-key", default="")
@@ -618,7 +633,7 @@ def main() -> int:
     activation = None
     # Status and health are observational.  They must never create an
     # activation receipt merely because a user asked to inspect the system.
-    if args.command not in {"activate", "turn-runtime", "mcp-bridge", "context", "status", "health", "turn-close"}:
+    if args.command not in {"activate", "turn-runtime", "mcp-bridge", "context", "status", "health", "turn-close", "scope"}:
         route = {
             "recall": "memory_recall",
             "recent": "memory_recall",
@@ -628,7 +643,47 @@ def main() -> int:
             "health": "bare_wake",
         }.get(args.command, "bare_wake")
         activation = _ensure_core_activation(core, route=route, action_authorization="withheld")
-    if args.command == "recall":
+    if args.command == "scope":
+        control = ScopeBrokerControlClient(core.memory_base, runtime_path=Path(__file__).with_name("scope_broker_ipc.py"))
+        if args.action == "list":
+            result = control.list_channels()
+        elif args.action == "status":
+            result = control.status(args.channel_id)
+        elif args.action == "register":
+            if not args.contract_file:
+                result = {"ok": False, "code": "H7_SCOPE_CONTRACT_FILE_REQUIRED", "state": "withheld"}
+            else:
+                try:
+                    contract_path = Path(args.contract_file).expanduser().resolve()
+                    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+                    encoded = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                    result = control.register_workline(
+                        contract,
+                        expected_contract_hash=hashlib.sha256(encoded).hexdigest(),
+                        project_root=args.project_root or None,
+                    )
+                except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+                    result = {"ok": False, "code": "H7_SCOPE_CONTRACT_FILE_INVALID", "state": "withheld"}
+        elif args.action == "bind":
+            result = control.pair_channel(
+                args.channel_id,
+                args.workline_id,
+                access_mode=args.access_mode,
+                ttl_seconds=args.ttl_seconds,
+                lease_seconds=args.lease_seconds,
+            )
+        else:
+            # Keep the result shape defensive if a future parser extension
+            # accidentally reaches an unsupported action.
+            result = {
+                "ok": False,
+                "code": "H7_SCOPE_CONTROL_ACTION_UNSUPPORTED",
+                "state": "withheld",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        control.close()
+    elif args.command == "recall":
         result = core.recall(args.query, args.top_k, args.max_tokens, args.layer, args.query_date)
     elif args.command == "recent":
         result = core.recent(args.limit)
@@ -713,6 +768,7 @@ def main() -> int:
                 user_control=args.user_control,
                 completion_evidence_ref=args.completion_evidence_ref,
                 transition_id=args.transition_id,
+                project_root=core._context_project_root(),
                 timeout=args.timeout_seconds,
             )
         # A dispatcher policy packet can be ``ok=true`` while withholding on

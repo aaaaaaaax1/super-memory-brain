@@ -73,9 +73,9 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
       $parameters[$name] = [string]$argumentList[$index + 1]
       $index += 2
     }
-    if ($parameters.ContainsKey('SessionKey')) {
-      $env:SUPER_BRAIN_LOCAL_SESSION_ID = [string]$parameters['SessionKey']
-    }
+    # Session identity is passed explicitly as ``-SessionKey`` on every
+    # authority invocation.  Keep it out of the worker's ambient environment
+    # so a stale process variable can never become an implicit scope source.
     # Stream the script's normal output into a bounded list, then emit one
     # private marker so the Python side can reuse the process without guessing
     # JSON boundaries.  This keeps an accidental verbose/error response from

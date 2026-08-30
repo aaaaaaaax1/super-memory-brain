@@ -112,6 +112,7 @@ def _mcp_replay(root: Path, memory_root: str, require_recall_result: bool = True
                 str(root),
                 "--memory-root",
                 memory_root,
+                "--offline-replay",
             ],
             input=payload,
             capture_output=True,
@@ -217,13 +218,13 @@ def _mcp_replay(root: Path, memory_root: str, require_recall_result: bool = True
         return value
 
     metadata_evidence = nested_payload(5, 6, "brain_turn_metadata_ignored")
-    metadata_scope_ok = bool(metadata_evidence and metadata_evidence.get("code") == "H7_EVIDENCE_SCOPE_MISSING")
+    metadata_scope_ok = bool(metadata_evidence and metadata_evidence.get("code") == "H7_MCP_OFFLINE_REPLAY_NOT_LIVE")
     checks.append({"name": "brain_turn_metadata_ignored", "ok": metadata_scope_ok})
     if not metadata_scope_ok:
         errors.append("brain_turn_metadata_ignored")
 
     missing_evidence = nested_payload(6, 7, "brain_turn_missing_metadata")
-    missing_scope_ok = bool(missing_evidence and missing_evidence.get("code") == "H7_EVIDENCE_SCOPE_MISSING")
+    missing_scope_ok = bool(missing_evidence and missing_evidence.get("code") == "H7_MCP_OFFLINE_REPLAY_NOT_LIVE")
     checks.append({"name": "brain_turn_missing_metadata_fails_closed", "ok": missing_scope_ok})
     if not missing_scope_ok:
         errors.append("brain_turn_missing_metadata_fails_closed")

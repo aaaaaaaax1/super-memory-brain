@@ -25,6 +25,7 @@ from typing import Any
 from activation_receipt import canonical_hash, ensure_current
 from brain_context import canonical_hash as context_hash
 from brain_core import (
+    MCP_RUNTIME_MODE_OFFLINE_REPLAY,
     TURN_RUNTIME_CONTEXT_SNAPSHOT_KEY,
     TURN_RUNTIME_CONTEXT_SNAPSHOT_SCHEMA,
     BrainCore,
@@ -1448,6 +1449,7 @@ def _resolve_action_authorization(
         workspace_key=workspace_key,
         session_key=session_key,
         timeout=bounded_timeout,
+        execution_cwd=core._context_project_root(),
     )
     if return_code != 0 or not isinstance(resolution, dict) or resolution.get("ok") is not True:
         return {
@@ -2143,6 +2145,124 @@ def _withheld(phase: str, context: dict[str, Any], code: str) -> dict[str, Any]:
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
+
+
+def _scope_authorization_guard(
+    core: BrainCore,
+    *,
+    phase: str,
+    write: bool,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Require the provider lease before any turn-runtime side effect.
+
+    MCP performs an early read-side binding check for friendly diagnostics,
+    but that adapter check is not an authority boundary.  The runtime itself
+    must refresh the provider lease immediately before activation, receipt,
+    telemetry, checkpoint, or close writes so direct CLI/internal callers
+    cannot bypass the broker by calling ``turn_runtime`` directly.
+    """
+
+    try:
+        authorization = core.authorize_scope(write=write)
+    except Exception:
+        authorization = {
+            "ok": False,
+            "state": "withheld",
+            "code": "H7_SCOPE_PROVIDER_UNAVAILABLE",
+        }
+    if isinstance(authorization, dict) and authorization.get("ok") is True:
+        # A trusted control surface may explicitly detach and re-pair a live
+        # channel between the read-side context build and this write-side lease
+        # check.  Never use the fresh lease for a context produced by the old
+        # workline.  Broker projections carry task/instance/contract fields;
+        # legacy CLI providers simply omit those extra comparisons.
+        expected_scope = context.get("scope") if isinstance(context, dict) and isinstance(context.get("scope"), dict) else {}
+        expected_task = context.get("task") if isinstance(context, dict) and isinstance(context.get("task"), dict) else {}
+        actual_scope = (
+            authorization.get("scope")
+            if isinstance(authorization.get("scope"), dict)
+            else authorization.get("h7Scope")
+            if isinstance(authorization.get("h7Scope"), dict)
+            else authorization
+        )
+        expected = {
+            "workspaceKey": str(expected_scope.get("workspaceKey", "")).strip().lower(),
+            "ownerSessionKey": str(expected_scope.get("ownerSessionKey", "")).strip().lower(),
+            "taskId": str(expected_task.get("taskId", "")).strip(),
+            "taskInstanceId": str(expected_task.get("taskInstanceId", "")).strip().lower(),
+            "contractHash": str(expected_task.get("contractHash", "")).strip().lower(),
+        }
+        actual = {
+            "workspaceKey": str(actual_scope.get("workspaceKey", "")).strip().lower(),
+            "ownerSessionKey": str(actual_scope.get("ownerSessionKey", "")).strip().lower(),
+            "taskId": str(actual_scope.get("taskId", "")).strip(),
+            "taskInstanceId": str(actual_scope.get("taskInstanceId", "")).strip().lower(),
+            "contractHash": str(actual_scope.get("contractHash", "")).strip().lower(),
+        }
+        # There is no context to bind for checkpoint/close's first preflight;
+        # ``open_turn`` will repeat the same check after it has constructed one.
+        # If a provider does expose a field, it must agree exactly.  A Broker
+        # provider exposes all five, so a same-workspace re-pair cannot slip
+        # through merely because workspace/session happen to match.
+        mismatch = any(
+            expected[key]
+            and actual[key]
+            and expected[key] != actual[key]
+            for key in expected
+        )
+        broker_provider = str(getattr(getattr(core, "_scope_provider", None), "provider_kind", "")) == "scope_broker_channel"
+        broker_missing = broker_provider and any(expected[key] and not actual[key] for key in expected)
+        if not mismatch and not broker_missing:
+            return None
+        result = _withheld(
+            phase,
+            context if isinstance(context, dict) else {},
+            "H7_SCOPE_REBIND_DURING_OPERATION",
+        )
+        result["scopeAuthorization"] = {
+            "state": "withheld",
+            "code": "H7_SCOPE_REBIND_DURING_OPERATION",
+            "accessMode": str(authorization.get("accessMode", "write" if write else "read")),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+        try:
+            result["scopeBinding"] = core.scope_status()
+        except Exception:
+            result["scopeBinding"] = {
+                "state": "withheld",
+                "code": "H7_SCOPE_PROVIDER_UNAVAILABLE",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        return result
+    value = authorization if isinstance(authorization, dict) else {}
+    result = _withheld(
+        phase,
+        context if isinstance(context, dict) else {},
+        str(value.get("code", "H7_SCOPE_AUTHORIZATION_REQUIRED")),
+    )
+    # Keep the denial bounded and diagnostic; never copy a pairing token,
+    # lease id, contract body, or other private provider material into the
+    # runtime response.
+    result["scopeAuthorization"] = {
+        "state": str(value.get("state", "withheld")),
+        "code": str(value.get("code", "H7_SCOPE_AUTHORIZATION_REQUIRED")),
+        "accessMode": str(value.get("accessMode", "write" if write else "read")),
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    try:
+        result["scopeBinding"] = core.scope_status()
+    except Exception:
+        result["scopeBinding"] = {
+            "state": "withheld",
+            "code": "H7_SCOPE_PROVIDER_UNAVAILABLE",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    return result
 
 
 _RETIRED_HOST_TRANSPORT_FIELDS = frozenset(
@@ -2904,6 +3024,12 @@ def open_turn(
     if project_knowledge is None:
         return _withheld("open", context, project_knowledge_code or "H7_PROJECT_KNOWLEDGE_WITHHELD")
     context["projectKnowledge"] = public_project_knowledge(project_knowledge)
+    # ``_activation`` writes/refreshes the scope-bound activation receipt even
+    # when this open is an internal preflight.  Require a provider-backed write
+    # lease here rather than trusting the MCP adapter's earlier read check.
+    scope_guard = _scope_authorization_guard(core, phase="open", write=True, context=context)
+    if scope_guard is not None:
+        return scope_guard
     activation, activation_code, refs = _activation(
         core,
         context,
@@ -3055,6 +3181,11 @@ def checkpoint_turn(
     checkpoint_intent_code = _progress_checkpoint_intent_guard(progress_checkpoint, requested_intent)
     if checkpoint_intent_code:
         return _withheld("checkpoint", {}, checkpoint_intent_code)
+    # Checkpoint performs an activation refresh and a CAS mutation.  Acquire
+    # the write lease before the preflight can reach either side effect.
+    scope_guard = _scope_authorization_guard(core, phase="checkpoint", write=True)
+    if scope_guard is not None:
+        return scope_guard
 
     checkpoint_phase = str(progress_checkpoint.get("current_phase", "")).strip() if isinstance(progress_checkpoint, dict) else ""
     checkpoint_next_action = str(progress_checkpoint.get("next_action", "")).strip() if isinstance(progress_checkpoint, dict) else ""
@@ -3369,6 +3500,12 @@ def close_turn(
     checkpoint_intent_code = _progress_checkpoint_intent_guard(progress_checkpoint, close_intent)
     if checkpoint_intent_code:
         return _withheld("close", {}, checkpoint_intent_code)
+    # Close may checkpoint, dispatch a parent transition, publish a close
+    # receipt, and append telemetry.  Its own write authorization is therefore
+    # mandatory even when called outside the MCP adapter.
+    scope_guard = _scope_authorization_guard(core, phase="close", write=True)
+    if scope_guard is not None:
+        return scope_guard
 
     execution_assist, normalized_capability_route_receipt, capability_route_compatibility, execution_assist_code = (
         _resolve_execution_assist_for_turn(
@@ -3632,6 +3769,7 @@ def close_turn(
             user_control=user_control,
             completion_evidence_ref=safe_evidence_ref,
             transition_id=close_transition_id,
+            project_root=core._context_project_root(),
             timeout=timeout,
         )
     if dispatched.get("ok") is not True:
@@ -4107,6 +4245,17 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
     )
     if retired is not None:
         return retired
+
+    # The offline stdio replay is a parser/schema harness, not a local H7
+    # transport.  Keep the guard here (rather than only in ``brain_mcp``) so
+    # direct callers cannot invoke a governed lifecycle through an injected
+    # replay core either.
+    if getattr(core, "runtime_mode", "") == MCP_RUNTIME_MODE_OFFLINE_REPLAY:
+        return _withheld(
+            str(phase or "open"),
+            {},
+            "H7_MCP_OFFLINE_REPLAY_NOT_LIVE",
+        )
 
     # External continuation state cannot prove the current local contract.
     # Reject the retired field explicitly instead of silently dropping it or

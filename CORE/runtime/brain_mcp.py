@@ -11,10 +11,18 @@ from pathlib import Path
 from typing import Any
 
 from brain_control import read_mcp_snapshot, read_mcp_task_projection
-from brain_core import DEFAULT_RECALL_MAX_TOKENS, DEFAULT_RECALL_TOP_K, BrainCore
+from brain_core import (
+    DEFAULT_RECALL_MAX_TOKENS,
+    DEFAULT_RECALL_TOP_K,
+    MCP_RUNTIME_MODE_OFFLINE_REPLAY,
+    BrainCore,
+)
 from activation_receipt import ensure_current
 from turn_runtime import run_turn
 from turn_intent import TURN_INTENTS
+from mcp_transport_health import LocalBrokerStdioTransportHealth, OfflineReplayMcpTransportHealth
+from scope_provider import BrokerChannelHandle, BrokerScopeProvider, OfflineReplayScopeProvider
+from scope_broker_ipc import ScopeBrokerClient
 
 
 def response(request_id: Any, result: Any) -> dict[str, Any]:
@@ -49,9 +57,7 @@ def _retired_host_transport_payload(arguments: Mapping[str, Any]) -> dict[str, A
     }
 
 
-_LIVE_MCP_TRANSPORT_ENV = "SUPER_BRAIN_MCP_TRANSPORT"
-_LIVE_MCP_TRANSPORT_VALUE = "codex_registered_v1"
-_OFFLINE_REPLAY_ENV = "SUPER_BRAIN_MCP_OFFLINE_REPLAY"
+_LOCAL_MCP_RUNTIME_ENV = "SUPER_BRAIN_LOCAL_MCP_RUNTIME"
 _LOCAL_SESSION_ENV = "SUPER_BRAIN_LOCAL_SESSION_ID"
 _MCP_CLI_BRIDGE_SCHEMA = "super-brain.mcp-cli-bridge-request.v1"
 _MCP_CLI_BRIDGE_MAX_STDIN_BYTES = 512 * 1024
@@ -103,16 +109,6 @@ TOOLS = [
                     "default": "all",
                 },
                 "query_date": {"type": "string", "description": "Optional reference date for relative-time recall."},
-                "task_scope": {
-                    "type": "object",
-                    "description": "Optional verified local scope for exact current-task projection; no fallback is allowed.",
-                    "properties": {
-                        "workspace_key": {"type": "string", "pattern": "^ws-[a-f0-9]{24}$"},
-                        "owner_session_key": {"type": "string", "pattern": "^sid-[a-f0-9]{16,64}$"},
-                    },
-                    "required": ["workspace_key", "owner_session_key"],
-                    "additionalProperties": False,
-                },
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -362,6 +358,12 @@ def _task_scope(arguments: dict[str, Any], core: BrainCore) -> tuple[str, str] |
     value = arguments.get("task_scope")
     if value is None:
         return None
+    # A production Broker channel cannot be redirected by a request selector.
+    # Keep the old assertion-only form for direct legacy CLI/test adapters so
+    # existing callers receive the historical scoped projection without
+    # weakening the new MCP path.
+    if getattr(getattr(core, "_scope_provider", None), "provider_kind", "") == "scope_broker_channel":
+        raise ValueError("H7_SCOPE_SELECTOR_FORBIDDEN")
     if not isinstance(value, dict):
         raise ValueError("task_scope must be an object")
     workspace_key = str(value.get("workspace_key", "")).strip().lower()
@@ -419,81 +421,37 @@ def _ensure_scoped_activation(core: BrainCore) -> None:
     )
 
 
-def _same_package_root(value: str, package_root: Path) -> bool:
-    """Compare a registered package root without returning the raw path."""
-
-    if not value:
-        return False
-    try:
-        return Path(value).expanduser().resolve() == package_root
-    except OSError:
-        return False
-
-
 def _live_mcp_handshake(
     core: BrainCore,
     *,
     runtime_identity: dict[str, Any] | None = None,
-    binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Emit evidence that *this* response came from the registered MCP worker.
+    """Return this process's injected local MCP transport health.
 
-    A subprocess protocol replay can prove that ``brain_mcp.py`` parses MCP,
-    but it cannot prove which process Codex has resident.  This lightweight
-    handshake is deliberately emitted only by the running MCP transport and
-    requires the installer-owned environment marker as well as the exact
-    manifest identity.  It is response evidence, not durable task state.
+    Deployment registration is intentionally not consulted here.  A generic
+    stdio process is healthy when its own runtime identity and private Broker
+    channel are healthy; host adapters publish their separate diagnostics via
+    ``mcpRuntimeBinding.deploymentAdapter``.
     """
 
-    runtime_identity = (
-        runtime_identity
-        if isinstance(runtime_identity, dict)
-        else core.runtime_identity_status()
-    )
-    binding = (
-        binding
-        if isinstance(binding, dict)
-        else core.mcp_runtime_binding_status(runtime_identity=runtime_identity)
-    )
-    startup_identity = str(runtime_identity.get("startupIdentity", ""))
-    configured_root = str(os.environ.get("SUPER_BRAIN_PACKAGE_ROOT", "")).strip()
-    configured_identity = str(os.environ.get("SUPER_BRAIN_RUNTIME_IDENTITY", "")).strip()
-    configured_transport = str(os.environ.get(_LIVE_MCP_TRANSPORT_ENV, "")).strip()
-    if str(os.environ.get(_OFFLINE_REPLAY_ENV, "")) == "1":
-        return {
-            "schema": "super-brain.mcp-live-handshake.v1",
-            "state": "offline_replay",
-            "code": "H7_MCP_OFFLINE_REPLAY_NOT_LIVE",
-            "transport": "offline_mcp_replay",
-            "packageVersion": str(core.manifest.get("version", "")),
-            "runtimeIdentity": "",
-            "registryVersion": int((runtime_identity.get("servedCoreRules") or {}).get("registryVersion", 0) or 0),
-            "rawPromptStored": False,
-            "rawTranscriptStored": False,
-        }
-    if runtime_identity.get("state") != "current":
-        state, code = "withheld", str(runtime_identity.get("code", "H7_MCP_RUNTIME_IDENTITY_STALE"))
-    elif configured_transport != _LIVE_MCP_TRANSPORT_VALUE:
-        state, code = "withheld", "H7_MCP_LIVE_HANDSHAKE_REGISTRATION_MARKER_MISSING"
-    elif not _same_package_root(configured_root, core.package_root):
-        state, code = "withheld", "H7_MCP_LIVE_HANDSHAKE_PACKAGE_BINDING_MISMATCH"
-    elif not startup_identity or configured_identity != startup_identity:
-        state, code = "withheld", "H7_MCP_LIVE_HANDSHAKE_IDENTITY_BINDING_MISMATCH"
-    elif binding.get("state") != "current":
-        state, code = "withheld", str(binding.get("code", "H7_MCP_RUNTIME_REBIND_REQUIRED"))
-    else:
-        state, code = "current", "H7_MCP_LIVE_HANDSHAKE_CURRENT"
-    return {
-        "schema": "super-brain.mcp-live-handshake.v1",
-        "state": state,
-        "code": code,
-        "transport": "codex_registered_mcp_stdio",
-        "packageVersion": str(core.manifest.get("version", "")),
-        "runtimeIdentity": startup_identity if state == "current" else "",
-        "registryVersion": int((runtime_identity.get("servedCoreRules") or {}).get("registryVersion", 0) or 0),
-        "rawPromptStored": False,
-        "rawTranscriptStored": False,
-    }
+    runtime = runtime_identity if isinstance(runtime_identity, dict) else core.runtime_identity_status()
+    return dict(core.mcp_transport_status(runtime))
+
+
+def _public_mcp_status(status: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove local filesystem locators from the public stdio status view.
+
+    The core/CLI diagnostic object may legitimately name local paths.  A
+    portable MCP capability needs only state, hashes, and scope projections;
+    returning machine paths adds no authorization value and weakens the
+    transport's privacy boundary.
+    """
+
+    result = dict(status)
+    for key in ("packageRoot", "memoryRoot", "memoryBase"):
+        result.pop(key, None)
+    result["localPathsExposed"] = False
+    return result
 
 
 def _task_projection_result(
@@ -768,6 +726,51 @@ def handle_tool(
     retired_host = _retired_host_transport_payload(arguments)
     if retired_host is not None:
         return tool_result(retired_host, True)
+    # The offline replay exists solely to test stdio framing and response
+    # schemas.  A governed lifecycle call must be visibly withheld before it
+    # reaches activation, a CLI bridge, or any scope-derived state path.
+    if core.runtime_mode == MCP_RUNTIME_MODE_OFFLINE_REPLAY and name == "brain_turn":
+        return tool_result(
+            run_turn(core, phase=str(arguments.get("phase", "open"))),
+            True,
+        )
+    broker_bound_adapter = getattr(getattr(core, "_scope_provider", None), "provider_kind", "") == "scope_broker_channel"
+    if broker_bound_adapter and "task_scope" in arguments:
+        # A production channel is already bound to one broker-owned scope;
+        # accepting a second selector would make the API appear to support a
+        # redirect path even though the selector is intentionally not part of
+        # the MCP schema.
+        return tool_result(
+            {
+                "ok": False,
+                "schema": "super-brain.scope-binding.v1",
+                "available": False,
+                "code": "H7_SCOPE_SELECTOR_FORBIDDEN",
+                "state": "withheld",
+                "scopeBinding": core.scope_status(),
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            },
+            True,
+        )
+    # A broker-backed MCP must never downgrade to a cwd/env CLI bridge when
+    # its package identity is stale.  The bridge would create a second scope
+    # authority and could silently lose the channel binding.
+    if broker_bound_adapter and name != "brain_status":
+        runtime_identity = core.runtime_identity_status()
+        if runtime_identity.get("state") != "current":
+            return tool_result(
+                {
+                    "ok": False,
+                    "schema": "super-brain.mcp-runtime-identity.v1",
+                    "available": False,
+                    "code": str(runtime_identity.get("code", "H7_MCP_RUNTIME_IDENTITY_STALE")),
+                    "scopeBinding": core.scope_status(),
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                },
+                True,
+            )
     if name == "brain_turn" and "continuation_capsule" in arguments:
         return tool_result(
             {
@@ -794,6 +797,21 @@ def handle_tool(
                     "schema": "super-brain.continuation-control.v1",
                     "available": False,
                     "code": "H7_EXTERNAL_CONTINUATION_STATE_FORBIDDEN",
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                },
+                True,
+            )
+        scope = core.authorize_scope(write=False)
+        if broker_bound_adapter and scope.get("ok") is not True:
+            return tool_result(
+                {
+                    "ok": False,
+                    "schema": "super-brain.scope-binding.v1",
+                    "available": False,
+                    "code": str(scope.get("code", "H7_SCOPE_CHANNEL_UNBOUND")),
+                    "state": str(scope.get("state", "unbound")),
+                    "scopeBinding": core.scope_status(),
                     "rawPromptStored": False,
                     "rawTranscriptStored": False,
                 },
@@ -842,6 +860,50 @@ def handle_tool(
                 },
                 True,
             )
+        layer = str(arguments.get("layer", "all"))
+        if scope is None and layer in {"task", "session"}:
+            if broker_bound_adapter:
+                # Derive the projection from this channel's current broker
+                # authorization.  Never use cwd, ambient session variables, or
+                # a request selector to choose the task/session.
+                authorized = core.authorize_scope(write=False)
+                if authorized.get("ok") is not True:
+                    return tool_result(
+                        {
+                            "ok": False,
+                            "schema": "super-brain.scope-binding.v1",
+                            "available": False,
+                            "code": str(authorized.get("code", "H7_SCOPE_CHANNEL_UNBOUND")),
+                            "state": str(authorized.get("state", "unbound")),
+                            "scopeBinding": core.scope_status(),
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        },
+                        True,
+                    )
+                bound = authorized.get("scope") if isinstance(authorized.get("scope"), Mapping) else authorized
+                workspace_key = str((bound or {}).get("workspaceKey", "")).strip().lower()
+                owner_session_key = str((bound or {}).get("ownerSessionKey", "")).strip().lower()
+                if not workspace_key or not owner_session_key:
+                    return tool_result(
+                        {
+                            "ok": False,
+                            "schema": "super-brain.scope-binding.v1",
+                            "available": False,
+                            "code": "H7_SCOPE_BROKER_CONTEXT_MISSING",
+                            "state": "withheld",
+                            "scopeBinding": core.scope_status(),
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        },
+                        True,
+                    )
+                scope = (workspace_key, owner_session_key)
+            else:
+                # Long-lived legacy workers do not reliably inherit the
+                # caller's task/session identity.  Keep the compatibility
+                # behavior bounded to an empty result.
+                return tool_result([])
         if scope is not None:
             if snapshot_path is None:
                 return tool_result([])
@@ -857,11 +919,6 @@ def handle_tool(
                     max_tokens=int(arguments.get("max_tokens", 120)),
                 )
             )
-        if str(arguments.get("layer", "all")) in {"task", "session"}:
-            # Long-lived MCP workers do not reliably inherit the caller's
-            # thread identity.  Never turn a worker-local cwd or stale env into
-            # cross-session task/session context.
-            return tool_result([])
         return tool_result(
             core.recall(
                 str(arguments.get("query", "")),
@@ -872,15 +929,30 @@ def handle_tool(
             )
         )
     if name == "brain_status":
-        status = core.status()
+        status = _public_mcp_status(core.status())
+        status["scopeBinding"] = core.scope_status()
         status["controlPlaneSnapshot"] = control_plane_status(snapshot_path)
         status["liveMcpHandshake"] = _live_mcp_handshake(
             core,
             runtime_identity=(status.get("runtimeIdentity") if isinstance(status.get("runtimeIdentity"), dict) else None),
-            binding=(status.get("mcpRuntimeBinding") if isinstance(status.get("mcpRuntimeBinding"), dict) else None),
         )
         return tool_result(status)
     if name == "brain_recent":
+        scope = core.authorize_scope(write=False)
+        if broker_bound_adapter and scope.get("ok") is not True:
+            return tool_result(
+                {
+                    "ok": False,
+                    "schema": "super-brain.scope-binding.v1",
+                    "available": False,
+                    "code": str(scope.get("code", "H7_SCOPE_CHANNEL_UNBOUND")),
+                    "state": str(scope.get("state", "unbound")),
+                    "scopeBinding": core.scope_status(),
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                },
+                True,
+            )
         return tool_result(
             core.recent(
                 int(arguments.get("limit", 5)),
@@ -891,6 +963,7 @@ def handle_tool(
 
 
 def serve(core: BrainCore, snapshot_path: Path | None = None) -> int:
+    initialized = False
     for raw in sys.stdin:
         raw = raw.lstrip("\ufeff").strip()
         if not raw:
@@ -900,13 +973,30 @@ def serve(core: BrainCore, snapshot_path: Path | None = None) -> int:
         except json.JSONDecodeError:
             print(json.dumps(error(None, -32700, "parse error"), separators=(",", ":")), flush=True)
             continue
+        if not isinstance(request, dict):
+            # JSON-RPC requests are objects.  A scalar/array must not escape
+            # the protocol loop as a Python TypeError and take down the MCP
+            # worker; return one bounded invalid-request envelope instead.
+            print(json.dumps(error(None, -32600, "invalid request"), separators=(",", ":")), flush=True)
+            continue
         if "id" not in request:
             continue
         request_id = request.get("id")
         method = request.get("method", "")
         try:
+            if not initialized and method not in {"initialize", "ping"}:
+                print(
+                    json.dumps(
+                        error(request_id, -32002, "H7_MCP_INITIALIZE_REQUIRED"),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+                continue
             if method == "initialize":
                 live_handshake = core.record_mcp_live_handshake()
+                initialized = True
                 result = {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
@@ -948,11 +1038,69 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--package-root", required=True)
     parser.add_argument("--memory-root", default="")
+    # Offline replay is an explicit test harness mode.  Do not let a stale or
+    # inherited environment variable silently turn a real local MCP server
+    # into a non-live transport.
+    parser.add_argument("--offline-replay", action="store_true")
     args = parser.parse_args()
     memory_root = Path(args.memory_root).expanduser().resolve() if args.memory_root else None
+    # Every live MCP stdio process owns one private broker channel.  The only
+    # exception is the package's explicit offline protocol replay, which is a
+    # test-only compatibility transport and never represents a live adapter.
+    broker_client = None
+    transport_health = None
+    previous_local_runtime_marker = os.environ.get(_LOCAL_MCP_RUNTIME_ENV)
+    channel_handle = None
+    # Construct the core once.  The transport/provider are dependency
+    # injection seams, so rebinding this instance avoids a second manifest,
+    # rule-registry, and runtime-identity scan during every MCP startup.
     core = BrainCore(args.package_root, str(memory_root) if memory_root is not None else None)
+    if args.offline_replay:
+        transport_health = OfflineReplayMcpTransportHealth()
+        core.inject_runtime_transport(
+            runtime_mode="offline_mcp_replay",
+            scope_provider=OfflineReplayScopeProvider(),
+            transport_health=transport_health,
+        )
+    else:
+        # This process-local marker enables the bounded warm authority worker
+        # without making performance depend on a host's registration format.
+        os.environ[_LOCAL_MCP_RUNTIME_ENV] = "1"
+        broker_client = ScopeBrokerClient(
+            core.memory_base,
+            runtime_path=Path(__file__).with_name("scope_broker_ipc.py"),
+        )
+        channel_handle = BrokerChannelHandle(broker_client, broker_client.open_channel())
+        transport_health = LocalBrokerStdioTransportHealth(broker_client, channel_handle)
+        core.inject_runtime_transport(
+            runtime_mode="local_stdio_scope_broker",
+            scope_provider=BrokerScopeProvider(broker_client, channel_handle),
+            transport_health=transport_health,
+        )
     snapshot_path = core.workspace / "mcp-snapshot.json" if memory_root is not None else None
-    return serve(core, snapshot_path)
+    try:
+        return serve(core, snapshot_path)
+    finally:
+        if previous_local_runtime_marker is None:
+            os.environ.pop(_LOCAL_MCP_RUNTIME_ENV, None)
+        else:
+            os.environ[_LOCAL_MCP_RUNTIME_ENV] = previous_local_runtime_marker
+        if transport_health is not None:
+            try:
+                transport_health.close()
+            except Exception:
+                pass
+        if channel_handle is not None:
+            channel_handle.close_channel()
+        if broker_client is not None:
+            # ``ScopeBrokerClient`` only terminates a child it started itself;
+            # shared resident brokers stay alive for other MCP connections.
+            # This eagerly releases auto-started state instead of waiting for
+            # the idle reaper and avoids pinning temporary package state.
+            try:
+                broker_client.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

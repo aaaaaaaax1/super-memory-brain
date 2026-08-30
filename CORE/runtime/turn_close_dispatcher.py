@@ -152,6 +152,7 @@ _AUTHORITY_WORKER_MAX_REQUESTS = 64
 _AUTHORITY_WORKER_MARKER = "__SUPER_BRAIN_AUTHORITY_DONE__"
 _AUTHORITY_WORKER_TRANSPORT_ENV = "SUPER_BRAIN_MCP_TRANSPORT"
 _AUTHORITY_WORKER_TRANSPORT_VALUE = "codex_registered_v1"
+_AUTHORITY_WORKER_LOCAL_ENV = "SUPER_BRAIN_LOCAL_MCP_RUNTIME"
 
 
 def _parse_worker_marker(line: str, marker: str) -> int | None:
@@ -292,6 +293,7 @@ class _AuthorityWorker:
         if not self.script_path.is_file() or not self.worker_path.is_file():
             return False
         environment = os.environ.copy()
+        environment.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
         environment.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
         environment.pop("SUPER_BRAIN_STATE_ROOT", None)
         command = [
@@ -336,7 +338,13 @@ class _AuthorityWorker:
         self._request_count = 0
         return True
 
-    def invoke(self, arguments: list[str], timeout: float) -> tuple[int, str] | None:
+    def invoke(
+        self,
+        arguments: list[str],
+        timeout: float,
+        *,
+        execution_cwd: str | Path | None = None,
+    ) -> tuple[int, str] | None:
         try:
             bounded_timeout = max(0.25, float(timeout))
         except (TypeError, ValueError):
@@ -354,10 +362,21 @@ class _AuthorityWorker:
                 return None
             self._sequence = (self._sequence + 1) & 0xFFFFFFFFFFFFFFFF
             request_id = f"{self._sequence:016x}"
+            # The caller supplies the already-bound project root.  Falling
+            # back to the package root keeps direct legacy/unit callers
+            # deterministic without consulting ambient process cwd.
+            request_cwd = self.package_root
+            if execution_cwd is not None:
+                try:
+                    candidate_cwd = Path(execution_cwd).expanduser().resolve()
+                    if candidate_cwd.is_dir():
+                        request_cwd = candidate_cwd
+                except (OSError, ValueError):
+                    pass
             request = {
                 "schema": "super-brain.execution-contract-worker-request.v1",
                 "id": request_id,
-                "cwd": os.getcwd(),
+                "cwd": str(request_cwd),
                 "args": [str(item) for item in arguments],
             }
             encoded = base64.b64encode(
@@ -442,11 +461,15 @@ def _invoke_warm_authority(
     package_root: Path,
     arguments: list[str],
     timeout: float,
+    *,
+    execution_cwd: str | Path | None = None,
 ) -> tuple[int, str] | None:
     # A one-shot CLI should not pay to create a resident process.  The
     # registered MCP is the long-lived caller for which this channel exists;
     # its child CLI bridge intentionally receives a scrubbed environment.
-    if os.environ.get(_AUTHORITY_WORKER_TRANSPORT_ENV, "").strip() != _AUTHORITY_WORKER_TRANSPORT_VALUE:
+    registered_transport = os.environ.get(_AUTHORITY_WORKER_TRANSPORT_ENV, "").strip()
+    local_mcp_runtime = os.environ.get(_AUTHORITY_WORKER_LOCAL_ENV, "").strip() == "1"
+    if registered_transport != _AUTHORITY_WORKER_TRANSPORT_VALUE and not local_mcp_runtime:
         return None
     global _AUTHORITY_CHANNEL, _AUTHORITY_CHANNEL_KEY
     # A resident PowerShell process dot-sources the package scripts once at
@@ -479,7 +502,7 @@ def _invoke_warm_authority(
         previous.shutdown()
     if channel is None:
         return None
-    return channel.invoke(arguments, timeout)
+    return channel.invoke(arguments, timeout, execution_cwd=execution_cwd)
 
 
 atexit.register(_shutdown_authority_channel)
@@ -638,9 +661,12 @@ def create_phase_closeout(
 
     package = Path(package_root).expanduser().resolve()
     state = Path(state_root).expanduser().resolve()
-    workspace = _normalize_workspace_key(workspace_key, base=Path.cwd())
-    session = _normalize_session_key(session_key)
     root = _normalize_project_root(project_root)
+    # ``project_root`` is the provider-bound scope root.  Use the package
+    # root only as a deterministic base when a legacy caller supplies a
+    # path-like workspace key instead of its canonical ``ws-*`` form.
+    workspace = _normalize_workspace_key(workspace_key, base=root or package)
+    session = _normalize_session_key(session_key)
     if not workspace or not session or root is None:
         return {
             "ok": False,
@@ -667,6 +693,7 @@ def create_phase_closeout(
         workspace_key=workspace,
         session_key=session,
         timeout=_authority_transaction_timeout(timeout),
+        execution_cwd=root,
         extra=[
             "-ProjectRoot", str(root),
             "-ExpectedRevision", str(expected_revision),
@@ -707,6 +734,7 @@ def _invoke_contract(
     session_key: str,
     timeout: float,
     extra: list[str] | None = None,
+    execution_cwd: str | Path | None = None,
 ) -> tuple[int, dict[str, Any] | None]:
     script = package_root / "scripts" / "execution-contract.ps1"
     if not script.is_file():
@@ -733,7 +761,11 @@ def _invoke_contract(
         command.extend(["-TaskId", task_id])
     command.extend(extra or [])
     environment = os.environ.copy()
-    environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = session_key
+    # Session identity is carried by the explicit ``-SessionKey`` contract
+    # argument.  Do not mirror the provider binding into ambient environment;
+    # that would make a production MCP call appear dependent on a legacy
+    # process variable.
+    environment.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
     environment.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
     environment.pop("SUPER_BRAIN_STATE_ROOT", None)
     # Reuse one package-owned authority worker when this process serves more
@@ -741,10 +773,22 @@ def _invoke_contract(
     # timed-out worker returns ``None`` and falls through to the unchanged cold
     # subprocess path below, so optimization failure cannot weaken authority.
     script_argument_index = command.index(str(script)) + 1
+    # Scope-bearing callers pass the provider's project root explicitly.  The
+    # package root is a deterministic compatibility fallback for direct unit
+    # calls; ambient process cwd is never used to select a production scope.
+    effective_cwd = package_root
+    if execution_cwd is not None:
+        try:
+            candidate_cwd = Path(execution_cwd).expanduser().resolve()
+            if candidate_cwd.is_dir():
+                effective_cwd = candidate_cwd
+        except (OSError, ValueError):
+            pass
     warm_result = _invoke_warm_authority(
         package_root,
         command[script_argument_index:],
         timeout,
+        execution_cwd=effective_cwd,
     )
     if warm_result is not None:
         parsed_warm = _parse_json_output(warm_result[1])
@@ -757,11 +801,10 @@ def _invoke_contract(
     try:
         completed = subprocess.run(
             command,
-        # Preserve the real host workspace cwd.  The PowerShell authority
-        # normalizes non-canonical workspace inputs relative to that cwd;
-        # forcing the package directory here would bind a valid host task to
-        # a different workspace key.
-        cwd=os.getcwd(),
+        # Use the already-bound project root for relative authority inputs.
+        # This keeps the subprocess deterministic and prevents ambient cwd
+        # from redirecting a production MCP operation.
+        cwd=str(effective_cwd),
             env=environment,
             input="",
             text=True,
@@ -1183,7 +1226,14 @@ def _normalize_project_progress_proof(value: Any) -> tuple[dict[str, Any] | None
 
 def _normalize_project_root(value: str | Path | None) -> Path | None:
     try:
-        root = Path(value).expanduser().resolve() if value is not None else Path.cwd().resolve()
+        # Production turn paths pass the provider-bound project root.  A
+        # package-root fallback keeps old direct dispatcher tests/callers
+        # deterministic while avoiding ambient cwd as an identity source.
+        root = (
+            Path(value).expanduser().resolve()
+            if value is not None
+            else Path(__file__).resolve().parents[1]
+        )
     except (OSError, ValueError):
         return None
     return root if root.is_dir() else None
@@ -1200,6 +1250,7 @@ def _reconcile_progress_checkpoint(
     transition_id: str,
     previous_revision: int,
     timeout: float,
+    execution_cwd: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Recognize the narrow case where a timed-out Set already committed.
 
@@ -1218,6 +1269,7 @@ def _reconcile_progress_checkpoint(
         workspace_key=workspace_key,
         session_key=session_key,
         timeout=timeout,
+        execution_cwd=execution_cwd,
     )
     if get_code != 0 or not isinstance(reconciled, dict) or reconciled.get("ok") is not True:
         return None
@@ -1294,7 +1346,8 @@ def record_progress_checkpoint(
     package = Path(package_root).expanduser().resolve()
     state = Path(state_root).expanduser().resolve()
     transaction_timeout = _authority_transaction_timeout(timeout)
-    workspace = _normalize_workspace_key(workspace_key, base=Path.cwd())
+    root = _normalize_project_root(project_root)
+    workspace = _normalize_workspace_key(workspace_key, base=root or package)
     session = _normalize_session_key(session_key)
     checkpoint, checkpoint_code = _normalize_progress_checkpoint(progress_checkpoint)
     if checkpoint is None:
@@ -1332,7 +1385,6 @@ def record_progress_checkpoint(
                 "rawTranscriptStored": False,
             }
         proof_serialized = json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    root = _normalize_project_root(project_root)
     if root is None:
         return {
             "ok": False,
@@ -1417,6 +1469,7 @@ def record_progress_checkpoint(
             workspace_key=workspace,
             session_key=session,
             timeout=transaction_timeout,
+            execution_cwd=root,
         )
         contract_read_path = "authority_get"
     if get_code != 0 or not isinstance(current, dict) or current.get("ok") is not True:
@@ -1582,6 +1635,7 @@ def record_progress_checkpoint(
         workspace_key=workspace,
         session_key=session,
         timeout=transaction_timeout,
+        execution_cwd=root,
         extra=set_extra,
     )
     if set_code != 0 or not isinstance(updated, dict) or updated.get("ok") is not True:
@@ -1595,6 +1649,7 @@ def record_progress_checkpoint(
             transition_id=resolved_transition,
             previous_revision=revision,
             timeout=transaction_timeout,
+            execution_cwd=root,
         )
         if reconciled is not None:
             return reconciled
@@ -1622,6 +1677,7 @@ def record_progress_checkpoint(
             workspace_key=workspace,
             session_key=session,
             timeout=transaction_timeout,
+            execution_cwd=root,
             extra=set_extra,
         )
         if retry_code == 0 and isinstance(retried, dict) and retried.get("ok") is True:
@@ -1637,6 +1693,7 @@ def record_progress_checkpoint(
                 transition_id=resolved_transition,
                 previous_revision=revision,
                 timeout=transaction_timeout,
+                execution_cwd=root,
             )
             if reconciled is not None:
                 return reconciled
@@ -1697,6 +1754,7 @@ def dispatch_turn_close(
     user_control: str = "unknown",
     completion_evidence_ref: str = "",
     transition_id: str = "",
+    project_root: str | Path | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Resolve and, if safe, execute one CAS-bound CloseTurn transition."""
@@ -1705,7 +1763,8 @@ def dispatch_turn_close(
     state = Path(state_root).expanduser().resolve()
     transaction_timeout = _authority_transaction_timeout(timeout)
     task = _compact(task_id, 160)
-    workspace = _normalize_workspace_key(workspace_key, base=Path.cwd())
+    root = _normalize_project_root(project_root)
+    workspace = _normalize_workspace_key(workspace_key, base=root or package)
     session = _normalize_session_key(session_key)
     evidence = _compact(completion_evidence_ref, MAX_REFERENCE_CHARS)
     if not workspace or not session:
@@ -1717,11 +1776,24 @@ def dispatch_turn_close(
             "terminalReplyAllowed": True,
             "requiresParentResume": False,
             "branchStatus": "",
-        "rawPromptStored": False,
-        "rawTranscriptStored": False,
-        "contractReadPath": contract_read_path,
-    }
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
         return _base_result(policy=policy, resolution=None, code="TURN_CLOSE_DISPATCH_SCOPE_REQUIRED")
+
+    if root is None:
+        policy = {
+            "ok": True,
+            "schema": "super-brain.continuation-policy.v1",
+            "decision": "withhold_reconcile",
+            "code": "CONTINUATION_POLICY_PROJECT_ROOT_UNAVAILABLE",
+            "terminalReplyAllowed": True,
+            "requiresParentResume": False,
+            "branchStatus": "",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+        return _base_result(policy=policy, resolution=None, code="TURN_CLOSE_DISPATCH_PROJECT_ROOT_UNAVAILABLE")
 
     resolve_code, resolution = _invoke_contract(
         package,
@@ -1731,6 +1803,7 @@ def dispatch_turn_close(
         workspace_key=workspace,
         session_key=session,
         timeout=transaction_timeout,
+        execution_cwd=root,
     )
     if resolve_code != 0 or not isinstance(resolution, dict):
         policy = {
@@ -1762,6 +1835,7 @@ def dispatch_turn_close(
             workspace_key=workspace,
             session_key=session,
             timeout=transaction_timeout,
+            execution_cwd=root,
         )
         if get_code == 0 and isinstance(full_contract, dict):
             prior_receipts = full_contract.get("transitionReceipts")
@@ -1845,18 +1919,7 @@ def dispatch_turn_close(
         "-TransitionId",
         transition,
     ]
-    project_root = _normalize_project_root(None)
-    if project_root is None:
-        result["code"] = "TURN_CLOSE_DISPATCH_PROJECT_ROOT_UNAVAILABLE"
-        result["policy"] = {
-            **policy,
-            "decision": "withhold_reconcile",
-            "code": "CONTINUATION_POLICY_PROJECT_ROOT_UNAVAILABLE",
-            "terminalReplyAllowed": True,
-            "requiresParentResume": False,
-        }
-        return result
-    close_args.extend(["-ProjectRoot", str(project_root)])
+    close_args.extend(["-ProjectRoot", str(root)])
     close_code, closed = _invoke_contract(
         package,
         state,
@@ -1866,6 +1929,7 @@ def dispatch_turn_close(
         session_key=session,
         timeout=transaction_timeout,
         extra=close_args,
+        execution_cwd=root,
     )
     if close_code != 0 or not isinstance(closed, dict) or closed.get("ok") is not True:
         result["code"] = "TURN_CLOSE_DISPATCH_TRANSACTION_FAILED"

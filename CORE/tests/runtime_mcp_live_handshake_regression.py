@@ -132,6 +132,55 @@ def test_offline_replay_never_becomes_live() -> None:
                 os.environ["SUPER_BRAIN_MCP_OFFLINE_REPLAY"] = saved
 
 
+def test_offline_replay_governed_turn_fails_closed() -> None:
+    """The protocol harness must never enter H7 lifecycle execution."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-offline-turn-") as directory:
+        memory = Path(directory) / "state" / "shared"
+        memory.mkdir(parents=True)
+        requests = (
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            + "\n"
+            + json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "brain_turn", "arguments": {"phase": "evidence"}},
+                }
+            )
+            + "\n"
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(ROOT / "runtime" / "brain_mcp.py"),
+                "--package-root",
+                str(ROOT),
+                "--memory-root",
+                str(memory),
+                "--offline-replay",
+            ],
+            input=requests,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=20,
+        )
+        assert completed.returncode == 0, completed.stderr
+        lines = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+        assert len(lines) == 2, completed.stdout
+        tool = lines[1].get("result", {})
+        assert tool.get("isError") is True, tool
+        content = tool.get("content", [])
+        assert isinstance(content, list) and content
+        body = json.loads(str(content[0]["text"]))
+        assert body.get("available") is False, body
+        assert body.get("code") == "H7_MCP_OFFLINE_REPLAY_NOT_LIVE", body
+
+
 def test_installer_path_hash_contract_matches_python_runtime() -> None:
     """Fresh PowerShell registration must satisfy the resident MCP preflight."""
 
@@ -253,11 +302,43 @@ def test_retired_host_inputs_are_rejected_before_any_bridge() -> None:
             assert body["code"] == "H7_HOST_TRANSPORT_RETIRED", body
 
 
+def test_non_object_jsonrpc_input_does_not_crash_the_worker() -> None:
+    """Malformed scalar/array frames yield JSON-RPC invalid-request errors."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-invalid-jsonrpc-") as directory:
+        memory = Path(directory) / "state" / "shared"
+        memory.mkdir(parents=True)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(ROOT / "runtime" / "brain_mcp.py"),
+                "--package-root",
+                str(ROOT),
+                "--memory-root",
+                str(memory),
+                "--offline-replay",
+            ],
+            input="null\n[]\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=20,
+        )
+        assert completed.returncode == 0, completed.stderr
+        replies = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+        assert len(replies) == 2, completed.stdout
+        assert all(reply.get("error", {}).get("code") == -32600 for reply in replies), replies
+
+
 def main() -> None:
     test_offline_replay_never_becomes_live()
+    test_offline_replay_governed_turn_fails_closed()
     test_installer_path_hash_contract_matches_python_runtime()
     test_registration_epoch_blocks_old_worker_until_real_initialize()
     test_retired_host_inputs_are_rejected_before_any_bridge()
+    test_non_object_jsonrpc_input_does_not_crash_the_worker()
     print("runtime_mcp_live_handshake_regression: PASS")
 
 

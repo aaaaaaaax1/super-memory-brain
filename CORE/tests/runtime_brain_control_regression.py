@@ -1264,7 +1264,7 @@ def test_mcp_snapshot_accepts_allowed_h7_projection_as_display_only(root: Path) 
     assert selected["projection"]["rawPromptStored"] is False
 
 
-def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(root: Path) -> None:
+def test_offline_mcp_recall_rejects_explicit_task_scope(root: Path) -> None:
     state_root = root / "mcp-task-recall"
     control = BrainControl(state_root)
     thread_id = "019fbc52-79e6-7941-af97-c1c2d40be451"
@@ -1300,7 +1300,7 @@ def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(
     environment = os.environ.copy()
     environment.update({"SUPER_BRAIN_LOCAL_SESSION_ID": thread_id, "SUPER_BRAIN_WORKSPACE_KEY": workspace_key, "SUPER_BRAIN_MCP_OFFLINE_REPLAY": "1"})
 
-    def call_recall(with_scope: bool = True) -> list[dict[str, object]]:
+    def call_recall(with_scope: bool = True) -> list[dict[str, object]] | dict[str, object]:
         arguments: dict[str, object] = {
             "query": "当前任务做到哪里，下一步是什么",
             "layer": "task",
@@ -1335,6 +1335,7 @@ def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(
                 str(ROOT),
                 "--memory-root",
                 str(state_root / "shared"),
+                "--offline-replay",
             ],
             input=requests,
             cwd=str(host_project),
@@ -1348,19 +1349,23 @@ def test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(
         recall_reply = next(reply for reply in replies if reply.get("id") == 2)
         return json.loads(recall_reply["result"]["content"][0]["text"])
 
+    # Offline replay is a framing-only harness.  It deliberately injects an
+    # unauthorizing scope provider, so neither ambient local identity nor an
+    # explicit request selector may expose the task projection.
     assert call_recall(with_scope=False) == []
-    recalled = call_recall()
-    assert len(recalled) == 1
-    assert recalled[0]["injectReady"] is True
-    assert recalled[0]["sourceType"] == "task_projection"
-    assert recalled[0]["taskProjection"]["actionAuthorization"] == "withheld"
-    serialized = json.dumps(recalled, ensure_ascii=False)
+    scoped = call_recall()
+    assert isinstance(scoped, dict)
+    assert scoped["code"] == "H7_TASK_SCOPE_LOCAL_SCOPE_REQUIRED"
+    assert scoped["available"] is False
+    serialized = json.dumps(scoped, ensure_ascii=False)
     for private_identity in (thread_id, owner_session_key, workspace_key, "private-task-one"):
         assert private_identity not in serialized
 
     import_scoped("mcp-task-recall-ambiguous-import", "private-task-two", "7", "must not be guessed")
     control.materialize_outbox()
-    assert call_recall() == []
+    ambiguous = call_recall()
+    assert isinstance(ambiguous, dict)
+    assert ambiguous["code"] == "H7_TASK_SCOPE_LOCAL_SCOPE_REQUIRED"
 
 
 def test_card_schema_migration_recovery(root: Path) -> None:
@@ -3599,7 +3604,7 @@ def main() -> None:
         test_mcp_snapshot_withholds_stale_or_pending_delivery(root)
         test_mcp_snapshot_publishes_bounded_scope_bound_task_projection(root)
         test_mcp_snapshot_accepts_allowed_h7_projection_as_display_only(root)
-        test_mcp_task_recall_uses_unique_host_scope_and_fails_closed_when_ambiguous(root)
+        test_offline_mcp_recall_rejects_explicit_task_scope(root)
         test_card_schema_migration_recovery(root)
         test_control_center_card_queries_and_privacy(root)
         test_memory_timeline_projects_only_verified_sources(root)

@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from brain_context import (
     canonical_hash as context_canonical_hash,
@@ -24,8 +24,10 @@ from brain_context import (
 from activation_receipt import read_valid as read_activation_receipt
 from continuation_policy import decide_turn_close
 from core_rule_registry import load_registry, public_projection as project_core_rules
+from mcp_transport_health import McpTransportHealth, inactive_status
 from mcp_runtime_identity import runtime_dependency_paths, runtime_identity
 from layout_paths import configured_state_root, state_root as resolve_state_root
+from scope_provider import LegacyEnvironmentScopeProvider, ScopeProvider
 
 
 TURN_RUNTIME_CONTEXT_SNAPSHOT_KEY = "_turnRuntimeSnapshot"
@@ -161,8 +163,17 @@ def _mcp_runtime_identity_paths(package_root: Path) -> tuple[str, ...]:
 
 MCP_RUNTIME_BINDING_SCHEMA = "super-brain.mcp-runtime-binding.v1"
 MCP_RUNTIME_TRANSPORT_ENV = "SUPER_BRAIN_MCP_TRANSPORT"
-MCP_RUNTIME_TRANSPORT_VALUE = "codex_registered_v1"
 MCP_RUNTIME_EPOCH_ENV = "SUPER_BRAIN_MCP_REGISTRATION_EPOCH"
+MCP_RUNTIME_MODE_CLI = "local_cli"
+MCP_RUNTIME_MODE_STDIO = "local_stdio_scope_broker"
+MCP_RUNTIME_MODE_OFFLINE_REPLAY = "offline_mcp_replay"
+_MCP_RUNTIME_MODES = frozenset(
+    {
+        MCP_RUNTIME_MODE_CLI,
+        MCP_RUNTIME_MODE_STDIO,
+        MCP_RUNTIME_MODE_OFFLINE_REPLAY,
+    }
+)
 MCP_RUNTIME_BINDING_FIELDS = (
     "schema",
     "state",
@@ -186,6 +197,19 @@ def _mcp_binding_payload_hash(value: dict[str, Any]) -> str:
 def _mcp_path_hash(path: Path) -> str:
     normalized = str(path.expanduser().resolve()).rstrip("/\\").lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _adapter_handshake_transport(adapter_transport: str) -> str:
+    """Return the persisted label for an optional external deployment adapter.
+
+    The local MCP runtime does not need a host registration label.  This small
+    compatibility mapping only lets pre-existing registered adapters validate
+    their own persisted handshakes without becoming core runtime authority.
+    """
+
+    if adapter_transport == "codex_registered_v1":
+        return "codex_registered_mcp_stdio"
+    return "external_registered_mcp_stdio"
 
 
 @dataclass(frozen=True)
@@ -447,7 +471,27 @@ class RetrievalOutputPolicy:
 
 
 class BrainCore:
-    def __init__(self, package_root: str | Path, memory_root: str | Path | None = None):
+    def __init__(
+        self,
+        package_root: str | Path,
+        memory_root: str | Path | None = None,
+        *,
+        scope_provider: ScopeProvider | None = None,
+        runtime_mode: str = MCP_RUNTIME_MODE_CLI,
+        transport_health: McpTransportHealth | None = None,
+    ):
+        mode = str(runtime_mode or "").strip()
+        if mode not in _MCP_RUNTIME_MODES:
+            raise ValueError("H7_MCP_RUNTIME_MODE_INVALID")
+        # A non-CLI core is an explicit transport construction.  Do not let a
+        # caller label a legacy environment-backed core as local MCP (or
+        # offline replay) merely by setting ``runtime_mode``; both injected
+        # seams are required before the object can serve requests.
+        if mode != MCP_RUNTIME_MODE_CLI:
+            if scope_provider is None:
+                raise ValueError("H7_SCOPE_PROVIDER_REQUIRED")
+            if transport_health is None:
+                raise ValueError("H7_MCP_TRANSPORT_HEALTH_REQUIRED")
         self.package_root = Path(package_root).expanduser().resolve()
         self.memory_root = self._resolve_memory_root(memory_root)
         self.memory_base = self._resolve_memory_base()
@@ -473,6 +517,90 @@ class BrainCore:
         self._runtime_source_projection_cache: dict[str, Any] | None = None
         self._graph_cache_key: tuple[int, int] | None = None
         self._graph_cache: list[GraphEdge] = []
+        self.runtime_mode = mode
+        self._transport_health = transport_health
+        # CLI/test callers retain the explicitly task-local compatibility
+        # provider.  Production MCP constructs BrainCore with a broker-backed
+        # provider, so no host/cwd/env identity can enter that path.
+        self._scope_provider: ScopeProvider = scope_provider or LegacyEnvironmentScopeProvider()
+
+    @property
+    def is_local_mcp_runtime(self) -> bool:
+        """Whether this core was explicitly constructed by the local MCP entry."""
+
+        return self.runtime_mode == MCP_RUNTIME_MODE_STDIO
+
+    def inject_runtime_transport(
+        self,
+        *,
+        runtime_mode: str,
+        transport_health: McpTransportHealth,
+        scope_provider: ScopeProvider | None = None,
+    ) -> None:
+        """Attach one process-owned MCP transport before serving requests.
+
+        This is a construction-time dependency-injection seam, not a runtime
+        rebind API.  It lets a stdio entry resolve state once, then inject its
+        private channel/provider without reconstructing the package/rules
+        core.  A served core cannot be switched to another transport.
+        """
+
+        mode = str(runtime_mode or "").strip()
+        if mode not in _MCP_RUNTIME_MODES or mode == MCP_RUNTIME_MODE_CLI:
+            raise ValueError("H7_MCP_RUNTIME_MODE_INVALID")
+        if transport_health is None:
+            raise ValueError("H7_MCP_TRANSPORT_HEALTH_REQUIRED")
+        if mode != MCP_RUNTIME_MODE_CLI and scope_provider is None:
+            raise ValueError("H7_SCOPE_PROVIDER_REQUIRED")
+        if self._transport_health is not None or self.runtime_mode != MCP_RUNTIME_MODE_CLI:
+            raise RuntimeError("H7_MCP_TRANSPORT_ALREADY_INJECTED")
+        if scope_provider is not None:
+            self._scope_provider = scope_provider
+        self.runtime_mode = mode
+        self._transport_health = transport_health
+
+    def scope_status(self) -> dict[str, Any]:
+        """Return the current provider binding without selecting a scope."""
+
+        try:
+            value = self._scope_provider.status()
+        except Exception:
+            value = {"state": "withheld", "code": "H7_SCOPE_PROVIDER_UNAVAILABLE"}
+        result = dict(value) if isinstance(value, Mapping) else {}
+        result.setdefault("state", "unbound")
+        result.setdefault("code", "H7_SCOPE_PROVIDER_UNBOUND")
+        result["provider"] = str(result.get("provider") or type(self._scope_provider).__name__)
+        # ``ok`` on a broker status is intentionally a query-success bit: an
+        # unbound channel is healthy enough to inspect but cannot authorize a
+        # tool call.  Make that distinction explicit for MCP consumers rather
+        # than relying on every caller to infer it from code/state.
+        state = str(result.get("state", "")).strip()
+        result["channelAvailable"] = bool(result.get("ok") is True and state in {"unbound", "bound"})
+        result["scopeAuthorized"] = bool(
+            state == "bound"
+            and isinstance(result.get("scope"), Mapping)
+            and str((result.get("scope") or {}).get("workspaceKey", "")).strip()
+            and str((result.get("scope") or {}).get("ownerSessionKey", "")).strip()
+        )
+        result["rawPromptStored"] = False
+        result["rawTranscriptStored"] = False
+        return result
+
+    def authorize_scope(self, *, write: bool = False) -> dict[str, Any]:
+        """Refresh provider authorization for an operation."""
+
+        try:
+            value = self._scope_provider.authorize(write=write)
+        except Exception:
+            value = {"ok": False, "state": "withheld", "code": "H7_SCOPE_PROVIDER_UNAVAILABLE"}
+        return dict(value) if isinstance(value, Mapping) else {"ok": False, "state": "withheld", "code": "H7_SCOPE_PROVIDER_INVALID"}
+
+    def _scope_snapshot(self, *, force: bool = False) -> dict[str, Any]:
+        try:
+            value = self._scope_provider.snapshot(force=force)
+        except Exception:
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
 
     def core_rules(self, signals: Iterable[Any] = ()) -> dict[str, Any]:
         """Return a bounded rule projection without reading memory or storing signals."""
@@ -544,14 +672,21 @@ class BrainCore:
         startup_identity = str(self._mcp_runtime_identity_startup or "")
         source_identity = _mcp_runtime_identity(self.package_root)
 
-        registered_root = str(os.environ.get("SUPER_BRAIN_PACKAGE_ROOT", "")).strip()
-        registered_identity = str(os.environ.get("SUPER_BRAIN_RUNTIME_IDENTITY", "")).strip()
+        # Platform deployment registrations are deliberately not part of the
+        # process identity.  A local injected stdio runtime must be current
+        # based solely on its startup package/rules closure, even when an
+        # embedding host happens to leave stale adapter variables behind.
+        registered_root = ""
+        registered_identity = ""
         registered_for_this_package = False
-        if registered_root:
-            try:
-                registered_for_this_package = Path(registered_root).expanduser().resolve() == self.package_root
-            except OSError:
-                registered_for_this_package = False
+        if not self.is_local_mcp_runtime:
+            registered_root = str(os.environ.get("SUPER_BRAIN_PACKAGE_ROOT", "")).strip()
+            registered_identity = str(os.environ.get("SUPER_BRAIN_RUNTIME_IDENTITY", "")).strip()
+            if registered_root:
+                try:
+                    registered_for_this_package = Path(registered_root).expanduser().resolve() == self.package_root
+                except OSError:
+                    registered_for_this_package = False
 
         comparison_fields = ("status", "registryVersion", "payloadHash", "activeEffectsHash", "fileSha256", "packageVersion")
         same_rules = all(str(served.get(field, "")) == str(source.get(field, "")) for field in comparison_fields)
@@ -564,8 +699,6 @@ class BrainCore:
             code = "H7_MCP_RUNTIME_RULE_REGISTRY_STALE"
         elif not startup_identity or not source_identity or startup_identity != source_identity:
             code = "H7_MCP_RUNTIME_IDENTITY_STALE"
-        elif registered_for_this_package and registered_identity != startup_identity:
-            code = "H7_MCP_RUNTIME_IDENTITY_BINDING_STALE"
         state = "current" if code == "H7_MCP_RUNTIME_IDENTITY_CURRENT" else "withheld"
         return {
             "schema": "super-brain.mcp-runtime-identity.v1",
@@ -575,6 +708,10 @@ class BrainCore:
             "sourceIdentity": source_identity,
             "registeredIdentity": registered_identity if registered_for_this_package else "",
             "registeredIdentityChecked": registered_for_this_package,
+            # An external adapter's configured identity is diagnostic only.
+            # A verified local process must not become stale merely because a
+            # particular platform registration has not been refreshed.
+            "registeredIdentityMatches": (not registered_for_this_package) or registered_identity == startup_identity,
             "servedCoreRules": served,
             "sourceCoreRules": source,
             "rawPromptStored": False,
@@ -584,29 +721,41 @@ class BrainCore:
     def _mcp_runtime_binding_path(self) -> Path:
         return self.workspace / "runtime-state" / "mcp-runtime-binding.json"
 
-    def mcp_runtime_binding_status(
+    def _mcp_adapter_binding_status(
         self,
-        runtime_identity: dict[str, Any] | None = None,
+        runtime_identity: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Validate the configured epoch and the live MCP handshake.
+        """Validate an optional external deployment adapter, never core health.
 
-        A config entry is only a desired binding.  ``current`` requires the
-        exact epoch, source identity, and transport marker from the running
-        MCP process plus a handshake written by that process.  Offline
-        protocol replays therefore cannot manufacture readiness.
+        Installer-owned registrations remain useful deployment diagnostics, but
+        they are not evidence that an injected local MCP is live.  Avoid even
+        reading the adapter-owned binding file unless an adapter has explicitly
+        supplied its own configuration markers.
         """
 
-        binding = _read_json(self._mcp_runtime_binding_path())
-        runtime = runtime_identity if isinstance(runtime_identity, dict) else self.runtime_identity_status()
         epoch = str(os.environ.get(MCP_RUNTIME_EPOCH_ENV, "")).strip()
         configured_identity = str(os.environ.get("SUPER_BRAIN_RUNTIME_IDENTITY", "")).strip()
         configured_root = str(os.environ.get("SUPER_BRAIN_PACKAGE_ROOT", "")).strip()
         configured_transport = str(os.environ.get(MCP_RUNTIME_TRANSPORT_ENV, "")).strip()
+        configured = bool(epoch or configured_identity or configured_root or configured_transport)
+        if not configured:
+            return {
+                "schema": "super-brain.mcp-deployment-adapter-status.v1",
+                "state": "not_configured",
+                "code": "H7_MCP_ADAPTER_NOT_CONFIGURED",
+                "transport": "",
+                "registrationEpochHash": "",
+                "runtimeIdentity": "",
+                "liveHandshake": False,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        binding = _read_json(self._mcp_runtime_binding_path())
         try:
             configured_root_matches = bool(configured_root) and Path(configured_root).expanduser().resolve() == self.package_root
         except OSError:
             configured_root_matches = False
-        source_identity = str(runtime.get("sourceIdentity", ""))
+        source_identity = str(runtime_identity.get("sourceIdentity", ""))
         package_hash = _mcp_path_hash(self.package_root)
         memory_hash = _mcp_path_hash(self.memory_base)
         binding_epoch = str(binding.get("registrationEpoch", "")).strip() if isinstance(binding, dict) else ""
@@ -620,80 +769,71 @@ class BrainCore:
             and binding.get("schema") == MCP_RUNTIME_BINDING_SCHEMA
             and binding_hash_current
             and binding_epoch
-            and binding_identity
             and binding_identity == source_identity
             and str(binding.get("packageRootHash", "")) == package_hash
             and str(binding.get("memoryRootHash", "")) == memory_hash
-            and runtime.get("state") == "current"
-            and configured_transport == MCP_RUNTIME_TRANSPORT_VALUE
+            and runtime_identity.get("state") == "current"
+            and bool(configured_transport)
             and configured_root_matches
             and configured_identity == source_identity
             and epoch == binding_epoch
         )
         handshake = binding.get("liveHandshake") if isinstance(binding, dict) else None
+        expected_transport = _adapter_handshake_transport(configured_transport)
         live_ok = bool(
             base_ok
-            and isinstance(handshake, dict)
+            and isinstance(handshake, Mapping)
             and handshake.get("schema") == "super-brain.mcp-live-handshake.v1"
             and str(handshake.get("registrationEpoch", "")) == binding_epoch
             and str(handshake.get("runtimeIdentity", "")) == source_identity
-            and str(handshake.get("transport", "")) == "codex_registered_mcp_stdio"
+            and str(handshake.get("transport", "")) == expected_transport
+            and (
+                expected_transport != "external_registered_mcp_stdio"
+                or str(handshake.get("adapterTransport", "")) == configured_transport
+            )
         )
         if live_ok:
-            state, code = "current", "H7_MCP_LIVE_HANDSHAKE_CURRENT"
+            state, code = "current", "H7_MCP_ADAPTER_LIVE_HANDSHAKE_CURRENT"
         elif not base_ok:
-            state, code = "restart_required", "H7_MCP_RUNTIME_REBIND_REQUIRED"
+            state, code = "restart_required", "H7_MCP_ADAPTER_REBIND_REQUIRED"
         else:
-            state, code = "restart_required", "H7_MCP_LIVE_HANDSHAKE_REQUIRED"
+            state, code = "restart_required", "H7_MCP_ADAPTER_LIVE_HANDSHAKE_REQUIRED"
         return {
-            "schema": "super-brain.mcp-runtime-binding-status.v1",
+            "schema": "super-brain.mcp-deployment-adapter-status.v1",
             "state": state,
             "code": code,
+            "transport": configured_transport,
             "registrationEpochHash": hashlib.sha256(binding_epoch.encode("utf-8")).hexdigest() if binding_epoch else "",
             "runtimeIdentity": source_identity if live_ok else "",
-            "packageVersion": str(self.manifest.get("version", "")),
             "liveHandshake": live_ok,
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
 
-    def record_mcp_live_handshake(self) -> dict[str, Any]:
-        """Commit a current handshake only from the real MCP process."""
+    def _record_mcp_adapter_handshake(self, runtime_identity: Mapping[str, Any]) -> dict[str, Any]:
+        """Record optional adapter liveness without affecting local MCP health."""
 
-        if os.environ.get("SUPER_BRAIN_MCP_OFFLINE_REPLAY") == "1":
-            return {
-                "schema": "super-brain.mcp-runtime-binding-status.v1",
-                "state": "offline_replay",
-                "code": "H7_MCP_OFFLINE_REPLAY_NOT_LIVE",
-                "registrationEpochHash": "",
-                "runtimeIdentity": "",
-                "packageVersion": str(self.manifest.get("version", "")),
-                "liveHandshake": False,
-                "rawPromptStored": False,
-                "rawTranscriptStored": False,
-            }
-        before = self.mcp_runtime_binding_status()
-        if before.get("state") != "restart_required" or before.get("code") != "H7_MCP_LIVE_HANDSHAKE_REQUIRED":
+        before = self._mcp_adapter_binding_status(runtime_identity)
+        if before.get("state") != "restart_required" or before.get("code") != "H7_MCP_ADAPTER_LIVE_HANDSHAKE_REQUIRED":
             return before
         path = self._mcp_runtime_binding_path()
         binding = _read_json(path)
         if not isinstance(binding, dict):
             return before
         epoch = str(binding.get("registrationEpoch", "")).strip()
-        identity = str(before.get("runtimeIdentity", ""))
-        # ``runtimeIdentity`` is intentionally blank for a non-current binding;
-        # use the source identity only after the full preflight succeeds.
-        runtime = self.runtime_identity_status()
-        identity = str(runtime.get("sourceIdentity", ""))
-        handshake = {
+        identity = str(runtime_identity.get("sourceIdentity", ""))
+        adapter_transport = str(os.environ.get(MCP_RUNTIME_TRANSPORT_ENV, "")).strip()
+        handshake: dict[str, Any] = {
             "schema": "super-brain.mcp-live-handshake.v1",
             "registrationEpoch": epoch,
             "runtimeIdentity": identity,
-            "transport": "codex_registered_mcp_stdio",
+            "transport": _adapter_handshake_transport(adapter_transport),
             "checkedAt": datetime.now(timezone.utc).isoformat(),
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
+        if handshake["transport"] == "external_registered_mcp_stdio":
+            handshake["adapterTransport"] = adapter_transport
         binding["state"] = "current"
         binding["liveHandshake"] = handshake
         binding["payloadHash"] = _mcp_binding_payload_hash(binding)
@@ -707,8 +847,134 @@ class BrainCore:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
-            return {**before, "state": "restart_required", "code": "H7_MCP_LIVE_HANDSHAKE_WRITE_FAILED"}
-        return self.mcp_runtime_binding_status()
+            return {**before, "state": "restart_required", "code": "H7_MCP_ADAPTER_LIVE_HANDSHAKE_WRITE_FAILED"}
+        return self._mcp_adapter_binding_status(runtime_identity)
+
+    def mcp_transport_status(
+        self,
+        runtime_identity: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return platform-neutral health of this process's MCP transport."""
+
+        runtime = runtime_identity if isinstance(runtime_identity, Mapping) else self.runtime_identity_status()
+        # An explicit injected transport owns its lifecycle.  Only the
+        # legacy, un-injected compatibility core may opt into the historical
+        # environment-driven offline replay switch.
+        if self._transport_health is None and (
+            self.runtime_mode == MCP_RUNTIME_MODE_OFFLINE_REPLAY
+            or os.environ.get("SUPER_BRAIN_MCP_OFFLINE_REPLAY") == "1"
+        ):
+            from mcp_transport_health import OfflineReplayMcpTransportHealth
+
+            return dict(OfflineReplayMcpTransportHealth().status(runtime))
+        if self._transport_health is None and self.runtime_mode in {
+            MCP_RUNTIME_MODE_STDIO,
+            MCP_RUNTIME_MODE_OFFLINE_REPLAY,
+        }:
+            # An explicitly selected injected mode without its health object
+            # is incomplete; never fall back to a deployment adapter just to
+            # manufacture a status result.
+            return inactive_status(runtime)
+        if self._transport_health is None:
+            # Keep the optional legacy deployment adapter observable for
+            # existing CLI/install diagnostics.  It is deliberately not used
+            # by the injected local stdio path and never authorizes work.
+            adapter = self._mcp_adapter_binding_status(runtime)
+            if adapter.get("state") != "not_configured":
+                legacy_code = {
+                    "H7_MCP_ADAPTER_LIVE_HANDSHAKE_CURRENT": "H7_MCP_LIVE_HANDSHAKE_CURRENT",
+                    "H7_MCP_ADAPTER_LIVE_HANDSHAKE_REQUIRED": "H7_MCP_LIVE_HANDSHAKE_REQUIRED",
+                    "H7_MCP_ADAPTER_REBIND_REQUIRED": "H7_MCP_RUNTIME_REBIND_REQUIRED",
+                    "H7_MCP_ADAPTER_LIVE_HANDSHAKE_WRITE_FAILED": "H7_MCP_LIVE_HANDSHAKE_WRITE_FAILED",
+                }.get(str(adapter.get("code", "")), str(adapter.get("code", "H7_MCP_RUNTIME_REBIND_REQUIRED")))
+                configured_transport = str(adapter.get("transport", ""))
+                return {
+                    "schema": "super-brain.mcp-live-handshake.v1",
+                    "state": "current" if adapter.get("state") == "current" else "withheld",
+                    "code": legacy_code,
+                    "transport": "codex_registered_mcp_stdio" if configured_transport == "codex_registered_v1" else "external_registered_mcp_stdio",
+                    "runtimeIdentity": str(adapter.get("runtimeIdentity", "")),
+                    "registryVersion": int((runtime.get("servedCoreRules") or {}).get("registryVersion", 0) or 0),
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                }
+            return inactive_status(runtime)
+        try:
+            value = self._transport_health.status(runtime)
+        except Exception:
+            value = {
+                "schema": "super-brain.mcp-live-handshake.v2",
+                "state": "withheld",
+                "code": "H7_MCP_LOCAL_TRANSPORT_UNAVAILABLE",
+                "transport": "local_scope_broker_stdio",
+                "runtimeIdentity": "",
+                "broker": {"state": "withheld", "code": "H7_SCOPE_BROKER_UNAVAILABLE", "available": False},
+                "scope": {"provider": "scope_broker_channel", "state": "withheld", "code": "H7_SCOPE_BROKER_UNAVAILABLE", "accessMode": ""},
+                "packageVersion": str(self.manifest.get("version", "")),
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        return dict(value) if isinstance(value, Mapping) else inactive_status(runtime)
+
+    def mcp_runtime_binding_status(
+        self,
+        runtime_identity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Combine core-local transport state with optional adapter diagnostics."""
+
+        runtime = runtime_identity if isinstance(runtime_identity, Mapping) else self.runtime_identity_status()
+        transport = self.mcp_transport_status(runtime)
+        adapter = (
+            {
+                "schema": "super-brain.mcp-deployment-adapter-status.v1",
+                "state": "not_applicable",
+                "code": "H7_MCP_ADAPTER_NOT_APPLICABLE",
+                "transport": "",
+                "registrationEpochHash": "",
+                "runtimeIdentity": "",
+                "liveHandshake": False,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+            if self.is_local_mcp_runtime or self.runtime_mode == MCP_RUNTIME_MODE_OFFLINE_REPLAY
+            else self._mcp_adapter_binding_status(runtime)
+        )
+        return {
+            "schema": "super-brain.mcp-runtime-binding-status.v2",
+            "state": str(transport.get("state", "withheld")),
+            "code": str(transport.get("code", "H7_MCP_LOCAL_TRANSPORT_UNAVAILABLE")),
+            "runtimeMode": self.runtime_mode,
+            "transport": str(transport.get("transport", "")),
+            "registrationEpochHash": str(adapter.get("registrationEpochHash", "")),
+            "runtimeIdentity": str(transport.get("runtimeIdentity", "")),
+            "packageVersion": str(self.manifest.get("version", "")),
+            "liveHandshake": transport.get("state") == "current",
+            "deploymentAdapter": adapter,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+
+    def record_mcp_live_handshake(self) -> dict[str, Any]:
+        """Mark the injected local transport initialized; record adapters separately.
+
+        Retained under its historical name for callers that already invoke it.
+        The returned value is always the local transport handshake, never a
+        platform registration record.
+        """
+
+        runtime = self.runtime_identity_status()
+        if self._transport_health is not None:
+            try:
+                self._transport_health.mark_initialized(runtime)
+            except Exception:
+                pass
+        # The local Broker transport owns its own process-local lifecycle and
+        # must never mutate a host/deployment adapter's global binding file.
+        # Only the compatibility CLI/adapter path may record that legacy
+        # handshake.
+        if self._transport_health is None and self.runtime_mode == MCP_RUNTIME_MODE_CLI:
+            self._record_mcp_adapter_handshake(runtime)
+        return self.mcp_transport_status(runtime)
 
     def _resolve_memory_root(self, supplied: str | Path | None) -> Path:
         if supplied:
@@ -1161,22 +1427,21 @@ class BrainCore:
         return ()
 
     def _current_workspace_key(self) -> str:
-        # Scope is always derived from the current process cwd. No environment
-        # override or transport metadata may redirect a governed operation.
-        try:
-            source = os.path.abspath(os.getcwd()).rstrip("/\\").lower()
-        except OSError:
-            return ""
-        if not source:
-            return ""
-        return "ws-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
+        value = self._scope_snapshot().get("workspaceKey", "")
+        return str(value or "").strip().lower()
 
     def _current_session_key(self) -> str:
-        # The local runtime owns session identity.  Host-injected thread
-        # metadata is deliberately ignored so a stale desktop thread can
-        # never select or rebind an execution contract.
-        candidate = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID", "").strip()
-        return self._session_key_from_value(candidate)
+        """Return the session bound by the configured scope provider.
+
+        The broker-backed MCP provider is the production identity source.  The
+        legacy ``SUPER_BRAIN_LOCAL_SESSION_ID`` environment provider remains
+        available only for the standalone CLI/test seam, so this core path
+        never reads ambient process identity directly and cannot accidentally
+        fall back to a host thread id.
+        """
+
+        value = self._scope_snapshot().get("ownerSessionKey", "")
+        return str(value or "").strip().lower()
 
     @staticmethod
     def _session_key_from_value(candidate: str) -> str:
@@ -1377,40 +1642,25 @@ class BrainCore:
         }
 
     def _context_workspace_key(self) -> str:
-        """Derive scope only from the current process cwd."""
+        """Resolve workspace identity from the configured scope provider."""
 
-        try:
-            source = os.path.abspath(os.getcwd()).rstrip("/\\").lower()
-        except OSError:
-            return ""
-        return "ws-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:24] if source else ""
+        return self._current_workspace_key()
 
     def _context_project_root(self) -> Path | None:
         """Return the current local project root for proof rechecks."""
-
         try:
-            root = Path.cwd().resolve()
-        except OSError:
+            root = self._scope_provider.project_root()
+        except Exception:
             root = None
-        if root is None or not root.is_dir():
-            return None
-        workspace_key = self._context_workspace_key()
-        normalized = str(root).rstrip("/\\").lower()
-        expected_workspace_key = "ws-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
-        return root if workspace_key and workspace_key == expected_workspace_key else None
+        if isinstance(root, Path) and root.is_dir():
+            return root
+        return None
 
     def _context_session_key(self) -> str:
-        """Resolve one explicit process-local session.
+        """Resolve the owner session from the configured scope provider."""
 
-        ``SUPER_BRAIN_LOCAL_SESSION_ID`` is the runtime identity. The older
-        ``SUPER_BRAIN_SESSION_ID`` remains recall-only
-        compatibility state and must not silently select an execution
-        contract.  This keeps local CLI/MCP operation possible without making
-        a stale legacy session override authoritative.
-        """
-
-        candidate = os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID", "").strip()
-        return self._session_key_from_value(candidate)
+        value = self._scope_snapshot().get("ownerSessionKey", "")
+        return str(value or "").strip().lower()
 
     def _project_progress_status(self, contract: dict[str, Any]) -> dict[str, Any]:
         """Read and recheck the formal proof without exposing its raw body."""
@@ -1830,6 +2080,16 @@ class BrainCore:
             or str(contract.get("packageVersion", "")) != package_version
         ):
             return None, "BRAIN_CONTEXT_CONTRACT_SCOPE_MISMATCH"
+        # A broker-bound provider may carry the exact contract hash that was
+        # authorized when its channel was paired.  Re-read and compare it
+        # here so a stale/replaced contract cannot be used through an otherwise
+        # valid channel.  Legacy CLI providers intentionally have no hash and
+        # continue through the existing H7 validation path.
+        expected_contract_hash = str(self._scope_snapshot().get("contractHash", "")).strip().lower()
+        if expected_contract_hash:
+            actual_contract_hash = context_canonical_hash(contract)
+            if expected_contract_hash != actual_contract_hash:
+                return None, "BRAIN_CONTEXT_SCOPE_CONTRACT_HASH_MISMATCH"
         try:
             contract_revision_value = int(contract.get("revision", -1))
             index_revision_value = int(entry.get("revision", -2))
@@ -4120,21 +4380,25 @@ class BrainCore:
         activation, and contract pass while preserving the same fail-closed
         check and public payload used by :meth:`status`.
         """
-        # H7-only transport is a runtime invariant, not a historical status
-        # hint. Keep the registration check narrow so unrelated Codex hooks
-        # remain untouched.
-        codex_home = Path(os.environ.get("CODEX_HOME", "").strip() or (Path.home() / ".codex"))
-        hook_config = codex_home / "hooks.json"
+        # H7-only transport is a runtime invariant, not a host-registration
+        # hint.  The injected local MCP path must not touch CODEX_HOME at all;
+        # an optional legacy adapter diagnostic remains available for the
+        # compatibility CLI/status path.
+        runtime_file = self.package_root / "runtime" / "turn_runtime.py"
         hook_registered = False
         hook_config_readable = True
-        if hook_config.exists():
-            try:
-                hook_text = hook_config.read_text(encoding="utf-8-sig").lower()
-                hook_registered = any(marker in hook_text for marker in ("super-memory-brain", "codex_prompt_hook", "codex_stop_hook"))
-            except (OSError, UnicodeError):
-                hook_config_readable = False
-        runtime_file = self.package_root / "runtime" / "turn_runtime.py"
-        transport_ready = runtime_file.exists() and hook_config_readable and not hook_registered
+        hook_checked = False
+        if not self.is_local_mcp_runtime:
+            codex_home = Path(os.environ.get("CODEX_HOME", "").strip() or (Path.home() / ".codex"))
+            hook_config = codex_home / "hooks.json"
+            hook_checked = True
+            if hook_config.exists():
+                try:
+                    hook_text = hook_config.read_text(encoding="utf-8-sig").lower()
+                    hook_registered = any(marker in hook_text for marker in ("super-memory-brain", "codex_prompt_hook", "codex_stop_hook"))
+                except (OSError, UnicodeError):
+                    hook_config_readable = False
+        transport_ready = runtime_file.exists() and (self.is_local_mcp_runtime or (hook_config_readable and not hook_registered))
         turn_runtime = {
             "available": transport_ready,
             "state": "available" if transport_ready else "withheld",
@@ -4164,9 +4428,10 @@ class BrainCore:
                 "entryAvailable": runtime_file.exists(),
             },
             "superBrainHookRegistration": {
-                "state": "absent" if not hook_registered and hook_config_readable else "conflict" if hook_registered else "unverifiable",
-                "registered": hook_registered if hook_config_readable else None,
+                "state": "not_applicable" if self.is_local_mcp_runtime else "absent" if not hook_registered and hook_config_readable else "conflict" if hook_registered else "unverifiable",
+                "registered": None if self.is_local_mcp_runtime else hook_registered if hook_config_readable else None,
                 "configurationReadable": hook_config_readable,
+                "checked": hook_checked,
             },
             "actionAuthorization": "not_authorizing",
             "legacyDependency": "none",
