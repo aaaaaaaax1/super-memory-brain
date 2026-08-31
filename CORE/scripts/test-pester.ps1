@@ -28,7 +28,7 @@ function Get-SuperBrainPesterTierFiles([string]$RequestedTier) {
       # Measured longest-first order keeps all three workers balanced instead
       # of launching the two recovery matrices only at the tier deadline.
       'CanonicalPlanContinuity.Tests.ps1','DecisionExecutionBinding.Tests.ps1','RecoveryContinuityMatrix.Tests.ps1',
-      'CurrentTaskContextScope.Tests.ps1','CrossSessionRecoveryMatrix.Tests.ps1',
+      'CurrentTaskContextScope.Tests.ps1','CrossSessionRecoveryMatrix.Tests.ps1','LocalRebindExecutionContract.Tests.ps1',
       'TurnCloseContinuation.Tests.ps1','RuntimeWakeControlPlane.Tests.ps1','WorkspaceContinuity.Tests.ps1',
       'CompletionLifecycleAuthority.Tests.ps1','LegacyWriterRetirement.Tests.ps1','RecoveryCheckpointFreshness.Tests.ps1',
       'RecoveryCheckpoint.Tests.ps1','H7RuntimeWakeControlPlane.Tests.ps1','NoHookTurnCloseBridge.Tests.ps1',

@@ -1,11 +1,23 @@
 [CmdletBinding(PositionalBinding=$false)]
 param(
-  [ValidateSet('Set','ObserveUser','Get','Resolve','Guard','Clear','ResumeParent','CloseTurn','PrepareMerge','CompleteMerge','ValidatePlanReceipt','ValidateIntentReceipt','BindContext','RebindPackageVersion','CreatePhaseCloseout')]
+  [ValidateSet('Set','ObserveUser','Get','Resolve','Guard','Clear','ResumeParent','CloseTurn','PrepareMerge','CompleteMerge','ValidatePlanReceipt','ValidateIntentReceipt','BindContext','RebindPackageVersion','CreatePhaseCloseout','IssueLocalRebind','ConsumeLocalRebind','FinalizeLocalRebind','QueryLocalRebind','RevokeLocalRebind')]
   [string]$Action = 'Get',
   [string]$TaskId = '',
   [string]$WorkspaceKey = '',
   [string]$SessionKey = '',
   [switch]$RebindSession,
+  [string]$LocalRebindRef = '',
+  [ValidateSet('auto','issue','consume','finalize','query','revoke')]
+  [string]$LocalRebindAction = 'auto',
+  [string]$LocalRebindCommandId = '',
+  # Query/revoke may target an issue command when the one-time plaintext ref
+  # was lost.  This is a metadata-only repair selector; it never recreates
+  # or returns the recovery capability.
+  [string]$LocalRebindTargetCommandId = '',
+  [ValidateSet('','intent','task')]
+  [string]$LocalRebindAggregateKind = '',
+  [string]$LocalRebindContractHash = '',
+  [string]$LocalRebindProjectProofHash = '',
   [string]$FocusId = '',
   [string]$LatestUserInstruction = '',
   [string]$AssistantCommitment = '',
@@ -3880,17 +3892,57 @@ function Complete-ContractContinuityMutation([object]$Contract,[string]$Mutation
       }
       $ownerChanged = -not [string]::Equals([string]$previous.ownerSessionKey,[string]$Contract.ownerSessionKey,[StringComparison]::OrdinalIgnoreCase)
       $hasIntentRebind = ($Contract.PSObject.Properties['intentSessionRebindReceipt'] -and $Contract.intentSessionRebindReceipt)
-      if ($ownerChanged -and -not $hasIntentRebind) {
-        $taskStateRevision = if ($context.PSObject.Properties['taskStateRevision']) { [int]$context.taskStateRevision } else { -1 }
+      $hasTaskRebind = ($Contract.PSObject.Properties['taskSessionRebindReceipt'] -and $Contract.taskSessionRebindReceipt)
+      if ($ownerChanged) {
+        $taskStateRevision = if ($context.PSObject.Properties['taskStateRevision']) { [int]$context.taskStateRevision } else { 0 }
         $previousPlanFingerprint = if ($previous.PSObject.Properties['planReceipt'] -and $previous.planReceipt) { [string]$previous.planReceipt.planFingerprint } else { '' }
-        $issued = Issue-TaskSessionRebindReceipt ([string]$Contract.taskId) ([string]$Contract.taskInstanceId) ([string]$Contract.workspaceKey) ([string]$previous.ownerSessionKey) ([string]$Contract.ownerSessionKey) ([string]$Contract.packageVersion) $taskStateRevision ([int]$previous.revision) $previousPlanFingerprint ('execution-contract.ps1:' + $Mutation)
-        if (-not $issued.ok -or -not $issued.receipt) {
-          return [pscustomobject]@{ ok=$false; code=if($issued){[string]$issued.code}else{'EXECUTION_CONTRACT_TASK_SESSION_REBIND_ISSUE_FAILED'}; taskId=[string]$Contract.taskId; workspaceKey=[string]$Contract.workspaceKey; guard='A non-intent task may transfer projected root-session ownership only with an immutable task-authority receipt bound to the current task revision, contract revision, and plan fingerprint.' }
+        $contractHash = Get-LocalRebindContractHash $previous
+        $projectProofHash = if ($script:ProjectProgressProofBase64WasBound -and -not [string]::IsNullOrWhiteSpace($ProjectProgressProofBase64)) { Get-SuperBrainStableHash $ProjectProgressProofBase64 64 } else { '' }
+        $intentRequired = ($Contract.PSObject.Properties['intentContractRequired'] -and $Contract.intentContractRequired -eq $true -and $Contract.PSObject.Properties['intentRevision'] -and [int]$Contract.intentRevision -gt 0 -and $Contract.PSObject.Properties['intentAggregateId'] -and -not [string]::IsNullOrWhiteSpace([string]$Contract.intentAggregateId))
+        if ($intentRequired -and -not $hasIntentRebind) {
+          $intentRequest = [ordered]@{
+            action='issue'; commandId='local-intent-rebind-' + (Get-SuperBrainStableHash (@($Contract.taskId,$Contract.taskInstanceId,$Contract.workspaceKey,$previous.ownerSessionKey,$Contract.ownerSessionKey,$previous.revision,$Contract.intentRevision,$Mutation) -join '|') 48)
+            aggregateKind='intent'; taskId=[string]$Contract.taskId; taskInstanceId=[string]$Contract.taskInstanceId; workspaceKey=[string]$Contract.workspaceKey
+            requestingSessionKey=[string]$Contract.ownerSessionKey; newOwnerSessionKey=[string]$Contract.ownerSessionKey; packageVersion=[string]$Contract.packageVersion
+            expectedRevision=[int]$Contract.intentRevision; contractRevision=[int]$previous.revision; contractHash=$contractHash; planFingerprint=$previousPlanFingerprint
+            source=('execution-contract.ps1:' + $Mutation + ':intent')
+          }
+          $priorIntentReceipt = if ($previous.PSObject.Properties['intentResolutionReceipt']) { $previous.intentResolutionReceipt } else { $null }
+          if ($priorIntentReceipt) { $intentRequest.previousReceiptId=[string]$priorIntentReceipt.receiptId; $intentRequest.previousReceiptHash=[string]$priorIntentReceipt.payloadHash }
+          if ($projectProofHash) { $intentRequest.projectProofHash=$projectProofHash }
+          $intentLocal = Invoke-LocalRebindTransfer $intentRequest
+          if (-not $intentLocal.ok -or -not $intentLocal.receipt) {
+            return [pscustomobject]@{ ok=$false; code=if($intentLocal){[string]$intentLocal.code}else{'EXECUTION_CONTRACT_LOCAL_INTENT_REBIND_FAILED'}; taskId=[string]$Contract.taskId; workspaceKey=[string]$Contract.workspaceKey; localRebind=$intentLocal; guard='The intent aggregate could not be transferred through the local recovery state machine; no contract progress is authorized.' }
+          }
+          $Contract | Add-Member -NotePropertyName intentSessionRebindReceipt -NotePropertyValue $intentLocal.receipt -Force
         }
-        $Contract | Add-Member -NotePropertyName taskSessionRebindReceipt -NotePropertyValue $issued.receipt -Force
+        if (-not $hasTaskRebind) {
+          $taskRequest = [ordered]@{
+            action='issue'; commandId='local-task-rebind-' + (Get-SuperBrainStableHash (@($Contract.taskId,$Contract.taskInstanceId,$Contract.workspaceKey,$previous.ownerSessionKey,$Contract.ownerSessionKey,$previous.revision,$taskStateRevision,$Mutation) -join '|') 48)
+            aggregateKind='task'; taskId=[string]$Contract.taskId; taskInstanceId=[string]$Contract.taskInstanceId; workspaceKey=[string]$Contract.workspaceKey
+            requestingSessionKey=[string]$Contract.ownerSessionKey; newOwnerSessionKey=[string]$Contract.ownerSessionKey; packageVersion=[string]$Contract.packageVersion
+            expectedRevision=$taskStateRevision; contractRevision=[int]$previous.revision; contractHash=$contractHash; planFingerprint=$previousPlanFingerprint
+            source=('execution-contract.ps1:' + $Mutation + ':task')
+          }
+          $stateHash = if ($context.PSObject.Properties['taskStateHash']) { [string]$context.taskStateHash } elseif ($context.PSObject.Properties['stateHash']) { [string]$context.stateHash } else { '' }
+          if ($stateHash -match '^[a-f0-9]{64}$') { $taskRequest.expectedStateHash=$stateHash }
+          if ($projectProofHash) { $taskRequest.projectProofHash=$projectProofHash }
+          $taskLocal = Invoke-LocalRebindTransfer $taskRequest
+          if (-not $taskLocal.ok -or -not $taskLocal.receipt) {
+            return [pscustomobject]@{ ok=$false; code=if($taskLocal){[string]$taskLocal.code}else{'EXECUTION_CONTRACT_LOCAL_TASK_REBIND_FAILED'}; taskId=[string]$Contract.taskId; workspaceKey=[string]$Contract.workspaceKey; localRebind=$taskLocal; guard='The task aggregate could not be transferred through the local recovery state machine; no contract progress is authorized.' }
+          }
+          $Contract | Add-Member -NotePropertyName taskSessionRebindReceipt -NotePropertyValue $taskLocal.receipt -Force
+        }
       }
     }
-    return Finalize-ContractContinuationReceipt (Invoke-AtomicContractContinuity $Contract $Mutation $null -SessionRebind:$RebindSession) $Mutation
+    $continuityResult = Invoke-AtomicContractContinuity $Contract $Mutation $null -SessionRebind:$RebindSession
+    if ($continuityResult -and $continuityResult.ok -eq $true -and $continuityResult.PSObject.Properties['taskSessionRebindReceipt']) {
+      # The local v18 receipt remains persisted in the staged contract and is
+      # consumed by the authority verifier. Expose the legacy task receipt in
+      # this response-only projection so older callers keep their contract.
+      $continuityResult | Add-Member -NotePropertyName taskSessionRebindReceipt -NotePropertyValue (ConvertTo-TaskSessionRebindResponseReceipt $continuityResult.taskSessionRebindReceipt) -Force
+    }
+    return Finalize-ContractContinuationReceipt $continuityResult $Mutation
   }
   $publish = Publish-ExecutionContractDirect $Contract
   if (-not $publish.ok) {
@@ -4324,7 +4376,14 @@ function Set-Contract([switch]$ObserveOnly,[object]$PackageVersionRebindPayload=
         }
         $replay = New-TransitionReplayResult $existing $receipt
         if ($ObserveOnly) { return $replay }
-        return Complete-ContractContinuityMutation $replay 'SetReplay'
+        # Replay metadata is a response projection only.  Persisting the
+        # cloned response would change the contract hash without advancing its
+        # revision, which correctly poisons broker-bound continuation.  Keep
+        # the durable contract byte-for-byte stable, then add the replay
+        # markers back to the returned projection.
+        $replayedContract = Complete-ContractContinuityMutation $existing 'SetReplay'
+        if (-not $replayedContract -or $replayedContract.ok -ne $true) { return $replayedContract }
+        return New-TransitionReplayResult $replayedContract $receipt
       }
     }
     if (-not $ObserveOnly -and $existing -and $ExpectedRevision -ge 0 -and [int]$existing.revision -ne $ExpectedRevision) {
@@ -4368,13 +4427,23 @@ function Set-Contract([switch]$ObserveOnly,[object]$PackageVersionRebindPayload=
       $requiresIntentSessionRebind = $RebindSession -and $existing -and -not [string]::IsNullOrWhiteSpace($existingSessionKey) -and -not [string]::Equals($existingSessionKey,$ownerSessionKey,[StringComparison]::OrdinalIgnoreCase)
       if ($requiresIntentSessionRebind) {
         $priorReceipt = if ($existing.PSObject.Properties['intentResolutionReceipt']) { $existing.intentResolutionReceipt } else { $null }
-        $intentSessionRebind = Rebind-IntentResolution $TaskId $taskInstanceIdValue $WorkspaceKey $existingSessionKey $ownerSessionKey $intentRevisionValue $priorReceipt 'execution-contract.ps1:RebindSession'
-        if (-not $intentSessionRebind.ok) {
-          return [pscustomobject]@{ ok=$false; code=[string]$intentSessionRebind.code; taskId=$TaskId; workspaceKey=$WorkspaceKey; missing=@($intentSessionRebind.missing); guard='A cross-session continuation must rebind the immutable intent receipt before the original task can resume.' }
+        $intentRebindRequest = [ordered]@{
+          action='issue'; commandId='local-intent-prep-rebind-' + (Get-SuperBrainStableHash (@($TaskId,$taskInstanceIdValue,$WorkspaceKey,$existingSessionKey,$ownerSessionKey,$intentRevisionValue,$TransitionId) -join '|') 48)
+          aggregateKind='intent'; taskId=$TaskId; taskInstanceId=$taskInstanceIdValue; workspaceKey=$WorkspaceKey
+          requestingSessionKey=$ownerSessionKey; newOwnerSessionKey=$ownerSessionKey; packageVersion=[string]$manifest.version
+          expectedRevision=$intentRevisionValue; contractRevision=[int]$existing.revision; contractHash=(Get-LocalRebindContractHash $existing)
+          planFingerprint=if($existing.PSObject.Properties['planReceipt'] -and $existing.planReceipt){[string]$existing.planReceipt.planFingerprint}else{''}
+          source='execution-contract.ps1:RebindSession:intent'
         }
-        $intentSessionRebindReceiptValue = $intentSessionRebind.receipt
+        if ($priorReceipt) { $intentRebindRequest.previousReceiptId=[string]$priorReceipt.receiptId; $intentRebindRequest.previousReceiptHash=[string]$priorReceipt.payloadHash }
+        if ($script:ProjectProgressProofBase64WasBound -and -not [string]::IsNullOrWhiteSpace($ProjectProgressProofBase64)) { $intentRebindRequest.projectProofHash=Get-SuperBrainStableHash $ProjectProgressProofBase64 64 }
+        $intentLocal = Invoke-LocalRebindTransfer $intentRebindRequest
+        if (-not $intentLocal.ok -or -not $intentLocal.receipt) {
+          return [pscustomobject]@{ ok=$false; code=if($intentLocal){[string]$intentLocal.code}else{'EXECUTION_CONTRACT_LOCAL_INTENT_REBIND_FAILED'}; taskId=$TaskId; workspaceKey=$WorkspaceKey; missing=if($intentLocal){@($intentLocal.missing)}else{@('finalized local recovery transaction')}; guard='A cross-session continuation must transfer the immutable intent owner through the local recovery state machine before the new contract can be resolved.' }
+        }
+        $intentSessionRebindReceiptValue = $intentLocal.receipt
       }
-      $intentPreparedValue = Prepare-IntentResolution $TaskId $taskInstanceIdValue $WorkspaceKey $ownerSessionKey $intentCandidate
+      $intentPreparedValue = Prepare-IntentResolution $TaskId $taskInstanceIdValue $WorkspaceKey $ownerSessionKey $intentCandidate $intentSessionRebindReceiptValue
       if (-not $intentPreparedValue.ok) {
         return [pscustomobject]@{ ok=$false; code=[string]$intentPreparedValue.code; taskId=$TaskId; workspaceKey=$WorkspaceKey; missing=@($intentPreparedValue.missing); guard='A required product intent must be normalized by the canonical local control plane before the plan can authorize work.' }
       }
@@ -4894,7 +4963,7 @@ function Set-Contract([switch]$ObserveOnly,[object]$PackageVersionRebindPayload=
         (-not $script:LatestUserInstructionWasBound -and -not $focusChanged -and $mode -eq 'continue')
       )
       if ($mayRefreshIntentReceipt) {
-        $intentResolution = Resolve-IntentResolution $intentPreparedValue $TaskId $taskInstanceIdValue $WorkspaceKey $ownerSessionKey ([string]$manifest.version) $revision $planReceiptValue $latestInstruction $stateSourceValue
+        $intentResolution = Resolve-IntentResolution $intentPreparedValue $TaskId $taskInstanceIdValue $WorkspaceKey $ownerSessionKey ([string]$manifest.version) $revision $planReceiptValue $latestInstruction $stateSourceValue $intentSessionRebindReceiptValue
         if (-not $intentResolution.ok) {
           return [pscustomobject]@{ ok=$false; code=[string]$intentResolution.code; taskId=$TaskId; workspaceKey=$WorkspaceKey; missing=@($intentResolution.missing); guard='The current plan could not receive an immutable intent resolution receipt from the canonical local control plane.' }
         }
@@ -5252,7 +5321,9 @@ function Resume-ParentContract {
         if ([string]$receipt.action -ne 'ResumeParent' -or [string]$receipt.payloadHash -ne $resumePayloadHash) {
           return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_TRANSITION_ID_CONFLICT'; taskId=$TaskId; transitionId=$transitionIdValue; expectedAction=[string]$receipt.action; expectedPayloadHash=[string]$receipt.payloadHash; actualAction='ResumeParent'; actualPayloadHash=$resumePayloadHash; guard='The transition id is already bound to a different operation or payload.' }
         }
-        return Complete-ContractContinuityMutation (New-TransitionReplayResult $existing $receipt) 'ResumeParentReplay'
+        $replayedContract = Complete-ContractContinuityMutation $existing 'ResumeParentReplay'
+        if (-not $replayedContract -or $replayedContract.ok -ne $true) { return $replayedContract }
+        return New-TransitionReplayResult $replayedContract $receipt
       }
       if ($existing -and $existing.PSObject.Properties['lastTransition'] -and [string]$existing.lastTransition.transitionId -eq $transitionIdValue) {
         $legacyPayloadHash = if ($existing.lastTransition.PSObject.Properties['payloadHash']) { [string]$existing.lastTransition.payloadHash } else { '' }
@@ -5260,7 +5331,9 @@ function Resume-ParentContract {
           return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_TRANSITION_ID_CONFLICT'; taskId=$TaskId; transitionId=$transitionIdValue; guard='The transition id is already bound to a different state transition.' }
         }
         $legacyReceipt = [pscustomobject]@{ transitionId=$transitionIdValue; resultRevision=if($existing.lastTransition.PSObject.Properties['toRevision']){[int]$existing.lastTransition.toRevision}else{[int]$existing.revision} }
-        return Complete-ContractContinuityMutation (New-TransitionReplayResult $existing $legacyReceipt) 'ResumeParentReplay'
+        $replayedContract = Complete-ContractContinuityMutation $existing 'ResumeParentReplay'
+        if (-not $replayedContract -or $replayedContract.ok -ne $true) { return $replayedContract }
+        return New-TransitionReplayResult $replayedContract $legacyReceipt
       }
     }
     if ($ExpectedRevision -ge 0 -and [int]$existing.revision -ne $ExpectedRevision) {
@@ -6268,6 +6341,91 @@ function Clear-Contract {
   }
 }
 
+function Invoke-ExplicitLocalRebindAction([string]$RequestedAction) {
+  $actionMap = @{
+    IssueLocalRebind='issue-local-rebind'; ConsumeLocalRebind='consume-local-rebind'; FinalizeLocalRebind='finalize-local-rebind'; QueryLocalRebind='query-local-rebind'; RevokeLocalRebind='revoke-local-rebind'
+  }
+  if (-not $actionMap.ContainsKey($RequestedAction)) { return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_LOCAL_REBIND_ACTION_INVALID' } }
+  if ([string]::IsNullOrWhiteSpace($TaskId) -or [string]::IsNullOrWhiteSpace($WorkspaceKey) -or [string]::IsNullOrWhiteSpace($SessionKey)) {
+    return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_LOCAL_REBIND_SCOPE_REQUIRED'; taskId=$TaskId; workspaceKey=$WorkspaceKey }
+  }
+  $isIssue = $RequestedAction -eq 'IssueLocalRebind'
+  $isCommandSelectorAction = $RequestedAction -in @('QueryLocalRebind','RevokeLocalRebind')
+
+  # Issue snapshots a live aggregate and therefore must be authorized by the
+  # complete current execution contract.  A successor's consume/finalize (or
+  # issuer repair/query/revoke) is deliberately different: the one-time
+  # recoveryRef, current local scope, and immutable transaction ledger are the
+  # authority.  Requiring the retiring contract here would make a valid
+  # cross-session recovery impossible and would tempt callers to copy stale
+  # contract data across the session boundary.
+  $contract = $null
+  if ($isIssue) {
+    $record = Get-BoundContractRecord $TaskId $WorkspaceKey
+    $contract = if ($record -and $record.contract) { $record.contract } else { $null }
+    if (-not $contract) { return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_NOT_FOUND'; taskId=$TaskId; workspaceKey=$WorkspaceKey; guard='Issuing a local recovery transaction requires the complete current execution contract.' } }
+  }
+
+  $taskInstanceIdValue = if ($contract -and $contract.PSObject.Properties['taskInstanceId']) { [string]$contract.taskInstanceId } else { '' }
+  $derivedAggregateKind = if ($contract -and $contract.PSObject.Properties['intentRevision'] -and [int]$contract.intentRevision -gt 0 -and $contract.PSObject.Properties['intentAggregateId'] -and -not [string]::IsNullOrWhiteSpace([string]$contract.intentAggregateId)) { 'intent' } else { 'task' }
+  if ($isIssue -and -not [string]::IsNullOrWhiteSpace($LocalRebindAggregateKind) -and $LocalRebindAggregateKind -ne $derivedAggregateKind) {
+    return [pscustomobject]@{ ok=$false; code='H7_LOCAL_REBIND_KIND_MISMATCH'; taskId=$TaskId; workspaceKey=$WorkspaceKey; expectedAggregateKind=$derivedAggregateKind; requestedAggregateKind=$LocalRebindAggregateKind; guard='Issue derives the aggregate kind from the complete execution contract; an explicit conflicting kind cannot redirect the recovery snapshot.' }
+  }
+  $aggregateKind = if ($isIssue) { $derivedAggregateKind } elseif (-not [string]::IsNullOrWhiteSpace($LocalRebindAggregateKind)) { [string]$LocalRebindAggregateKind } else { '' }
+  $planFingerprint = if ($contract -and $contract.PSObject.Properties['planReceipt'] -and $contract.planReceipt) { [string]$contract.planReceipt.planFingerprint } else { '' }
+  $contractRevisionValue = if ($contract -and $contract.PSObject.Properties['revision']) { [int]$contract.revision } else { 0 }
+  $contractHashValue = if (-not [string]::IsNullOrWhiteSpace($LocalRebindContractHash)) { [string]$LocalRebindContractHash } elseif ($isIssue) { Get-LocalRebindContractHash $contract } else { '' }
+  # Include the selected capability/target in the deterministic fallback id.
+  # Without it, two query/revoke-by-command calls in one successor session
+  # would collide in BrainControl's command log even though they target
+  # different recovery transactions.
+  $commandIdMaterial = @($RequestedAction,$TaskId,$taskInstanceIdValue,$WorkspaceKey,$SessionKey,$contractRevisionValue,$planFingerprint,$LocalRebindRef,$LocalRebindTargetCommandId,$aggregateKind) -join '|'
+  $commandIdValue = if (-not [string]::IsNullOrWhiteSpace($LocalRebindCommandId)) { [string]$LocalRebindCommandId } else { 'local-rebind-' + (Get-SuperBrainStableHash $commandIdMaterial 48) }
+  $request = [ordered]@{
+    action=([string]$RequestedAction).Substring(0,1).ToLowerInvariant() + ([string]$RequestedAction).Substring(1).Replace('LocalRebind','').ToLowerInvariant()
+    commandId=$commandIdValue; requestingSessionKey=$SessionKey; taskId=$TaskId; workspaceKey=$WorkspaceKey
+    source=('execution-contract.ps1:' + $RequestedAction)
+  }
+  if ($isIssue) {
+    $request.taskInstanceId = $taskInstanceIdValue
+    $request.aggregateKind = $aggregateKind
+    $request.packageVersion = [string]$manifest.version
+    $request.contractRevision = $contractRevisionValue
+    $request.contractHash = $contractHashValue
+    $request.planFingerprint = $planFingerprint
+    if ([int]$contractRevisionValue -gt 0) { $request.expectedRevision = if ($aggregateKind -eq 'intent') { [int]$contract.intentRevision } else { $null } }
+  } elseif ($aggregateKind) {
+    # For successor/repair operations this is an assertion only.  BrainControl
+    # checks it against the transaction reached by the recoveryRef or command
+    # selector; it is never used to choose another aggregate.
+    $request.aggregateKind = $aggregateKind
+  }
+  if ($RequestedAction -ne 'IssueLocalRebind') {
+    if (-not [string]::IsNullOrWhiteSpace($LocalRebindRef) -and -not [string]::IsNullOrWhiteSpace($LocalRebindTargetCommandId)) {
+      return [pscustomobject]@{ ok=$false; code='H7_LOCAL_REBIND_SELECTOR_CONFLICT'; taskId=$TaskId; workspaceKey=$WorkspaceKey; guard='Use either the one-time recoveryRef or the metadata-only target command selector, never both.' }
+    }
+    if ([string]::IsNullOrWhiteSpace($LocalRebindRef) -and [string]::IsNullOrWhiteSpace($LocalRebindTargetCommandId)) {
+      return [pscustomobject]@{ ok=$false; code='H7_LOCAL_REBIND_REF_REQUIRED'; taskId=$TaskId; workspaceKey=$WorkspaceKey; guard='Explicit local recovery actions require the one-time opaque recoveryRef; query/revoke may use a target issue command only for metadata-only repair.' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($LocalRebindRef)) { $request.recoveryRef = $LocalRebindRef }
+    elseif ($isCommandSelectorAction) { $request.targetCommandId = $LocalRebindTargetCommandId }
+    else {
+      # Consume/finalize never accept command selectors.  Keeping this guard
+      # explicit avoids accidentally turning a lost capability into a
+      # session-transfer bypass if the control plane grows a new lookup seam.
+      return [pscustomobject]@{ ok=$false; code='H7_LOCAL_REBIND_REF_REQUIRED'; taskId=$TaskId; workspaceKey=$WorkspaceKey; guard='Consume and finalize require the one-time recoveryRef.' }
+    }
+  }
+  # Finalize proofs are optional assertions on the successor path.  The
+  # immutable issue transaction and live aggregate are always revalidated by
+  # BrainControl, so a successor without the retiring contract can finalize
+  # safely using only recoveryRef + local session scope.
+  if (-not [string]::IsNullOrWhiteSpace($LocalRebindProjectProofHash)) { $request.projectProofHash = $LocalRebindProjectProofHash }
+  $response = Invoke-LocalRebindControlPlane $actionMap[$RequestedAction] $request
+  if (-not $response) { return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_LOCAL_REBIND_CONTROL_PLANE_FAILED' } }
+  return $response
+}
+
 function Write-Result($Value,[int]$ExitCode=0) {
   if ($Json) { $Value | ConvertTo-Json -Depth 12 }
   else { Write-Host "EXECUTION_CONTRACT action=$Action ok=$($Value.ok) taskId=$TaskId focus=$($Value.focusId)" }
@@ -6332,6 +6490,11 @@ try {
     'CompleteMerge' { Complete-MergeContract }
     'BindContext' { Bind-ContractContext }
     'RebindPackageVersion' { Rebind-PackageVersionContract }
+    'IssueLocalRebind' { Invoke-ExplicitLocalRebindAction 'IssueLocalRebind' }
+    'ConsumeLocalRebind' { Invoke-ExplicitLocalRebindAction 'ConsumeLocalRebind' }
+    'FinalizeLocalRebind' { Invoke-ExplicitLocalRebindAction 'FinalizeLocalRebind' }
+    'QueryLocalRebind' { Invoke-ExplicitLocalRebindAction 'QueryLocalRebind' }
+    'RevokeLocalRebind' { Invoke-ExplicitLocalRebindAction 'RevokeLocalRebind' }
     'Clear' { Clear-Contract }
   }
   if ($null -eq $result) { $result = [pscustomobject]@{ok=$false;code='EXECUTION_CONTRACT_NOT_FOUND';taskId=$TaskId} }

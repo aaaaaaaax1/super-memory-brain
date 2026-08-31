@@ -17,8 +17,11 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from brain_context import canonical_hash, project_progress_root_hash, scope_ref, visible_progress_scope_binding_hash
 from brain_core import BrainCore
+from mcp_transport_health import LocalBrokerStdioTransportHealth
 from mcp_runtime_identity import runtime_dependency_paths
 from run_observability import receipt_is_valid as run_observability_receipt_is_valid
+from scope_broker_ipc import ScopeBrokerControlClient, ScopeBrokerServer
+from scope_provider import BrokerScopeProvider
 from turn_runtime import MODE, RECEIPT_SCHEMA, TELEMETRY_SCHEMA, run_turn
 import turn_close_dispatcher as turn_close_dispatcher
 import turn_runtime as turn_runtime
@@ -1221,6 +1224,132 @@ def test_project_progress_proof_fails_closed_on_missing_or_drift() -> None:
         assert safe_task["missing"] == ["project_progress_proof"], safe_task
 
 
+def test_continuity_withholds_stale_proof_and_checkpoint_repairs_the_same_scope() -> None:
+    """A stale continuation may be repaired, but is never executable first."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-continuity-proof-gate-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        project_root = Path(directory) / "project"
+        memory_root.mkdir(parents=True)
+        project_root.mkdir()
+        (memory_root / "sandglass.txt").write_text("", encoding="utf-8")
+        session_key = "sid-" + "d" * 24
+        task_id = "task-continuity-proof-gate"
+        write_native_memory_snapshot(state_root / "workspace")
+        write_context_contract(state_root, project_root, session_key, task_id=task_id)
+        core = BrainCore(ROOT, memory_root)
+        evidence_path = project_root / "project-progress-evidence.txt"
+        checkpoint = {
+            "last_confirmed_sentence": "The current local continuation proof was repaired through one H7 checkpoint.",
+            "source": "assistant_visible_reply",
+            "current_phase": "Fixture",
+            "current_step": "Rebind the stale local proof before resuming the exact workline.",
+            "next_action": "Open the same workline only after the repaired proof is current.",
+        }
+
+        with local_scope(project_root, session_key):
+            initial = run_turn(core, phase="open", turn_intent="continuity")
+            assert initial["available"] is True, initial
+            evidence_path.write_text("changed after the prior visible receipt\n", encoding="utf-8")
+            stale = run_turn(core, phase="open", turn_intent="continuity")
+            proof = {
+                "schema": "super-brain.project-progress-input.v1",
+                "phase": checkpoint["current_phase"],
+                "currentStep": checkpoint["current_step"],
+                "completedItems": [],
+                "projectEvidence": [
+                    {"kind": "project_file", "relativePath": evidence_path.name, "sha256": file_sha256(evidence_path)}
+                ],
+                "verificationResults": [],
+                "nextAction": checkpoint["next_action"],
+            }
+            repaired = run_turn(
+                core,
+                phase="checkpoint",
+                turn_intent="continuity",
+                progress_checkpoint=checkpoint,
+                project_progress_proof=proof,
+                transition_id="continuity-proof-gate-repair",
+            )
+            recovered = run_turn(core, phase="open", turn_intent="continuity", recovery_event="restart")
+
+        assert stale["available"] is False, stale
+        assert stale["mustContinue"] is False, stale
+        assert stale["code"] == "H7_PROJECT_PROGRESS_WITHHELD", stale
+        assert stale["context"]["task"]["projectProgress"]["state"] == "withheld", stale
+        assert repaired["available"] is True and repaired["code"] == "H7_PROJECT_PROGRESS_REFRESH_READY", repaired
+        assert recovered["available"] is True and recovered["code"] == "TURN_RUNTIME_OPEN_READY", recovered
+        assert recovered["recoveryPresentation"]["state"] == "current", recovered
+
+
+def test_checkpoint_reports_committed_contract_when_scope_projection_sync_fails() -> None:
+    """Post-commit projection failure must be explicit and unsafe to retry."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-checkpoint-projection-sync-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        project_root = Path(directory) / "project"
+        memory_root.mkdir(parents=True)
+        project_root.mkdir()
+        (memory_root / "sandglass.txt").write_text("", encoding="utf-8")
+        session_key = "sid-" + "e" * 24
+        task_id = "task-checkpoint-projection-sync"
+        write_native_memory_snapshot(state_root / "workspace")
+        write_context_contract(state_root, project_root, session_key, task_id=task_id)
+        workspace_key = workspace_key_for(project_root)
+        contract_path = state_root / "workspace" / "runtime-state" / "execution-contracts" / contract_file_name(task_id, workspace_key)
+        evidence_path = project_root / "project-progress-evidence.txt"
+        core = BrainCore(ROOT, memory_root)
+        checkpoint = {
+            "last_confirmed_sentence": "The authoritative checkpoint committed before its derived scope projection failed.",
+            "source": "assistant_visible_reply",
+            "current_phase": "Fixture",
+            "current_step": "Publish the post-commit projection repair state without replaying the mutation.",
+            "next_action": "Repair the current derived Broker projection before another governed open.",
+        }
+        proof = {
+            "schema": "super-brain.project-progress-input.v1",
+            "phase": checkpoint["current_phase"],
+            "currentStep": checkpoint["current_step"],
+            "completedItems": [],
+            "projectEvidence": [
+                {"kind": "project_file", "relativePath": evidence_path.name, "sha256": file_sha256(evidence_path)}
+            ],
+            "verificationResults": [],
+            "nextAction": checkpoint["next_action"],
+        }
+        before = json.loads(contract_path.read_text(encoding="utf-8"))
+        original_refresh = core.refresh_scope_contract
+
+        def reject_refresh(_contract: object) -> dict[str, object]:
+            return {"ok": False, "state": "withheld", "code": "H7_TEST_SCOPE_PROJECTION_SYNC_FAILED"}
+
+        core.refresh_scope_contract = reject_refresh  # type: ignore[method-assign]
+        try:
+            with local_scope(project_root, session_key):
+                failed = run_turn(
+                    core,
+                    phase="checkpoint",
+                    turn_intent="continuity",
+                    progress_checkpoint=checkpoint,
+                    project_progress_proof=proof,
+                    transition_id="checkpoint-projection-sync-failure",
+                )
+        finally:
+            core.refresh_scope_contract = original_refresh  # type: ignore[method-assign]
+        after = json.loads(contract_path.read_text(encoding="utf-8"))
+
+        assert failed["available"] is False, failed
+        assert failed["code"] == "H7_SCOPE_CONTRACT_PROJECTION_SYNC_REQUIRED", failed
+        assert failed["operationState"] == "partially_committed", failed
+        assert failed["retrySafe"] is False, failed
+        assert failed["checkpoint"]["contractCommitted"] is True, failed
+        assert failed["checkpoint"]["scopeRefresh"]["code"] == "H7_TEST_SCOPE_PROJECTION_SYNC_FAILED", failed
+        assert int(after["revision"]) > int(before["revision"]), after
+        assert after["lastConfirmedSentence"] == checkpoint["last_confirmed_sentence"], after
+
+
 def test_checkpoint_refreshes_only_a_stale_project_progress_proof_through_h7() -> None:
     """Proof drift has a governed H7 repair route, never a direct contract bypass."""
 
@@ -1486,6 +1615,144 @@ def test_close_resumes_parent_and_hashes_completion_reference() -> None:
         assert marker not in telemetry_path.read_text(encoding="utf-8")
         assert marker not in (state_root / "workspace" / "last-execution-contract.json").read_text(encoding="utf-8")
         assert [event["phase"] for event in telemetry["events"]] == ["open", "open", "close", "open"]
+
+
+def test_broker_close_resume_parent_refreshes_projection_before_parent_return_open() -> None:
+    """CloseTurn's automatic ResumeParent must refresh the live Broker hash."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-broker-close-parent-return-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        project_root = Path(directory) / "project"
+        memory_root.mkdir(parents=True)
+        project_root.mkdir(parents=True)
+        (memory_root / "sandglass.txt").write_text("", encoding="utf-8")
+        write_native_memory_snapshot(state_root / "workspace")
+
+        session_key = "sid-" + "b" * 24
+        workspace_key = workspace_key_for(project_root)
+        task_id = "task-broker-close-parent-return"
+        evidence_path = project_root / "close-parent-proof.txt"
+        evidence_path.write_text("broker close parent proof\n", encoding="utf-8")
+        evidence = {"kind": "project_file", "relativePath": evidence_path.name, "sha256": file_sha256(evidence_path)}
+
+        def encoded(value: dict[str, object]) -> str:
+            return base64.b64encode(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).decode("ascii")
+
+        parent_proof = {
+            "schema": "super-brain.project-progress-input.v1",
+            "phase": "Stage 1",
+            "currentStep": "run broker verification",
+            "completedItems": [],
+            "projectEvidence": [evidence],
+            "verificationResults": [],
+            "nextAction": "run broker verification",
+        }
+        parent_checkpoint = {
+            "last_confirmed_sentence": "The broker parent is ready.",
+            "source": "assistant_visible_reply",
+            "current_phase": "Stage 1",
+            "current_step": "run broker verification",
+            "next_action": "run broker verification",
+        }
+        parent = invoke_contract(
+            [
+                "-Action", "Set", "-TaskId", task_id, "-WorkspaceKey", workspace_key, "-SessionKey", session_key,
+                "-FocusId", "broker-parent", "-FocusLabel", "Broker parent", "-InstructionMode", "continue",
+                "-LatestUserInstruction", "continue broker parent", "-CurrentPhase", "Stage 1", "-CurrentStep", "run broker verification",
+                "-LastConfirmedSentence", "The broker parent is ready.", "-LastConfirmedSource", "assistant_commitment",
+                "-NextAction", "run broker verification", "-PendingSteps", "run broker verification",
+                "-ProjectRoot", str(project_root), "-ProjectProgressProofBase64", encoded(parent_proof),
+                "-ProgressCheckpointBase64", encoded(parent_checkpoint), "-TransitionId", "seed-broker-parent",
+                "-StateRoot", str(state_root), "-Json",
+            ]
+        )
+        side_proof = {
+            "schema": "super-brain.project-progress-input.v1",
+            "phase": "Stage 1",
+            "currentStep": "answer broker status",
+            "completedItems": [],
+            "projectEvidence": [evidence],
+            "verificationResults": [],
+            "nextAction": "finish broker status",
+        }
+        side_checkpoint = {
+            "last_confirmed_sentence": "The broker status is handled.",
+            "source": "assistant_visible_reply",
+            "current_phase": "Stage 1",
+            "current_step": "answer broker status",
+            "next_action": "finish broker status",
+        }
+        side = invoke_contract(
+            [
+                "-Action", "Set", "-TaskId", task_id, "-WorkspaceKey", workspace_key, "-SessionKey", session_key,
+                "-FocusId", "broker-status", "-FocusLabel", "Broker status", "-InstructionMode", "side_branch",
+                "-LatestUserInstruction", "answer broker status then return to broker parent", "-CurrentPhase", "Stage 1", "-CurrentStep", "answer broker status",
+                "-LastConfirmedSentence", "The broker status is handled.", "-LastConfirmedSource", "assistant_commitment",
+                "-NextAction", "finish broker status", "-PendingSteps", "finish broker status",
+                "-ExpectedRevision", str(parent["revision"]), "-ExpectedPlanFingerprint", str(parent["planReceipt"]["planFingerprint"]),
+                "-ProjectRoot", str(project_root), "-ProjectProgressProofBase64", encoded(side_proof),
+                "-ProgressCheckpointBase64", encoded(side_checkpoint), "-TransitionId", "seed-broker-side",
+                "-StateRoot", str(state_root), "-Json",
+            ]
+        )
+        assert side["ok"] is True
+        contract_path = state_root / "workspace" / "runtime-state" / "execution-contracts" / contract_file_name(task_id, workspace_key)
+        current_contract = json.loads(contract_path.read_text(encoding="utf-8"))
+
+        server = ScopeBrokerServer(state_root)
+        server.start()
+        control = ScopeBrokerControlClient(state_root, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
+        try:
+            registration = control.register_workline(
+                current_contract,
+                expected_contract_hash=canonical_hash(current_contract),
+                project_root=project_root,
+            )
+            assert registration.get("ok") is True, registration
+            workline_id = str(registration["scope"]["worklineId"])
+            details = control.open_channel_details()
+            assert details.get("ok") is True, details
+            channel_id = str(details["channelId"])
+            paired = control.pair_request(str(details["pairingRequestRef"]), workline_id, access_mode="write")
+            assert paired.get("ok") is True, paired
+            provider = BrokerScopeProvider(control, channel_id)
+            core = BrainCore(
+                ROOT,
+                memory_root,
+                scope_provider=provider,
+                runtime_mode="local_stdio_scope_broker",
+                transport_health=LocalBrokerStdioTransportHealth(control, provider.channel_handle),
+            )
+            with local_scope(project_root, session_key):
+                opened = run_turn(core, phase="open", turn_intent="continuity")
+                closed = run_turn(
+                    core,
+                    phase="close",
+                    turn_outcome="side_branch_completed",
+                    user_control="none",
+                    completion_evidence_ref="broker-close-proof",
+                    transition_id="broker-close-parent-return",
+                )
+                parent_recovered = run_turn(
+                    core,
+                    phase="open",
+                    turn_intent="continuity",
+                    recovery_event="parent_return",
+                )
+
+            persisted = json.loads(contract_path.read_text(encoding="utf-8"))
+            projected = control.get_workline(workline_id)
+            projected_scope = projected.get("scope", {}) if isinstance(projected, dict) else {}
+            assert opened.get("available") is True, opened
+            assert closed.get("ok") is True and closed.get("transition", {}).get("action") == "ResumeParent", closed
+            assert parent_recovered.get("available") is True, parent_recovered
+            assert parent_recovered.get("recoveryPresentation", {}).get("event") == "parent_return", parent_recovered
+            assert int(projected_scope.get("contractRevision", -1)) == int(persisted["revision"]), projected
+            assert projected_scope.get("contractHash") == canonical_hash(persisted), projected
+        finally:
+            server.stop()
+            control.close()
 
 
 def test_close_rejects_user_attested_checkpoint_outside_correction_without_mutation() -> None:
@@ -2531,8 +2798,11 @@ def main() -> int:
     test_close_checkpoint_preflight_failure_preserves_current_h7_evidence()
     test_h7_accepts_the_actual_compact_router_receipt()
     test_project_progress_proof_fails_closed_on_missing_or_drift()
+    test_continuity_withholds_stale_proof_and_checkpoint_repairs_the_same_scope()
+    test_checkpoint_reports_committed_contract_when_scope_projection_sync_fails()
     test_checkpoint_refreshes_only_a_stale_project_progress_proof_through_h7()
     test_close_resumes_parent_and_hashes_completion_reference()
+    test_broker_close_resume_parent_refreshes_projection_before_parent_return_open()
     test_close_rejects_user_attested_checkpoint_outside_correction_without_mutation()
     test_checkpoint_scope_change_without_fresh_proof_fails_atomically()
     test_invalid_phase_fails_without_state_write()
@@ -2546,7 +2816,7 @@ def main() -> int:
     test_checkpoint_instruction_mapping_uses_real_powershell_authority_and_replays_idempotently()
     test_checkpoint_is_the_only_h7_path_that_clears_a_pending_same_scope_contract()
     test_checkpoint_set_replay_is_never_misreported_as_a_parent_return()
-    print("runtime turn-runtime regression: passed (31/31)")
+    print("runtime turn-runtime regression: passed (33/33)")
     return 0
 
 

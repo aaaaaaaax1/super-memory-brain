@@ -61,7 +61,29 @@ def make_package(root: Path) -> Path:
     shutil.copy2(ROOT / "manifest.json", package / "manifest.json")
     shutil.copy2(ROOT / "memory-policy.json", package / "memory-policy.json")
     shutil.copy2(ROOT / "runtime" / "brain_core.py", package / "runtime" / "brain_core.py")
+    # Keep the fixture's private-state topology explicit.  ``layout_paths``
+    # intentionally falls back to ``package/memory`` when no machine-local
+    # runtime layout is present; the production package instead binds its
+    # mutable state through ``runtime-layout.json``.  The benchmark output
+    # must exercise that configured private root rather than relying on a
+    # broader path exception in the preparer.
+    (package / "runtime-layout.json").write_text(
+        json.dumps(
+            {
+                "schema": "super-brain.runtime-layout.v1",
+                "sourceRoot": ".",
+                "runtimeRoot": ".",
+                "stateRoot": "private-state",
+                "archiveRoot": "private-archive",
+            }
+        ),
+        encoding="utf-8",
+    )
     return package
+
+
+def private_output_root(package: Path) -> Path:
+    return lme.resolve_state_root(package) / "workspace" / "phase8-longmemeval-v1"
 
 
 def make_harness(root: Path) -> tuple[Path, str]:
@@ -114,7 +136,7 @@ def test_prepares_full_private_pair_without_label_or_cross_case_leakage() -> Non
         original_commit = lme.OFFICIAL_COMMIT
         lme.OFFICIAL_COMMIT = head
         try:
-            output_root = package / "private-state" / "workspace" / "phase8-longmemeval-v1"
+            output_root = private_output_root(package)
             result = lme.prepare_answer_inputs(
                 package_root=package,
                 harness_root=harness,
@@ -161,7 +183,7 @@ def test_preflight_rejects_dirty_harness_bad_source_count_duplicate_and_reordere
         package = make_package(root)
         harness, head = make_harness(root)
         data_path = root / "source" / "longmemeval_s_cleaned.json"
-        output_root = package / "private-state" / "workspace" / "phase8-longmemeval-v1"
+        output_root = private_output_root(package)
         original_commit = lme.OFFICIAL_COMMIT
         lme.OFFICIAL_COMMIT = head
         try:
@@ -198,7 +220,7 @@ def test_prepare_rejects_history_evaluation_labels_other_than_has_answer() -> No
         original_commit = lme.OFFICIAL_COMMIT
         lme.OFFICIAL_COMMIT = head
         try:
-            output_root = package / "private-state" / "workspace" / "phase8-longmemeval-v1"
+            output_root = private_output_root(package)
             assert_raises(
                 "LME_V1_HISTORY_LABEL_LEAK",
                 lambda: lme.prepare_answer_inputs(
@@ -219,8 +241,27 @@ def test_prepare_rejects_history_evaluation_labels_other_than_has_answer() -> No
             lme.OFFICIAL_COMMIT = original_commit
 
 
+def test_output_root_is_bound_to_configured_private_state() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-lme-v1-layout-") as directory:
+        root = Path(directory)
+        package = make_package(root)
+        configured = private_output_root(package)
+
+        assert lme.resolve_state_root(package) == (package / "private-state").resolve()
+        lme._assert_private_output_root(package, configured)
+        assert_raises(
+            "LME_V1_OUTPUT_NOT_PRIVATE",
+            lambda: lme._assert_private_output_root(package, package / "memory" / "workspace"),
+        )
+        assert_raises(
+            "LME_V1_OUTPUT_NOT_PRIVATE",
+            lambda: lme._assert_private_output_root(package, root / "private-state" / "workspace"),
+        )
+
+
 if __name__ == "__main__":
     test_prepares_full_private_pair_without_label_or_cross_case_leakage()
     test_preflight_rejects_dirty_harness_bad_source_count_duplicate_and_reordered_data()
     test_prepare_rejects_history_evaluation_labels_other_than_has_answer()
+    test_output_root_is_bound_to_configured_private_state()
     print("runtime_longmemeval_v1_input_regression: ok")

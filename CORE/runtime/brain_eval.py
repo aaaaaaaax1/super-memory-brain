@@ -167,7 +167,13 @@ def _mcp_replay(root: Path, memory_root: str, require_recall_result: bool = True
     listed_tools = []
     if listed and isinstance(listed.get("result"), dict):
         listed_tools = [str(item.get("name")) for item in listed["result"].get("tools", []) if isinstance(item, dict)]
-    tools_ok = set(listed_tools) == {"brain_recall", "brain_status", "brain_recent", "brain_turn"}
+    tools_ok = set(listed_tools) == {
+        "brain_recall",
+        "brain_status",
+        "brain_recent",
+        "brain_turn",
+        "brain_rebind_local_session",
+    }
     checks.append({"name": "tools_list", "ok": tools_ok, "tools": listed_tools})
     if not tools_ok:
         errors.append("tools_list_contract")

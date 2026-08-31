@@ -241,13 +241,135 @@ function Invoke-TaskSessionControlPlane([ValidateSet('rebind-task-session')][str
   }
 }
 
-function Prepare-IntentResolution([string]$TaskIdValue,[string]$TaskInstanceIdValue,[string]$WorkspaceKeyValue,[string]$OwnerSessionKeyValue,[object]$IntentContractValue) {
+function Invoke-LocalRebindControlPlane([ValidateSet('issue-local-rebind','consume-local-rebind','finalize-local-rebind','query-local-rebind','revoke-local-rebind')][string]$Action,[object]$Request) {
+  $python = Get-IntentControlPython
+  $runtime = Join-Path $Root 'runtime\brain_control.py'
+  if ([string]::IsNullOrWhiteSpace($python) -or -not (Test-Path -LiteralPath $runtime -PathType Leaf)) {
+    return [pscustomobject]@{ ok=$false; available=$false; code='EXECUTION_CONTRACT_LOCAL_REBIND_CONTROL_PLANE_UNAVAILABLE'; missing=@('local BrainControl Python runtime') }
+  }
+  try {
+    $json = $Request | ConvertTo-Json -Depth 16 -Compress
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+    $raw = @(& $python -B $runtime --state-root $memoryBase $Action --request-base64 $encoded 2>&1)
+    $text = (@($raw | ForEach-Object { [string]$_ }) -join "`n").Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { throw 'empty BrainControl local rebind response' }
+    return ConvertFrom-SuperBrainJsonOutput $text ('local rebind control plane ' + $Action)
+  } catch {
+    return [pscustomobject]@{ ok=$false; available=$false; code='EXECUTION_CONTRACT_LOCAL_REBIND_CONTROL_PLANE_FAILED'; missing=@(Limit-ContractText $_.Exception.Message 180) }
+  }
+}
+
+function Get-LocalRebindContractHash([object]$Contract) {
+  if (-not $Contract) { return '' }
+  try {
+    $json = $Contract | ConvertTo-Json -Depth 32 -Compress
+    return Get-SuperBrainStableHash $json 64
+  } catch { return '' }
+}
+
+function Invoke-LocalRebindTransfer([object]$Request) {
+  if (-not $Request) { return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_LOCAL_REBIND_REQUEST_REQUIRED' } }
+  $issued = Invoke-LocalRebindControlPlane 'issue-local-rebind' $Request
+  if (-not $issued -or $issued.ok -ne $true -or [string]::IsNullOrWhiteSpace([string]$issued.recoveryRef)) {
+    if ($issued -and $issued.ok -eq $true -and [string]::IsNullOrWhiteSpace([string]$issued.recoveryRef) -and $issued.PSObject.Properties['idempotent'] -and $issued.idempotent -eq $true) {
+      # The issue command was already committed, but the one-time plaintext
+      # reference is intentionally not persisted in SQLite.  Query only
+      # scope-bound metadata so the caller can perform an explicit issuer
+      # repair/revoke; never guess, regenerate, or return the capability.
+      $query = Invoke-LocalRebindControlPlane 'query-local-rebind' ([ordered]@{
+        commandId=([string]$Request.commandId + '-query')
+        targetCommandId=[string]$Request.commandId
+        requestingSessionKey=[string]$Request.requestingSessionKey
+        taskId=if($Request.PSObject.Properties['taskId']){[string]$Request.taskId}else{''}
+        taskInstanceId=if($Request.PSObject.Properties['taskInstanceId']){[string]$Request.taskInstanceId}else{''}
+        workspaceKey=if($Request.PSObject.Properties['workspaceKey']){[string]$Request.workspaceKey}else{''}
+        source=([string]$Request.source + ':query-after-replay')
+      })
+      return [pscustomobject]@{
+        ok=$false
+        code='EXECUTION_CONTRACT_LOCAL_REBIND_ISSUE_REPLAY_REF_UNAVAILABLE'
+        issue=$issued
+        query=$query
+        repair=[pscustomobject]@{
+          required=$true
+          action='revoke-local-rebind'
+          targetCommandId=[string]$Request.commandId
+          guard='The one-time recoveryRef is not recoverable after an interrupted issue. An issuer-scoped explicit revoke/repair is required before issuing a fresh handoff.'
+        }
+      }
+    }
+    return [pscustomobject]@{ ok=$false; code=if($issued -and $issued.code){[string]$issued.code}else{'EXECUTION_CONTRACT_LOCAL_REBIND_ISSUE_FAILED'}; missing=if($issued){@($issued.missing)}else{@('recoveryRef')} }
+  }
+  $ref = [string]$issued.recoveryRef
+  $consume = Invoke-LocalRebindControlPlane 'consume-local-rebind' ([ordered]@{
+    commandId=([string]$Request.commandId + '-consume')
+    recoveryRef=$ref
+    requestingSessionKey=[string]$Request.requestingSessionKey
+    source=([string]$Request.source + ':consume')
+  })
+  if (-not $consume -or $consume.ok -ne $true -or [string]$consume.status -ne 'consumed') {
+    return [pscustomobject]@{ ok=$false; code=if($consume -and $consume.code){[string]$consume.code}else{'EXECUTION_CONTRACT_LOCAL_REBIND_CONSUME_FAILED'}; issue=$issued; consume=$consume }
+  }
+  $finalizeRequest = [ordered]@{
+    commandId=([string]$Request.commandId + '-finalize')
+    recoveryRef=$ref
+    requestingSessionKey=[string]$Request.requestingSessionKey
+    contractRevision=[int]$Request.contractRevision
+    contractHash=[string]$Request.contractHash
+    planFingerprint=[string]$Request.planFingerprint
+    source=([string]$Request.source + ':finalize')
+  }
+  foreach ($name in @('projectProofHash','previousReceiptId','previousReceiptHash')) {
+    $candidate = $null
+    if ($Request -is [System.Collections.IDictionary]) { $candidate = $Request[$name] }
+    elseif ($Request.PSObject.Properties[$name]) { $candidate = $Request.$name }
+    if (-not [string]::IsNullOrWhiteSpace([string]$candidate)) { $finalizeRequest[$name] = [string]$candidate }
+  }
+  $finalized = Invoke-LocalRebindControlPlane 'finalize-local-rebind' $finalizeRequest
+  if (-not $finalized -or $finalized.ok -ne $true -or [string]$finalized.status -ne 'finalized') {
+    return [pscustomobject]@{ ok=$false; code=if($finalized -and $finalized.code){[string]$finalized.code}else{'EXECUTION_CONTRACT_LOCAL_REBIND_FINALIZE_FAILED'}; issue=$issued; consume=$consume; finalize=$finalized }
+  }
+  return [pscustomobject]@{ ok=$true; code='EXECUTION_CONTRACT_LOCAL_REBIND_FINALIZED'; receipt=$finalized; issue=$issued; consume=$consume }
+}
+
+function ConvertTo-TaskSessionRebindResponseReceipt([object]$Receipt) {
+  # Keep the v18 local transaction receipt as persisted authority evidence,
+  # while preserving the pre-v18 response contract consumed by callers. This
+  # projection is response-only; the staged contract was written before it is
+  # applied and therefore still carries the local ledger receipt.
+  if (-not $Receipt -or [string]$Receipt.schema -ne 'super-brain.local-session-rebind-result.v1' -or [string]$Receipt.aggregateKind -ne 'task') {
+    return $Receipt
+  }
+  return [pscustomobject]@{
+    ok = if ($Receipt.PSObject.Properties['ok']) { [bool]$Receipt.ok } else { $true }
+    schema = 'super-brain.task-session-rebind-receipt.v1'
+    rebindId = [string]$Receipt.rebindId
+    aggregateId = [string]$Receipt.aggregateId
+    taskId = [string]$Receipt.taskId
+    taskInstanceId = [string]$Receipt.taskInstanceId
+    workspaceKey = [string]$Receipt.workspaceKey
+    previousOwnerSessionKey = [string]$Receipt.previousOwnerSessionKey
+    newOwnerSessionKey = [string]$Receipt.newOwnerSessionKey
+    packageVersion = [string]$Receipt.packageVersion
+    taskRevision = [int]$Receipt.expectedRevision
+    taskStateHash = [string]$Receipt.expectedStateHash
+    contractRevision = [int]$Receipt.contractRevision
+    planFingerprint = [string]$Receipt.planFingerprint
+    source = if ($Receipt.PSObject.Properties['source']) { [string]$Receipt.source } else { 'execution-contract.ps1:local-rebind' }
+    idempotent = if ($Receipt.PSObject.Properties['idempotent']) { [bool]$Receipt.idempotent } else { $false }
+    rawPromptStored = $false
+    rawTranscriptStored = $false
+  }
+}
+
+function Prepare-IntentResolution([string]$TaskIdValue,[string]$TaskInstanceIdValue,[string]$WorkspaceKeyValue,[string]$OwnerSessionKeyValue,[object]$IntentContractValue,[object]$SessionRebind=$null) {
   $normalized = ConvertTo-IntentResolutionContract $IntentContractValue -RequireCurrentSchema
   if (-not $normalized.ok) { return $normalized }
   $request = [ordered]@{
     taskId=$TaskIdValue;taskInstanceId=$TaskInstanceIdValue;workspaceKey=$WorkspaceKeyValue;ownerSessionKey=$OwnerSessionKeyValue
     intentContract=Get-IntentResolutionContractPayload $normalized.intentContract
   }
+  if ($SessionRebind) { $request.sessionRebind = $SessionRebind }
   $prepared = Invoke-IntentControlPlane 'prepare-intent' $request
   if (-not $prepared -or $prepared.ok -ne $true) {
     return [pscustomobject]@{ ok=$false; code=if($prepared){ConvertTo-IntentResolutionPublicCode ([string]$prepared.code) 'EXECUTION_CONTRACT_INTENT_PREPARE_FAILED'}else{'EXECUTION_CONTRACT_INTENT_PREPARE_FAILED'}; intentContract=$null; missing=if($prepared){@($prepared.missing)}else{@('BrainControl prepare result')} }
@@ -304,7 +426,7 @@ function Issue-TaskSessionRebindReceipt([string]$TaskIdValue,[string]$TaskInstan
   return [pscustomobject]@{ ok=$true; code='EXECUTION_CONTRACT_TASK_SESSION_REBIND_ISSUED'; aggregateId=[string]$issued.aggregateId; receipt=$issued; missing=@() }
 }
 
-function Resolve-IntentResolution([object]$Prepared,[string]$TaskIdValue,[string]$TaskInstanceIdValue,[string]$WorkspaceKeyValue,[string]$OwnerSessionKeyValue,[string]$PackageVersionValue,[int]$RevisionValue,[object]$PlanReceiptValue,[string]$LatestInstructionValue,[string]$SourceValue) {
+function Resolve-IntentResolution([object]$Prepared,[string]$TaskIdValue,[string]$TaskInstanceIdValue,[string]$WorkspaceKeyValue,[string]$OwnerSessionKeyValue,[string]$PackageVersionValue,[int]$RevisionValue,[object]$PlanReceiptValue,[string]$LatestInstructionValue,[string]$SourceValue,[object]$SessionRebind=$null) {
   if (-not $Prepared -or $Prepared.ok -ne $true -or -not $PlanReceiptValue) { return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_INTENT_PREPARE_REQUIRED'; missing=@('prepared intent and plan receipt') } }
   $instructionHash = Get-SuperBrainStableHash ([string]$LatestInstructionValue) 64
   $commandMaterial = @($TaskIdValue,$TaskInstanceIdValue,$WorkspaceKeyValue,$OwnerSessionKeyValue,$PackageVersionValue,$RevisionValue,[string]$PlanReceiptValue.planFingerprint,$instructionHash,[string]$Prepared.intentContract.contractFingerprint) -join '|'
@@ -315,6 +437,7 @@ function Resolve-IntentResolution([object]$Prepared,[string]$TaskIdValue,[string
     packageVersion=$PackageVersionValue;contractRevision=$RevisionValue;planFingerprint=[string]$PlanReceiptValue.planFingerprint
     latestInstructionHash=$instructionHash;intentContract=Get-IntentResolutionContractPayload $Prepared.intentContract;source=Limit-ContractText $SourceValue 120
   }
+  if ($SessionRebind) { $request.sessionRebind = $SessionRebind }
   $resolved = Invoke-IntentControlPlane 'resolve-intent' $request
   if (-not $resolved -or $resolved.ok -ne $true) {
     return [pscustomobject]@{ ok=$false; code=if($resolved){ConvertTo-IntentResolutionPublicCode ([string]$resolved.code) 'EXECUTION_CONTRACT_INTENT_RESOLUTION_FAILED'}else{'EXECUTION_CONTRACT_INTENT_RESOLUTION_FAILED'}; missing=if($resolved){@($resolved.missing)}else{@('BrainControl resolution result')} }

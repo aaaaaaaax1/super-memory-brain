@@ -46,6 +46,7 @@ from project_knowledge import resolve_project_knowledge
 from run_observability import receipt_is_valid as run_observability_receipt_is_valid
 from run_observability import summarize_telemetry as summarize_run_observability
 from turn_close_dispatcher import (
+    _authority_transaction_timeout,
     _invoke_contract,
     create_phase_closeout,
     dispatch_turn_close,
@@ -2884,12 +2885,22 @@ def open_turn(
         else core._project_progress_status(contract)
     )
     strict_open = str(intent.get("kind", "")) in FORMAL_OPEN_INTENTS
-    # Formal opens and non-continuation turns retain the strict local proof
-    # gates; ordinary local continuity may report stale proof for repair.
-    strict_state_preflight = strict_open or (
+    # A continuity intent explicitly promises a current project proof.  It
+    # may still expose the compact withheld mapping for repair, but it must
+    # never return an executable ``available=true`` turn (or
+    # ``mustContinue=true``) from stale proof/visible-progress evidence.
+    # Checkpoint has its own narrow repair path below: it receives the
+    # withheld context and can atomically write fresh proof through H7 before
+    # reopening.  That keeps diagnosis possible without presenting it as a
+    # valid continuation.
+    strict_state_preflight = bool(intent.get("requiresProjectProof") is True) or strict_open or (
         not normal_continuity and normalized_recovery_event == "none"
     )
-    if strict_state_preflight and intent.get("projectEvidenceRequired") is True and progress_status.get("current") is not True:
+    proof_required = bool(
+        intent.get("projectEvidenceRequired") is True
+        or intent.get("requiresProjectProof") is True
+    )
+    if strict_state_preflight and proof_required and progress_status.get("current") is not True:
         return _withheld("open", context, "H7_PROJECT_PROGRESS_WITHHELD")
     visible_progress_status = (
         (context.get("task") or {}).get("visibleProgress")
@@ -3371,6 +3382,7 @@ def checkpoint_turn(
         latest_user_instruction=latest_user_instruction,
         project_root=core._context_project_root(),
         current_contract=current_contract,
+        scope_contract_refresher=core.refresh_scope_contract,
         transition_id=transition_id,
         timeout=timeout,
     )
@@ -3381,9 +3393,13 @@ def checkpoint_turn(
             "code": str(checkpoint.get("code", "H7_PROGRESS_CHECKPOINT_FAILED")),
             "contractCode": str(checkpoint.get("contractCode", "")),
             "contractReason": str(checkpoint.get("contractReason", "")),
+            "contractCommitted": bool(checkpoint.get("contractCommitted") is True),
+            "scopeRefresh": checkpoint.get("scopeRefresh") if isinstance(checkpoint.get("scopeRefresh"), dict) else {},
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
+        failed["operationState"] = "partially_committed" if checkpoint.get("contractCommitted") is True else "failed"
+        failed["retrySafe"] = checkpoint.get("contractCommitted") is not True
         committed, guard = _finish_failure_loop_reservation(
             core.memory_base,
             str(scope.get("scopeRef", "")),
@@ -3621,6 +3637,7 @@ def close_turn(
                 and isinstance(opened.get("_privateCloseBundle", {}).get("contract"), dict)
                 else None
             ),
+            scope_contract_refresher=core.refresh_scope_contract,
             transition_id=checkpoint_transition_id,
             timeout=timeout,
         )
@@ -3631,6 +3648,17 @@ def close_turn(
                 initial_context,
                 failure_code,
             )
+            failed["operationState"] = "partially_committed" if checkpoint.get("contractCommitted") is True else "failed"
+            failed["retrySafe"] = checkpoint.get("contractCommitted") is not True
+            failed["checkpoint"] = {
+                "code": str(checkpoint.get("code", "H7_PROGRESS_CHECKPOINT_FAILED")),
+                "contractCode": str(checkpoint.get("contractCode", "")),
+                "contractReason": str(checkpoint.get("contractReason", "")),
+                "contractCommitted": bool(checkpoint.get("contractCommitted") is True),
+                "scopeRefresh": checkpoint.get("scopeRefresh") if isinstance(checkpoint.get("scopeRefresh"), dict) else {},
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
             committed, guard = _finish_failure_loop_reservation(
                 core.memory_base,
                 str(initial_scope.get("scopeRef", "")),
@@ -3817,6 +3845,63 @@ def close_turn(
                 dispatch=dispatched,
                 reservation_id=dispatch_reservation_id,
             )
+    # A real CloseTurn transition (including an idempotent replay used to
+    # repair an interrupted prior close) changes or may have changed the
+    # authoritative contract. Refresh the already-bound Broker projection
+    # before the mandatory post-dispatch open, otherwise the stale Broker hash
+    # correctly blocks an otherwise committed close.
+    if dispatched.get("code") != "TURN_CLOSE_DISPATCH_POLICY_ONLY":
+        refresh_resolution = dispatched.get("resolution") if isinstance(dispatched.get("resolution"), dict) else {}
+        refresh_task_id = str(refresh_resolution.get("taskId", "")) or str(task.get("taskId", ""))
+        refresh_workspace = str(scope.get("workspaceKey", ""))
+        refresh_session = str(scope.get("ownerSessionKey", ""))
+        get_code, refreshed_contract = _invoke_contract(
+            core.package_root,
+            core.memory_base,
+            action="Get",
+            task_id=refresh_task_id,
+            workspace_key=refresh_workspace,
+            session_key=refresh_session,
+            timeout=_authority_transaction_timeout(timeout),
+            execution_cwd=core._context_project_root(),
+        )
+        if get_code != 0 or not isinstance(refreshed_contract, dict) or refreshed_contract.get("ok") is not True:
+            withheld = _withheld("close", context, "H7_SCOPE_CONTRACT_PROJECTION_SYNC_REQUIRED")
+            withheld["operationState"] = "partially_committed" if dispatched.get("stateMutated") is True else "failed"
+            withheld["retrySafe"] = False if dispatched.get("stateMutated") is True else True
+            withheld["dispatch"] = {
+                "code": str(dispatched.get("code", "")),
+                "contractCode": str(dispatched.get("contractCode", "")),
+                "contractReason": str(dispatched.get("contractReason", "")),
+                "stateMutated": bool(dispatched.get("stateMutated") is True),
+            }
+            withheld["scopeRefresh"] = {
+                "ok": False,
+                "state": "withheld",
+                "code": "H7_SCOPE_CONTRACT_REFRESH_SOURCE_UNAVAILABLE",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+            return withheld
+        scope_refresh = core.refresh_scope_contract(refreshed_contract)
+        if scope_refresh.get("ok") is not True:
+            withheld = _withheld("close", context, "H7_SCOPE_CONTRACT_PROJECTION_SYNC_REQUIRED")
+            withheld["operationState"] = "partially_committed" if dispatched.get("stateMutated") is True else "failed"
+            withheld["retrySafe"] = False
+            withheld["dispatch"] = {
+                "code": str(dispatched.get("code", "")),
+                "contractCode": str(dispatched.get("contractCode", "")),
+                "contractReason": str(dispatched.get("contractReason", "")),
+                "stateMutated": bool(dispatched.get("stateMutated") is True),
+            }
+            withheld["scopeRefresh"] = {
+                "ok": False,
+                "state": str(scope_refresh.get("state", "withheld")),
+                "code": str(scope_refresh.get("code", "H7_SCOPE_CONTRACT_REFRESH_FAILED")),
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+            return withheld
     # A policy-only close has already run the authority Resolve but did not
     # mutate its contract.  Re-opening it used to repeat the entire context,
     # proof, project-knowledge, activation, receipt, and telemetry pipeline

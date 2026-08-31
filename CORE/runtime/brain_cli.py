@@ -10,6 +10,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from brain_control import BrainControl, BrainControlError
 from brain_core import DEFAULT_RECALL_MAX_TOKENS, DEFAULT_RECALL_TOP_K, BrainCore
 from activation_receipt import activate as activate_brain, ensure_current
 from turn_close_dispatcher import dispatch_turn_close
@@ -160,6 +161,23 @@ def build_parser() -> argparse.ArgumentParser:
     turn_close.add_argument("--transition-id", default="")
     turn_close.add_argument("--timeout-seconds", type=float, default=8.0)
 
+    rebind_local = sub.add_parser("rebind-local", help="Local one-time session recovery")
+    rebind_local.add_argument("--action", choices=("issue", "consume", "finalize", "query", "revoke"), required=True)
+    rebind_local.add_argument("--command-id", required=True)
+    rebind_local.add_argument("--target-command-id", default="")
+    rebind_local.add_argument("--recovery-ref", default="")
+    rebind_local.add_argument("--aggregate-kind", choices=("intent", "task"), default=None)
+    rebind_local.add_argument("--expected-revision", type=int, default=None)
+    rebind_local.add_argument("--expected-state-hash", default="")
+    rebind_local.add_argument("--contract-revision", type=int, default=None)
+    rebind_local.add_argument("--contract-hash", default="")
+    rebind_local.add_argument("--plan-fingerprint", default="")
+    rebind_local.add_argument("--previous-receipt-id", default="")
+    rebind_local.add_argument("--previous-receipt-hash", default="")
+    rebind_local.add_argument("--project-proof-hash", default="")
+    rebind_local.add_argument("--ttl-seconds", type=int, default=300)
+    rebind_local.add_argument("--source", default="brain_cli.rebind_local")
+
     turn_runtime = sub.add_parser("turn-runtime")
     turn_runtime.add_argument("--phase", default="open", choices=("open", "checkpoint", "close", "evidence"))
     turn_runtime.add_argument("--memory-mode", default="auto", choices=("auto", "force", "off"))
@@ -215,6 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="list",
     )
     scope.add_argument("--channel-id", default="")
+    scope.add_argument("--pairing-request-ref", default="")
     scope.add_argument("--workline-id", default="")
     scope.add_argument("--contract-file", default="")
     scope.add_argument("--project-root", default="")
@@ -523,6 +542,143 @@ def _run_turn_runtime_command(
     )
 
 
+def _run_local_rebind_command(core: BrainCore, args: argparse.Namespace) -> dict[str, object]:
+    """Execute local session recovery from cwd + SUPER_BRAIN_LOCAL_SESSION_ID.
+
+    The CLI is a transport-equivalent fallback.  Issue snapshots the current
+    task from the local execution contract; successor lookup/repair actions
+    use only the current cwd/session identity and refuse foreign selectors.
+    """
+
+    action = str(args.action or "").strip().lower()
+    scope = core.authorize_scope(write=action in {"issue", "consume", "finalize", "revoke"})
+    if scope.get("ok") is not True:
+        return {
+            "ok": False,
+            "schema": "super-brain.local-session-rebind-result.v1",
+            "available": False,
+            "code": str(scope.get("code", "H7_SCOPE_LOCAL_SESSION_REQUIRED")),
+            "state": str(scope.get("state", "withheld")),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    workspace_key = core._context_workspace_key()
+    session_key = core._context_session_key()
+    if not workspace_key or not session_key:
+        return {
+            "ok": False,
+            "schema": "super-brain.local-session-rebind-result.v1",
+            "available": False,
+            "code": "H7_SCOPE_LOCAL_SESSION_REQUIRED",
+            "state": "withheld",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    request: dict[str, object] = {
+        "action": action,
+        "commandId": str(args.command_id),
+        "requestingSessionKey": session_key,
+        "workspaceKey": workspace_key,
+        "source": str(args.source),
+    }
+    if action == "issue":
+        # Issuing a recovery transaction snapshots the current aggregate and
+        # therefore still requires the complete local execution contract.
+        contract = core._execution_contract_context() or {}
+        task_id = str(contract.get("taskId", "")).strip()
+        task_instance_id = str(contract.get("taskInstanceId", "")).strip()
+        package_version = str(core.manifest.get("version", "")).strip()
+        if not task_id or not task_instance_id or not package_version:
+            return {
+                "ok": False,
+                "schema": "super-brain.local-session-rebind-result.v1",
+                "available": False,
+                "code": "H7_SCOPE_LOCAL_TASK_REQUIRED",
+                "state": "withheld",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        contract_revision = args.contract_revision
+        if contract_revision is None:
+            try:
+                contract_revision = int(contract.get("revision", 0))
+            except (TypeError, ValueError):
+                contract_revision = 0
+        plan_receipt = contract.get("planReceipt") if isinstance(contract.get("planReceipt"), dict) else {}
+        plan_fingerprint = args.plan_fingerprint or str(plan_receipt.get("planFingerprint", ""))
+        contract_hash = args.contract_hash or str(contract.get("continuityContractHash") or contract.get("contractHash") or "").strip().lower()
+        if not re.fullmatch(r"^[a-f0-9]{64}$", contract_hash):
+            contract_hash = hashlib.sha256(
+                json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            ).hexdigest()
+        inferred_kind = "task"
+        try:
+            if int(contract.get("intentRevision", 0) or 0) > 0 and str(contract.get("intentAggregateId", "")).strip():
+                inferred_kind = "intent"
+        except (TypeError, ValueError):
+            pass
+        aggregate_kind = args.aggregate_kind or inferred_kind
+        expected_revision = args.expected_revision
+        if expected_revision is None and aggregate_kind == "intent":
+            try:
+                expected_revision = int(contract.get("intentRevision", 0) or 0)
+            except (TypeError, ValueError):
+                expected_revision = None
+        intent_receipt = contract.get("intentResolutionReceipt") if isinstance(contract.get("intentResolutionReceipt"), dict) else {}
+        request.update(
+            {
+                "taskId": task_id,
+                "taskInstanceId": task_instance_id,
+                "packageVersion": package_version,
+                "aggregateKind": aggregate_kind,
+                "contractRevision": contract_revision,
+                "contractHash": contract_hash,
+                "planFingerprint": plan_fingerprint,
+            }
+        )
+        if expected_revision is not None:
+            request["expectedRevision"] = expected_revision
+        if aggregate_kind == "intent" and intent_receipt:
+            if not args.previous_receipt_id and intent_receipt.get("receiptId"):
+                request["previousReceiptId"] = str(intent_receipt["receiptId"])
+            if not args.previous_receipt_hash and intent_receipt.get("payloadHash"):
+                request["previousReceiptHash"] = str(intent_receipt["payloadHash"])
+    elif args.aggregate_kind:
+        # For lookup/repair actions the kind is an optional assertion.  Do
+        # not inject the parser's issue default, otherwise an intent lookup
+        # is silently interpreted as a task lookup.
+        request["aggregateKind"] = args.aggregate_kind
+    values = {
+        "target-command-id": "targetCommandId",
+        "recovery-ref": "recoveryRef",
+        "expected-revision": "expectedRevision",
+        "expected-state-hash": "expectedStateHash",
+        "contract-revision": "contractRevision",
+        "contract-hash": "contractHash",
+        "plan-fingerprint": "planFingerprint",
+        "previous-receipt-id": "previousReceiptId",
+        "previous-receipt-hash": "previousReceiptHash",
+        "project-proof-hash": "projectProofHash",
+        "ttl-seconds": "ttlSeconds",
+    }
+    for source, target in values.items():
+        value = getattr(args, source.replace("-", "_"))
+        if value not in (None, ""):
+            request[target] = value
+    try:
+        return BrainControl(core.memory_base).local_rebind(request)
+    except BrainControlError as exc:
+        return {
+            "ok": False,
+            "schema": "super-brain.local-session-rebind-result.v1",
+            "available": False,
+            "code": exc.code,
+            "message": str(exc),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+
+
 def _run_mcp_bridge(core: BrainCore, workspace_root: Path | None) -> object:
     """Serve one equivalent H7 call from a stale MCP worker's child process."""
 
@@ -633,7 +789,7 @@ def main() -> int:
     activation = None
     # Status and health are observational.  They must never create an
     # activation receipt merely because a user asked to inspect the system.
-    if args.command not in {"activate", "turn-runtime", "mcp-bridge", "context", "status", "health", "turn-close", "scope"}:
+    if args.command not in {"activate", "turn-runtime", "mcp-bridge", "context", "status", "health", "turn-close", "scope", "rebind-local"}:
         route = {
             "recall": "memory_recall",
             "recent": "memory_recall",
@@ -665,13 +821,33 @@ def main() -> int:
                 except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
                     result = {"ok": False, "code": "H7_SCOPE_CONTRACT_FILE_INVALID", "state": "withheld"}
         elif args.action == "bind":
-            result = control.pair_channel(
-                args.channel_id,
-                args.workline_id,
-                access_mode=args.access_mode,
-                ttl_seconds=args.ttl_seconds,
-                lease_seconds=args.lease_seconds,
-            )
+            if args.pairing_request_ref:
+                result = control.pair_request(
+                    args.pairing_request_ref,
+                    args.workline_id,
+                    access_mode=args.access_mode,
+                    ttl_seconds=args.ttl_seconds,
+                    lease_seconds=args.lease_seconds,
+                )
+            elif args.channel_id:
+                # Keep the channel-ID form as a narrow compatibility path.
+                # New callers should use the per-connection pairing ref so a
+                # global channel list is never used as a selector.
+                result = control.pair_channel(
+                    args.channel_id,
+                    args.workline_id,
+                    access_mode=args.access_mode,
+                    ttl_seconds=args.ttl_seconds,
+                    lease_seconds=args.lease_seconds,
+                )
+            else:
+                result = {
+                    "ok": False,
+                    "code": "H7_SCOPE_PAIRING_REQUEST_REF_REQUIRED",
+                    "state": "withheld",
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                }
         else:
             # Keep the result shape defensive if a future parser extension
             # accidentally reaches an unsupported action.
@@ -791,6 +967,8 @@ def main() -> int:
                 workspace_key=args.workspace_key,
                 session_key=args.session_key,
             )
+    elif args.command == "rebind-local":
+        result = _run_local_rebind_command(core, args)
     elif args.command == "turn-runtime":
         result = _run_turn_runtime_command(core, args)
     elif args.command == "mcp-bridge":

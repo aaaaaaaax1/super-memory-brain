@@ -67,6 +67,7 @@ _TASK_INSTANCE_ID_RE = re.compile(r"^ti-[a-f0-9]{16,64}$")
 _PACKAGE_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,79}$")
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _CHANNEL_ID_RE = re.compile(r"^sbc-[a-f0-9]{32}$")
+_PAIRING_REQUEST_REF_RE = re.compile(r"^sbpr-[a-f0-9]{32}$")
 _LEASE_ID_RE = re.compile(r"^sbl-[a-f0-9]{32}$")
 _PAIRING_TOKEN_RE = re.compile(r"^sbpg-v1\.[A-Za-z0-9_-]{32,128}$")
 
@@ -79,6 +80,7 @@ _MAX_GRANT_TTL_SECONDS = 300
 _MIN_LEASE_SECONDS = 15
 _MAX_LEASE_SECONDS = 3600
 _DEFAULT_LEASE_SECONDS = 300
+_PAIRING_REQUEST_REF_TTL_SECONDS = 300
 _LOCK_TIMEOUT_SECONDS = 2.0
 
 _PROCESS_LOCKS_GUARD = threading.Lock()
@@ -333,6 +335,7 @@ class ScopeBrokerResult(MappingABC[str, Any]):
     access_mode: str = ""
     lease_id: str = ""
     lease_expires_at: str = ""
+    pairing_request_ref: str = ""
 
     def public_projection(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -348,6 +351,8 @@ class ScopeBrokerResult(MappingABC[str, Any]):
             "rawPromptStored": False,
             "rawTranscriptStored": False,
         }
+        if self.pairing_request_ref:
+            value["pairingRequestRef"] = self.pairing_request_ref
         if self.context is not None:
             value["scope"] = self.context.public_projection()
         return value
@@ -385,6 +390,14 @@ class _ChannelBinding:
     lease_expires_at: datetime
 
 
+@dataclass(slots=True)
+class _PairingRequest:
+    ref: str
+    channel_id: str
+    broker_instance_id: str
+    expires_at: datetime
+
+
 class ScopeBroker:
     """Own Super Brain scope registry and transient channel capability state.
 
@@ -404,6 +417,12 @@ class ScopeBroker:
         self._bindings: dict[str, _ChannelBinding] = {}
         self._write_leases: dict[str, str] = {}
         self._grants: dict[str, _GrantRecord] = {}
+        self._pairing_requests: dict[str, _PairingRequest] = {}
+        self._channel_pairing_refs: dict[str, str] = {}
+        # Pairing refs are bound to this in-memory Broker instance.  A fresh
+        # Broker object (including a restart) therefore cannot consume an old
+        # ref even if a stale caller still has its text.
+        self._instance_id = "sbi-" + secrets.token_hex(16)
 
     # -- Durable SB-owned session/workline registry -----------------------
 
@@ -547,12 +566,152 @@ class ScopeBroker:
     def open_channel(self) -> str:
         """Create a fresh private channel identity for one live connection."""
 
+        channel_id, _ = self.open_channel_with_ref()
+        return channel_id
+
+    def open_channel_with_ref(self, *, now: datetime | None = None) -> tuple[str, str]:
+        """Create a channel and its short-lived control-plane pairing ref."""
+
         with self._memory_lock:
             while True:
                 channel_id = "sbc-" + secrets.token_hex(16)
                 if channel_id not in self._channels:
                     self._channels.add(channel_id)
-                    return channel_id
+                    ref = "sbpr-" + secrets.token_hex(16)
+                    expires_at = _utc_now(now) + timedelta(seconds=_PAIRING_REQUEST_REF_TTL_SECONDS)
+                    self._pairing_requests[ref] = _PairingRequest(ref, channel_id, self._instance_id, expires_at)
+                    self._channel_pairing_refs[channel_id] = ref
+                    return channel_id, ref
+
+    def pairing_request_ref(self, channel_id: str, *, now: datetime | None = None) -> str:
+        """Return the current unbound pairing ref for one channel."""
+
+        channel = _safe_string(channel_id, _CHANNEL_ID_RE)
+        if not channel:
+            return ""
+        current_time = _utc_now(now)
+        with self._memory_lock:
+            self._expire_pairing_requests(current_time)
+            if channel not in self._channels or channel in self._bindings:
+                return ""
+            return self._ensure_pairing_request_locked(channel, now=current_time)
+
+    def pairing_request_channel(self, pairing_request_ref: str, *, now: datetime | None = None) -> str:
+        """Resolve a live request ref to its channel for internal touch only.
+
+        The channel ID never leaves the authenticated Broker process through
+        this helper; it exists solely to keep an unbound connection alive
+        while the control plane consumes its request reference.
+        """
+
+        ref = _safe_string(pairing_request_ref, _PAIRING_REQUEST_REF_RE)
+        if not ref:
+            return ""
+        current_time = _utc_now(now)
+        with self._memory_lock:
+            self._expire_pairing_requests(current_time)
+            request = self._pairing_requests.get(ref)
+            if (
+                request is None
+                or request.broker_instance_id != self._instance_id
+                or request.channel_id not in self._channels
+                or request.channel_id in self._bindings
+            ):
+                return ""
+            return request.channel_id
+
+    def pair_request(
+        self,
+        pairing_request_ref: str,
+        workline_id: str,
+        *,
+        access_mode: str = "write",
+        ttl_seconds: int = 60,
+        lease_seconds: int = _DEFAULT_LEASE_SECONDS,
+        now: datetime | None = None,
+    ) -> ScopeBrokerResult:
+        """Consume one connection-owned ref and explicitly pair that channel."""
+
+        ref = _safe_string(pairing_request_ref, _PAIRING_REQUEST_REF_RE)
+        workline = _safe_string(workline_id, _WORKLINE_ID_RE)
+        mode = self._access_mode(access_mode)
+        grant_ttl = self._ttl(ttl_seconds, _MIN_GRANT_TTL_SECONDS, _MAX_GRANT_TTL_SECONDS)
+        lease_ttl = self._ttl(lease_seconds, _MIN_LEASE_SECONDS, _MAX_LEASE_SECONDS)
+        if not ref:
+            return self._failure("H7_SCOPE_PAIRING_REQUEST_REF_INVALID", "withheld")
+        if not workline:
+            return self._failure("H7_SCOPE_WORKLINE_ID_INVALID", "withheld")
+        if not mode:
+            return self._failure("H7_SCOPE_ACCESS_MODE_INVALID", "withheld")
+        # ``pair_request`` consumes its own short-lived capability directly;
+        # retain the legacy grant-TTL validation so public control-plane
+        # callers cannot accidentally accept values that the compatible
+        # channel-ID path rejects.
+        if grant_ttl is None:
+            return self._failure("H7_SCOPE_PAIRING_TTL_INVALID", "withheld")
+        if lease_ttl is None:
+            return self._failure("H7_SCOPE_LEASE_TTL_INVALID", "withheld")
+        current_time = _utc_now(now)
+        # Read the durable workline while holding the registry lock, then
+        # take the in-memory channel lock only for the final bind.  This is
+        # deliberately registry -> memory, matching registration's order.
+        # The former implementation held ``_memory_lock`` while calling
+        # ``pair_channel``; its nested durable lookup inverted that order
+        # against ``register_workline`` and could stall all live channels.
+        try:
+            with _process_lock(self._lock_path):
+                with _advisory_lock(self._lock_path) as acquired:
+                    if not acquired:
+                        return self._failure("H7_SCOPE_REGISTRY_LOCK_TIMEOUT", "withheld")
+                    registry = self._read_registry()
+                    if registry is None:
+                        return self._failure("H7_SCOPE_REGISTRY_INVALID", "withheld")
+                    records = [item for item in registry["worklines"] if item["worklineId"] == workline]
+                    if len(records) != 1:
+                        return self._failure("H7_SCOPE_WORKLINE_UNKNOWN", "withheld")
+                    context = self._context_from_record(records[0])
+                    if context is None:
+                        return self._failure("H7_SCOPE_REGISTRY_INVALID", "withheld")
+                    with self._memory_lock:
+                        self._expire_bindings(current_time)
+                        self._expire_pairing_requests(current_time)
+                        request = self._pairing_requests.get(ref)
+                        if request is None:
+                            return self._failure("H7_SCOPE_PAIRING_REQUEST_REF_EXPIRED", "withheld")
+                        if request.broker_instance_id != self._instance_id:
+                            return self._failure("H7_SCOPE_PAIRING_REQUEST_REF_INSTANCE_MISMATCH", "withheld")
+                        channel_id = request.channel_id
+                        if channel_id not in self._channels:
+                            self._pairing_requests.pop(ref, None)
+                            self._channel_pairing_refs.pop(channel_id, None)
+                            return self._failure("H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED", "withheld")
+                        if channel_id in self._bindings:
+                            return self._failure("H7_SCOPE_CHANNEL_ALREADY_BOUND", "withheld")
+                        if mode == "write" and context.workline_id in self._write_leases:
+                            return self._failure("H7_SCOPE_WRITE_LEASE_HELD", "withheld")
+                        binding = _ChannelBinding(
+                            workline_id=context.workline_id,
+                            context=context,
+                            access_mode=mode,
+                            lease_id="sbl-" + secrets.token_hex(16),
+                            lease_expires_at=current_time + timedelta(seconds=lease_ttl),
+                        )
+                        self._bindings[channel_id] = binding
+                        if mode == "write":
+                            self._write_leases[context.workline_id] = channel_id
+                        self._pairing_requests.pop(ref, None)
+                        self._channel_pairing_refs.pop(channel_id, None)
+                        return ScopeBrokerResult(
+                            True,
+                            "H7_SCOPE_CHANNEL_BOUND",
+                            "bound",
+                            context=context,
+                            access_mode=binding.access_mode,
+                            lease_id=binding.lease_id,
+                            lease_expires_at=_timestamp(binding.lease_expires_at),
+                        )
+        except OSError:
+            return self._failure("H7_SCOPE_REGISTRY_UNAVAILABLE", "withheld")
 
     def issue_pairing_grant(
         self,
@@ -635,6 +794,7 @@ class ScopeBroker:
         token_digest = _token_hash(pairing_grant)
         with self._memory_lock:
             self._expire_bindings(current_time)
+            self._expire_pairing_requests(current_time)
             if channel not in self._channels:
                 return self._failure("H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED", "withheld")
             if channel in self._bindings:
@@ -682,6 +842,9 @@ class ScopeBroker:
                 lease_expires_at=expires_at,
             )
             self._bindings[channel] = binding
+            pairing_ref = self._channel_pairing_refs.pop(channel, "")
+            if pairing_ref:
+                self._pairing_requests.pop(pairing_ref, None)
             if grant.access_mode == "write":
                 self._write_leases[grant.workline_id] = channel
             grant.used = True
@@ -755,13 +918,25 @@ class ScopeBroker:
         current_time = _utc_now(now)
         with self._memory_lock:
             expired = self._expire_bindings(current_time)
+            self._expire_pairing_requests(current_time)
             if channel not in self._channels:
                 return self._failure("H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED", "withheld")
             if channel in expired:
-                return self._failure("H7_SCOPE_CHANNEL_LEASE_EXPIRED", "unbound")
+                return ScopeBrokerResult(
+                    False,
+                    "H7_SCOPE_CHANNEL_LEASE_EXPIRED",
+                    "unbound",
+                    pairing_request_ref=self._ensure_pairing_request_locked(channel, now=current_time),
+                )
             binding = self._bindings.get(channel)
             if binding is None:
-                return ScopeBrokerResult(True, "H7_SCOPE_CHANNEL_UNBOUND", "unbound")
+                pairing_ref = self._ensure_pairing_request_locked(channel, now=current_time)
+                return ScopeBrokerResult(
+                    True,
+                    "H7_SCOPE_CHANNEL_UNBOUND",
+                    "unbound",
+                    pairing_request_ref=pairing_ref,
+                )
             return ScopeBrokerResult(
                 True,
                 "H7_SCOPE_CHANNEL_BOUND",
@@ -858,15 +1033,18 @@ class ScopeBroker:
                 return self._failure("H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED", "withheld")
             binding = self._bindings.pop(channel, None)
             if binding is None:
-                return ScopeBrokerResult(True, "H7_SCOPE_CHANNEL_UNBOUND", "unbound")
+                pairing_ref = self._ensure_pairing_request_locked(channel)
+                return ScopeBrokerResult(True, "H7_SCOPE_CHANNEL_UNBOUND", "unbound", pairing_request_ref=pairing_ref)
             if binding.access_mode == "write" and self._write_leases.get(binding.workline_id) == channel:
                 self._write_leases.pop(binding.workline_id, None)
+            pairing_ref = self._ensure_pairing_request_locked(channel, replace=True)
             return ScopeBrokerResult(
                 True,
                 "H7_SCOPE_CHANNEL_DETACHED",
                 "unbound",
                 context=binding.context,
                 access_mode=binding.access_mode,
+                pairing_request_ref=pairing_ref,
             )
 
     def close_channel(self, channel_id: str) -> ScopeBrokerResult:
@@ -878,7 +1056,107 @@ class ScopeBroker:
             return result
         with self._memory_lock:
             self._channels.discard(channel)
+            ref = self._channel_pairing_refs.pop(channel, "")
+            if ref:
+                self._pairing_requests.pop(ref, None)
         return ScopeBrokerResult(True, "H7_SCOPE_CHANNEL_CLOSED", "closed", context=result.context)
+
+    def refresh_bound_contract(
+        self,
+        channel_id: str,
+        lease_id: str,
+        contract: Mapping[str, Any],
+        *,
+        now: datetime | None = None,
+    ) -> ScopeBrokerResult:
+        """Refresh one already-bound write channel after an H7 contract commit.
+
+        This is an internal runtime operation.  It never selects a workline:
+        the channel and its existing write lease identify the only allowed
+        binding, and the incoming contract must match that identity exactly.
+        """
+
+        channel = _safe_string(channel_id, _CHANNEL_ID_RE)
+        lease = _safe_string(lease_id, _LEASE_ID_RE)
+        if not channel or not lease:
+            return self._failure("H7_SCOPE_CONTRACT_REFRESH_AUTH_INVALID", "withheld")
+        if not isinstance(contract, Mapping):
+            return self._failure("H7_SCOPE_CONTRACT_INVALID", "withheld")
+        try:
+            encoded = json.dumps(
+                dict(contract),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            return self._failure("H7_SCOPE_CONTRACT_INVALID", "withheld")
+        expected_hash = hashlib.sha256(encoded).hexdigest()
+        try:
+            incoming = self._contract_binding(contract, expected_contract_hash=expected_hash)
+        except ValueError as error:
+            return self._failure(str(error), "withheld")
+        current_time = _utc_now(now)
+        with self._memory_lock:
+            self._expire_bindings(current_time)
+            stored = self._bindings.get(channel)
+            if channel not in self._channels or stored is None:
+                return self._failure("H7_SCOPE_CHANNEL_UNBOUND", "unbound")
+            if stored.access_mode != "write":
+                return self._failure("H7_SCOPE_WRITE_LEASE_REQUIRED", "withheld", context=stored.context)
+            if not secrets.compare_digest(stored.lease_id, lease):
+                return self._failure("H7_SCOPE_LEASE_MISMATCH", "withheld", context=stored.context)
+            prior = stored.context
+            if any(
+                (
+                    incoming["workspaceKey"] != prior.workspace_key,
+                    incoming["ownerSessionKey"] != prior.owner_session_key,
+                    incoming["taskId"] != prior.task_id,
+                    incoming["taskInstanceId"] != prior.task_instance_id,
+                    incoming["packageVersion"] != prior.package_version,
+                )
+            ):
+                return self._failure("H7_SCOPE_CONTRACT_IDENTITY_MISMATCH", "withheld", context=prior)
+            if incoming["contractRevision"] < prior.contract_revision:
+                return self._failure("H7_SCOPE_CONTRACT_REVISION_STALE", "withheld", context=prior)
+            if incoming["contractRevision"] == prior.contract_revision and incoming["contractHash"] != prior.contract_hash:
+                return self._failure("H7_SCOPE_CONTRACT_HASH_CONFLICT", "withheld", context=prior)
+            workline_id = prior.workline_id
+            prior_access_mode = stored.access_mode
+            prior_lease_expiry = stored.lease_expires_at
+
+        # ``register_workline`` performs the durable CAS-like revision/hash
+        # update and refreshes all in-process bindings for this workline.  The
+        # binding guard in the IPC server closes the detach/rebind race around
+        # this call; the final check below protects direct in-process callers.
+        result = self.register_workline(contract, expected_contract_hash=expected_hash, now=now)
+        if not result.ok or result.context is None:
+            return result
+        with self._memory_lock:
+            current = self._bindings.get(channel)
+            if (
+                current is None
+                or current.workline_id != workline_id
+                or current.access_mode != prior_access_mode
+                or not secrets.compare_digest(current.lease_id, lease)
+            ):
+                return self._failure("H7_SCOPE_CONTRACT_REFRESH_RACE", "withheld")
+            self._bindings[channel] = _ChannelBinding(
+                workline_id=current.workline_id,
+                context=result.context,
+                access_mode=current.access_mode,
+                lease_id=current.lease_id,
+                lease_expires_at=prior_lease_expiry,
+            )
+        return ScopeBrokerResult(
+            True,
+            "H7_SCOPE_CONTRACT_PROJECTION_REFRESHED",
+            "bound",
+            context=result.context,
+            access_mode=prior_access_mode,
+            lease_expires_at=_timestamp(prior_lease_expiry),
+        )
 
     # -- Internal validation/persistence ----------------------------------
 
@@ -1120,6 +1398,48 @@ class ScopeBroker:
             if binding.access_mode == "write" and self._write_leases.get(binding.workline_id) == channel:
                 self._write_leases.pop(binding.workline_id, None)
         return expired
+
+    def _ensure_pairing_request_locked(
+        self,
+        channel_id: str,
+        *,
+        replace: bool = False,
+        now: datetime | None = None,
+    ) -> str:
+        current_time = _utc_now(now)
+        current = self._channel_pairing_refs.get(channel_id, "")
+        if current and not replace:
+            request = self._pairing_requests.get(current)
+            if (
+                request is not None
+                and request.broker_instance_id == self._instance_id
+                and request.channel_id == channel_id
+                and request.expires_at > current_time
+            ):
+                return current
+        if current:
+            self._pairing_requests.pop(current, None)
+        ref = "sbpr-" + secrets.token_hex(16)
+        self._channel_pairing_refs[channel_id] = ref
+        self._pairing_requests[ref] = _PairingRequest(
+            ref,
+            channel_id,
+            self._instance_id,
+            current_time + timedelta(seconds=_PAIRING_REQUEST_REF_TTL_SECONDS),
+        )
+        return ref
+
+    def _expire_pairing_requests(self, now: datetime) -> None:
+        for ref, request in tuple(self._pairing_requests.items()):
+            if (
+                request.expires_at <= now
+                or request.broker_instance_id != self._instance_id
+                or request.channel_id not in self._channels
+                or request.channel_id in self._bindings
+            ):
+                self._pairing_requests.pop(ref, None)
+                if self._channel_pairing_refs.get(request.channel_id) == ref:
+                    self._channel_pairing_refs.pop(request.channel_id, None)
 
     def _prune_grants(self, now: datetime, *, aggressive: bool = False) -> None:
         for token_digest, grant in tuple(self._grants.items()):

@@ -587,6 +587,107 @@ function Materialize-Payload([string]$Payload,[string]$Target,[string]$Transacti
   }
 }
 
+function Get-TaskMaterializationRollbackRoot([string]$Id,[string]$TransactionId) {
+  $token = Get-SuperBrainCanonicalTaskToken $Id
+  $root = Join-Path (Join-Path $stagingRoot $token) ('rollback-' + (Get-SuperBrainStableHash $TransactionId 24))
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) { New-Item -ItemType Directory -Force -Path $root | Out-Null }
+  return $root
+}
+
+function New-TaskMaterializationBackup([object]$Command,[string]$Id,[string]$WorkspaceKey,[string]$TransactionId,[int]$Ordinal) {
+  $target = Assert-CompletionCommandTarget $Command $Id $WorkspaceKey
+  $rollbackRoot = Get-TaskMaterializationRollbackRoot $Id $TransactionId
+  $beforeExists = Test-Path -LiteralPath $target -PathType Leaf
+  $beforePath = Join-Path $rollbackRoot ('before-{0:D4}.bin' -f $Ordinal)
+  $beforeHash = ''
+  if ($beforeExists) {
+    $item = Get-Item -LiteralPath $target -ErrorAction Stop
+    if ($item.Length -gt 1048576) { throw "TASK_STATE_MATERIALIZATION_BACKUP_TOO_LARGE role=$($Command.role) bytes=$($item.Length)" }
+    Copy-Item -LiteralPath $target -Destination $beforePath -Force
+    $beforeHash = Get-FileSha256 $target
+    if ([string]::IsNullOrWhiteSpace($beforeHash) -or (Get-FileSha256 $beforePath) -ne $beforeHash) { throw "TASK_STATE_MATERIALIZATION_BACKUP_HASH_MISMATCH role=$($Command.role)" }
+  }
+  return [pscustomobject]@{
+    targetPath = $target
+    beforeExists = [bool]$beforeExists
+    beforePath = if ($beforeExists) { $beforePath } else { '' }
+    beforeHash = $beforeHash
+    rollbackRoot = $rollbackRoot
+    expectedAfterExists = if ([string]$Command.operation -in @('clear','delete_identity','archive_identity','quarantine_identity')) { $false } elseif ([string]$Command.operation -in @('conditional_pointer','upsert','replace_if_hash') -and -not $Command.payloadPath) { $false } else { $true }
+    expectedAfterHash = if ($Command.PSObject.Properties['payloadHash']) { [string]$Command.payloadHash } else { '' }
+    role = [string]$Command.role
+    ordinal = $Ordinal
+  }
+}
+
+function Restore-TaskMaterialization([object[]]$Records) {
+  $restoreErrors = @()
+  foreach ($record in @($Records | Sort-Object ordinal -Descending)) {
+    try {
+      $target = [IO.Path]::GetFullPath([string]$record.targetPath)
+      $currentExists = Test-Path -LiteralPath $target -PathType Leaf
+      $currentHash = if ($currentExists) { Get-FileSha256 $target } else { '' }
+      # A command that threw before returning has no trustworthy post-state.
+      # Only treat it as a safe no-op when the target is still byte-identical
+      # to the pre-transaction state; otherwise fail closed and leave the
+      # prepared transaction for explicit reconciliation instead of guessing
+      # which writer owns the current bytes.
+      if ($record.PSObject.Properties['postStateKnown'] -and -not [bool]$record.postStateKnown) {
+        $matchesBefore = ([bool]$record.beforeExists -eq $currentExists) -and
+          (-not $currentExists -or [string]::Equals($currentHash,[string]$record.beforeHash,[StringComparison]::OrdinalIgnoreCase))
+        if (-not $matchesBefore) { throw 'rollback_post_state_unknown' }
+        continue
+      }
+      # A rollback may only overwrite a target that is still in the exact
+      # post-command state recorded by the transaction.  In particular,
+      # distinguish an externally removed target from a target that was
+      # intentionally materialized and is now ready to restore.  Without the
+      # existence check below a concurrent delete could be silently replaced
+      # by an older backup, losing an unrelated writer's change.
+      if ($record.PSObject.Properties['expectedAfterExists'] -and [bool]$record.expectedAfterExists -ne $currentExists) { throw 'rollback_target_changed' }
+      if ($record.PSObject.Properties['expectedAfterExists'] -and [bool]$record.expectedAfterExists -and
+          $record.PSObject.Properties['expectedAfterHash'] -and -not [string]::IsNullOrWhiteSpace([string]$record.expectedAfterHash) -and
+          $currentHash -ne [string]$record.expectedAfterHash) { throw 'rollback_target_changed' }
+      if ([bool]$record.beforeExists) {
+        $backup = [IO.Path]::GetFullPath([string]$record.beforePath)
+        if (-not (Test-Path -LiteralPath $backup -PathType Leaf) -or (Get-FileSha256 $backup) -ne [string]$record.beforeHash) { throw 'backup_missing_or_changed' }
+        if ($currentExists -and $currentHash -ne [string]$record.beforeHash) {
+          $matchesPostState = $record.PSObject.Properties['expectedAfterExists'] -and [bool]$record.expectedAfterExists -and
+            $record.PSObject.Properties['expectedAfterHash'] -and -not [string]::IsNullOrWhiteSpace([string]$record.expectedAfterHash) -and
+            $currentHash -eq [string]$record.expectedAfterHash
+          if (-not $matchesPostState) { throw 'rollback_target_changed' }
+        }
+        $temp = Get-TaskStateTemporaryPath $target ('rollback-' + [string]$record.ordinal) 'restore'
+        try {
+          [IO.File]::Copy($backup,$temp,$true)
+          Move-Item -LiteralPath $temp -Destination $target -Force
+        } finally {
+          if (Test-Path -LiteralPath $temp -PathType Leaf) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+        }
+        if ((Get-FileSha256 $target) -ne [string]$record.beforeHash) { throw 'restore_hash_mismatch' }
+      } elseif ($currentExists) {
+        Remove-Item -LiteralPath $target -Force
+      }
+    } catch {
+      $restoreErrors += ([string]$record.role + ':' + [string]$_.Exception.Message)
+    }
+  }
+  if ($restoreErrors.Count -gt 0) { throw ('TASK_STATE_MATERIALIZATION_ROLLBACK_FAILED ' + ($restoreErrors -join '; ')) }
+}
+
+function Restore-TaskMaterializationSafely([object[]]$Records) {
+  $items = @($Records)
+  if ($items.Count -eq 0) {
+    return [pscustomobject]@{ attempted=$false; verified=$true; error='' }
+  }
+  try {
+    Restore-TaskMaterialization $items
+    return [pscustomobject]@{ attempted=$true; verified=$true; error='' }
+  } catch {
+    return [pscustomobject]@{ attempted=$true; verified=$false; error=$_.Exception.Message }
+  }
+}
+
 function Materialize-ProjectionPathRebindTarget([string]$Source,[string]$Target,[string]$ExpectedHash,[string]$TransactionId) {
   if ([string]::IsNullOrWhiteSpace($Source) -or [string]::IsNullOrWhiteSpace($Target) -or [string]::IsNullOrWhiteSpace($ExpectedHash)) { throw 'TASK_STATE_REBIND_MATERIALIZATION_INPUT_REQUIRED' }
   if ((Get-FileSha256 $Source) -ne $ExpectedHash) { throw 'TASK_STATE_REBIND_MATERIALIZATION_SOURCE_CHANGED' }
@@ -960,28 +1061,60 @@ function Commit-ProjectionPathRebindTask([object]$TaskPlan,[string]$PlanFingerpr
     if ($FaultPoint -eq 'after_prepare') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_PREPARE' }
     $materialization = @()
     $materializedCount = 0
-    foreach ($candidate in @($TaskPlan.candidates | Sort-Object entityKind)) {
-      $target = Assert-ProjectionPathRebindCandidate $projection $candidate
-      if ($target.materializationRequired) {
-        $materialization += Materialize-ProjectionPathRebindTarget $target.sourcePath $target.path $target.hash $transactionId
-        $materializedCount++
-        if ($FaultAfterMaterialization -gt 0 -and $materializedCount -eq $FaultAfterMaterialization) { throw "TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZATION boundary=$materializedCount" }
+    $durableCommit = $false
+    try {
+      foreach ($candidate in @($TaskPlan.candidates | Sort-Object entityKind)) {
+        $target = Assert-ProjectionPathRebindCandidate $projection $candidate
+        if ($target.materializationRequired) {
+          $role = switch ([string]$candidate.entityKind) {
+            'context' { 'current_context' }
+            'checkpoint' { 'active_checkpoint' }
+            'task_card' { 'active_task_card' }
+            default { throw "TASK_STATE_ENTITY_KIND_INVALID kind=$($candidate.entityKind)" }
+          }
+          $backupCommand = [pscustomobject]@{
+            role=$role; operation='replace_if_hash'; targetPath=[string]$target.path; payloadPath=[string]$target.sourcePath; payloadHash=[string]$target.hash; expectedTargetHash=Get-FileSha256 ([string]$target.path)
+            expectedTaskId=$id; expectedWorkspaceKey=$workspaceKey
+          }
+          $backup = New-TaskMaterializationBackup $backupCommand $id $workspaceKey $transactionId (@($materialization).Count + 1)
+          $materializedRecord = [pscustomobject]@{
+            targetPath=[string]$backup.targetPath; beforeExists=[bool]$backup.beforeExists; beforePath=[string]$backup.beforePath
+            beforeHash=[string]$backup.beforeHash; rollbackRoot=[string]$backup.rollbackRoot
+            expectedAfterExists=[bool]$backup.expectedAfterExists; expectedAfterHash=[string]$backup.expectedAfterHash
+            role=[string]$backup.role; ordinal=[int]$backup.ordinal; action='pending'; changed=$false
+          }
+          $materialization += $materializedRecord
+          $result = Materialize-ProjectionPathRebindTarget $target.sourcePath $target.path $target.hash $transactionId
+          foreach ($property in @($result.PSObject.Properties)) {
+            if ($property.Name -in @('targetPath','beforeExists','beforePath','beforeHash','rollbackRoot','expectedAfterExists','expectedAfterHash','role','ordinal')) { continue }
+            $materializedRecord | Add-Member -NotePropertyName ([string]$property.Name) -NotePropertyValue $property.Value -Force
+          }
+          $materializedRecord | Add-Member -NotePropertyName afterHash -NotePropertyValue (Get-FileSha256 ([string]$materializedRecord.targetPath)) -Force
+          $materializedCount++
+          if ($FaultAfterMaterialization -gt 0 -and $materializedCount -eq $FaultAfterMaterialization) { throw "TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZATION boundary=$materializedCount" }
+        }
       }
+      if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
+      foreach ($candidate in @($TaskPlan.candidates)) { $null = Assert-ProjectionPathRebindCandidate $projection $candidate }
+      $rebind.materialization = @($materialization)
+      $eventId = [guid]::NewGuid().ToString('n')
+      $committedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
+      $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='projection_path_rebind'; transactionId=$transactionId; authorityOutboxEventId=if($authority){[string]$authority.outboxEventId}else{''}; authorityStateHash=if($authority){[string]$authority.stateHash}else{''}; eventId=$eventId; taskId=$id; revision=$nextRevision; previousRevision=$previousRevision; entities=$entities; lifecycle=$lifecycle; rebind=$rebind; maintenance=$Maintenance; source=Limit-Text $Writer 120; recordedAt=$committedAt }
+      Add-StateEvent $id $commit
+      $durableCommit = $true
+      if ($FaultPoint -eq 'after_commit') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_COMMIT' }
+      Commit-TaskCompletionProjection $projection $id $entities $lifecycle $nextRevision $eventId $committedAt
+      if ($authority) {
+        $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
+        if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED' }
+      }
+      Remove-TaskCompletionStaging @() '' $materialization
+      return [pscustomobject]@{ ok=$true; taskId=$id; transactionId=$transactionId; revision=$nextRevision; previousRevision=$previousRevision; entityCount=$rebindRecords.Count; materializedCount=$materialization.Count; records=@($rebindRecords); materialization=@($materialization); authorityMode=if($authority){'sqlite'}else{'deferred_until_task_authority'}; authorityRevision=if($authority){[int]$authority.revision}else{0}; projectionPath=Get-ProjectionPath $id; eventPath=Get-EventPath $id; guard='All eligible entity pointers for this task were rebound in one recoverable transaction. Existing SQLite authority commits first; missing canonical targets are copied from hash-verified files before outbox acknowledgement.' }
+    } catch {
+      $rollback = if (-not $durableCommit) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error='durable_commit_present' } }
+      if (-not $rollback.verified -and $rollback.attempted) { throw "TASK_STATE_REBIND_ROLLBACK_FAILED error=$($rollback.error) original=$($_.Exception.Message)" }
+      throw
     }
-    if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
-    foreach ($candidate in @($TaskPlan.candidates)) { $null = Assert-ProjectionPathRebindCandidate $projection $candidate }
-    $rebind.materialization = @($materialization)
-    $eventId = [guid]::NewGuid().ToString('n')
-    $committedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
-    $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='projection_path_rebind'; transactionId=$transactionId; authorityOutboxEventId=if($authority){[string]$authority.outboxEventId}else{''}; authorityStateHash=if($authority){[string]$authority.stateHash}else{''}; eventId=$eventId; taskId=$id; revision=$nextRevision; previousRevision=$previousRevision; entities=$entities; lifecycle=$lifecycle; rebind=$rebind; maintenance=$Maintenance; source=Limit-Text $Writer 120; recordedAt=$committedAt }
-    Add-StateEvent $id $commit
-    if ($FaultPoint -eq 'after_commit') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_COMMIT' }
-    Commit-TaskCompletionProjection $projection $id $entities $lifecycle $nextRevision $eventId $committedAt
-    if ($authority) {
-      $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
-      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED' }
-    }
-    return [pscustomobject]@{ ok=$true; taskId=$id; transactionId=$transactionId; revision=$nextRevision; previousRevision=$previousRevision; entityCount=$rebindRecords.Count; materializedCount=$materialization.Count; records=@($rebindRecords); materialization=@($materialization); authorityMode=if($authority){'sqlite'}else{'deferred_until_task_authority'}; authorityRevision=if($authority){[int]$authority.revision}else{0}; projectionPath=Get-ProjectionPath $id; eventPath=Get-EventPath $id; guard='All eligible entity pointers for this task were rebound in one recoverable transaction. Existing SQLite authority commits first; missing canonical targets are copied from hash-verified files before outbox acknowledgement.' }
   }
 }
 
@@ -1090,6 +1223,10 @@ function Commit-Entity([string]$Id,[string]$Kind,[string]$Op,[string]$Path,[stri
     Set-EntityValue $nextProjection $Kind $entityRecord
     $null = Update-ProjectionLifecycleFromEntities $nextProjection $Writer
     $workspaceKey = if ($payloadValue -and $payloadValue.value) { Get-SuperBrainWorkspaceKey ([string]$payloadValue.value.workspaceKey) } else { Get-SuperBrainWorkspaceKey ([string]$nextProjection.lifecycle.workspaceKey) }
+    # Observe the canonical target once under the mutation lock.  The same
+    # value is used by the SQLite CAS command and the file materializer so a
+    # concurrent writer cannot be silently overwritten.
+    $expectedTargetHash = Get-FileSha256 $target
     $authority = $null
     $authorityBinding = Get-ExistingTaskAuthorityContract $Id $workspaceKey $(if($payloadValue){$payloadValue.value}else{$null})
     if ($authorityBinding) {
@@ -1100,7 +1237,7 @@ function Commit-Entity([string]$Id,[string]$Kind,[string]$Op,[string]$Path,[stri
       $role = switch ($Kind) { 'context' {'current_context'} 'checkpoint' {'active_checkpoint'} 'task_card' {'active_task_card'} default { throw "TASK_STATE_ENTITY_KIND_INVALID kind=$Kind" } }
       $authorityCommand = [pscustomobject]@{
         role=$role; operation=if($Op-eq'clear'){'delete_identity'}else{'replace_if_hash'}; targetPath=$target; payloadPath=if($payloadValue){[string]$payloadValue.path}else{''}; payloadHash=if($payloadValue){[string]$payloadValue.hash}else{''}
-        expectedTargetHash=Get-FileSha256 $target; expectedTaskId=$Id; expectedWorkspaceKey=$workspaceKey; applyWhenMissing=$false
+        expectedTargetHash=$expectedTargetHash; expectedTaskId=$Id; expectedWorkspaceKey=$workspaceKey; applyWhenMissing=$false
       }
       $authority = Apply-TaskAuthorityTransition $Id $authorityContract $projection $nextProjection.entities $nextProjection.lifecycle @($authorityCommand) $actualRevision $Writer 'entity_commit' ($transactionId + '|' + [string]$payloadValue.hash + '|' + $Kind + '|' + $Op)
       if (-not $authority.ok) { throw ('TASK_STATE_SQLITE_AUTHORITY_APPLY_FAILED code=' + [string]$authority.code + ' error=' + (Limit-Text ([string]$authority.error) 240)) }
@@ -1112,27 +1249,110 @@ function Commit-Entity([string]$Id,[string]$Kind,[string]$Op,[string]$Path,[stri
     $prepare = [pscustomobject]@{
       schema='super-brain.task-state-event.v2'; phase='prepared'; transactionId=$transactionId; eventId=[guid]::NewGuid().ToString('n'); taskId=$Id
       revision=0; targetRevision=$nextRevision; previousRevision=$actualRevision; entityKind=$Kind; operation=$Op
-      command=[pscustomobject]@{ targetPath=$target; payloadPath=if($payloadValue){$payloadValue.path}else{''}; payloadHash=if($payloadValue){$payloadValue.hash}else{''}; status=$status; owner=$owner; maintenance=$maintenance }
+      command=[pscustomobject]@{ targetPath=$target; payloadPath=if($payloadValue){$payloadValue.path}else{''}; payloadHash=if($payloadValue){$payloadValue.hash}else{''}; expectedTargetHash=$expectedTargetHash; status=$status; owner=$owner; maintenance=$maintenance }
       authorityOutboxEventId=if($authority){[string]$authority.outboxEventId}else{''}; authorityStateHash=if($authority){[string]$authority.stateHash}else{''}; source=Limit-Text $Writer 120; recordedAt=$now
     }
     Add-StateEvent $Id $prepare
     if ($FaultPoint -eq 'after_prepare') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_PREPARE' }
-    if ($Op -eq 'upsert' -or $payloadValue) { $canonicalHash = Materialize-Payload $payloadValue.path $target $transactionId }
-    else { if (Test-Path -LiteralPath $target -PathType Leaf) { Remove-Item -LiteralPath $target -Force }; $canonicalHash = '' }
-    if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
-    $eventId = [guid]::NewGuid().ToString('n')
-    $committedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
-    $entityRecord = if ($Op -eq 'clear') { $null } else { [pscustomobject]@{ path=$target; hash=$canonicalHash; status=$status; source=Limit-Text $Writer 120; owner=$owner } }
-    $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionId=$transactionId; authorityOutboxEventId=if($authority){[string]$authority.outboxEventId}else{''}; authorityStateHash=if($authority){[string]$authority.stateHash}else{''}; eventId=$eventId; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; entityKind=$Kind; operation=$Op; entity=$entityRecord; maintenance=$maintenance; source=Limit-Text $Writer 120; recordedAt=$committedAt }
-    Add-StateEvent $Id $commit
-    if ($FaultPoint -eq 'after_commit') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_COMMIT' }
-    Commit-Projection $projection $Id $Kind $Op $entityRecord $nextRevision $eventId $committedAt
-    if ($authority) {
-      $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
-      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED' }
+    $materialization = @()
+    $durableCommit = $false
+    try {
+      # Register the target backup before invoking the command.  A direct
+      # entity commit has the same prepared-WAL recovery boundary as the
+      # completion paths; if validation, projection, or authority acknowledgement
+      # fails after materialization, restore only while the committed event is
+      # still absent.  The expected post-state also protects against an
+      # unrelated writer changing the target while rollback is in progress.
+      $role = switch ($Kind) {
+        'context' { 'current_context' }
+        'checkpoint' { 'active_checkpoint' }
+        'task_card' { 'active_task_card' }
+        default { throw "TASK_STATE_ENTITY_KIND_INVALID kind=$Kind" }
+      }
+      $backupCommand = [pscustomobject]@{
+        role=$role
+        operation=if($Op -eq 'clear'){'delete_identity'}else{'upsert'}
+        targetPath=$target
+        payloadPath=if($payloadValue){[string]$payloadValue.path}else{''}
+        payloadHash=if($payloadValue){[string]$payloadValue.hash}else{''}
+        expectedTargetHash=$expectedTargetHash
+        expectedTaskId=$Id
+        expectedWorkspaceKey=$workspaceKey
+      }
+      $backup = New-TaskMaterializationBackup $backupCommand $Id $workspaceKey $transactionId 1
+      $record = [pscustomobject]@{
+        targetPath=[string]$backup.targetPath
+        beforeExists=[bool]$backup.beforeExists
+        beforePath=[string]$backup.beforePath
+        beforeHash=[string]$backup.beforeHash
+        rollbackRoot=[string]$backup.rollbackRoot
+        expectedAfterExists=[bool]$backup.expectedAfterExists
+        expectedAfterHash=[string]$backup.expectedAfterHash
+        role=[string]$backup.role
+        ordinal=[int]$backup.ordinal
+        action='pending'
+        changed=$false
+        postStateKnown=$false
+      }
+      $materialization += $record
+
+      # Direct Commit accepts payloads supplied by its CLI/API caller (they are
+      # validated by Read-Payload above), so it cannot use the completion
+      # materializer's staging-only payload guard. Reapply the same target CAS
+      # and identity checks locally before the atomic payload swap.
+      $currentHashBefore = Get-FileSha256 $target
+      if ($currentHashBefore -ne $expectedTargetHash) { throw "TASK_STATE_COMPLETION_TARGET_CHANGED role=$role" }
+      if ($Op -eq 'upsert') {
+        $canonicalHash = Materialize-Payload $payloadValue.path $target $transactionId
+        if (-not [string]::Equals([string]$canonicalHash,[string]$payloadValue.hash,[StringComparison]::OrdinalIgnoreCase)) { throw 'TASK_STATE_ENTITY_MATERIALIZATION_HASH_MISMATCH' }
+        $record | Add-Member -NotePropertyName action -NotePropertyValue 'upserted' -Force
+        $record | Add-Member -NotePropertyName changed -NotePropertyValue $true -Force
+      } else {
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+          $current = Read-JsonFile $target
+          if (-not $current -or [string]$current.taskId -ne $Id -or (-not [string]::IsNullOrWhiteSpace($workspaceKey) -and -not (Test-CompletionWorkspace $current $workspaceKey))) {
+            throw "TASK_STATE_COMPLETION_DELETE_IDENTITY_MISMATCH role=$role"
+          }
+          Remove-Item -LiteralPath $target -Force
+        }
+        $canonicalHash = ''
+        $record | Add-Member -NotePropertyName action -NotePropertyValue 'deleted' -Force
+        $record | Add-Member -NotePropertyName changed -NotePropertyValue $true -Force
+      }
+      $observedExists = Test-Path -LiteralPath $target -PathType Leaf
+      $observedHash = if ($observedExists) { Get-FileSha256 $target } else { '' }
+      $record | Add-Member -NotePropertyName observedAfterExists -NotePropertyValue ([bool]$observedExists) -Force
+      $record | Add-Member -NotePropertyName observedAfterHash -NotePropertyValue $observedHash -Force
+      $record | Add-Member -NotePropertyName afterHash -NotePropertyValue $observedHash -Force
+      $record | Add-Member -NotePropertyName postStateKnown -NotePropertyValue $true -Force
+
+      # Fault injection after materialization deliberately leaves the prepared
+      # event and materialized target for explicit reconciliation.  Other
+      # failures in this block are safe to roll back while no commit event is
+      # durable.
+      if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
+      $eventId = [guid]::NewGuid().ToString('n')
+      $committedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
+      $entityRecord = if ($Op -eq 'clear') { $null } else { [pscustomobject]@{ path=$target; hash=$canonicalHash; status=$status; source=Limit-Text $Writer 120; owner=$owner } }
+      $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionId=$transactionId; authorityOutboxEventId=if($authority){[string]$authority.outboxEventId}else{''}; authorityStateHash=if($authority){[string]$authority.stateHash}else{''}; eventId=$eventId; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; entityKind=$Kind; operation=$Op; entity=$entityRecord; maintenance=$maintenance; source=Limit-Text $Writer 120; recordedAt=$committedAt; materialization=@($materialization) }
+      Add-StateEvent $Id $commit
+      $durableCommit = $true
+      if ($FaultPoint -eq 'after_commit') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_COMMIT' }
+      Commit-Projection $projection $Id $Kind $Op $entityRecord $nextRevision $eventId $committedAt
+      if ($authority) {
+        $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
+        if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED' }
+      }
+      Remove-TaskCompletionStaging @() '' $materialization
+      Remove-StagingPayload $Payload
+      return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; entityKind=$Kind; operation=$Op; transactionId=$transactionId; authorityMode=if($authority){'sqlite'}else{'deferred_until_task_authority'}; authorityRevision=if($authority){[int]$authority.revision}else{0}; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; materializedPath=$target; materialization=@($materialization); mode='wal-materializer'; maintenanceOverride=[bool]$Override }
+    } catch {
+      $originalError = $_.Exception.Message
+      $preserveForRecovery = ($FaultPoint -eq 'after_materialize')
+      $rollback = if (-not $durableCommit -and -not $preserveForRecovery) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'} } }
+      if ($rollback.attempted -and -not $rollback.verified) { throw "TASK_STATE_ENTITY_ROLLBACK_FAILED error=$($rollback.error) original=$originalError" }
+      throw
     }
-    Remove-StagingPayload $Payload
-    return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; entityKind=$Kind; operation=$Op; transactionId=$transactionId; authorityMode=if($authority){'sqlite'}else{'deferred_until_task_authority'}; authorityRevision=if($authority){[int]$authority.revision}else{0}; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; materializedPath=$target; mode='wal-materializer'; maintenanceOverride=[bool]$Override }
   }
 }
 
@@ -1866,18 +2086,74 @@ function Commit-TaskCompletionProjection([object]$Projection,[string]$Id,[object
 function Invoke-TaskCompletionMaterialization([object[]]$Commands,[string]$Id,[string]$WorkspaceKey,[string]$TransactionId,[int]$FaultAfter=0) {
   $results = @()
   $index = 0
-  foreach ($command in @($Commands)) {
-    $index++
-    $commandWorkspaceKey = if ($command -and $command.PSObject.Properties['expectedWorkspaceKey']) { [string]$command.expectedWorkspaceKey } else { $WorkspaceKey }
-    $results += Materialize-CompletionCommand $command $Id $commandWorkspaceKey $TransactionId
-    if ($FaultAfter -gt 0 -and $index -eq $FaultAfter) { throw "TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZATION boundary=$index" }
+  try {
+    foreach ($command in @($Commands)) {
+      $index++
+      $commandWorkspaceKey = if ($command -and $command.PSObject.Properties['expectedWorkspaceKey']) { [string]$command.expectedWorkspaceKey } else { $WorkspaceKey }
+      $backup = New-TaskMaterializationBackup $command $Id $commandWorkspaceKey $TransactionId $index
+      # Register the backup before invoking the command.  Some commands copy
+      # an archive and then remove/replace the source; if the second operation
+      # fails, the target may already be changed even though the command throws.
+      # Keeping the record in the rollback set closes that single-command
+      # partial-materialization window.
+      $record = [pscustomobject]@{
+        targetPath = [string]$backup.targetPath
+        beforeExists = [bool]$backup.beforeExists
+        beforePath = [string]$backup.beforePath
+        beforeHash = [string]$backup.beforeHash
+        rollbackRoot = [string]$backup.rollbackRoot
+        expectedAfterExists = [bool]$backup.expectedAfterExists
+        expectedAfterHash = [string]$backup.expectedAfterHash
+        role = [string]$backup.role
+        ordinal = [int]$backup.ordinal
+        action = 'pending'
+        changed = $false
+        postStateKnown = $false
+      }
+      $results += $record
+      $materialized = Materialize-CompletionCommand $command $Id $commandWorkspaceKey $TransactionId
+      foreach ($property in @($materialized.PSObject.Properties)) {
+        if ($property.Name -in @('targetPath','beforeExists','beforePath','beforeHash','rollbackRoot','expectedAfterExists','expectedAfterHash','role','ordinal')) { continue }
+        $record | Add-Member -NotePropertyName ([string]$property.Name) -NotePropertyValue $property.Value -Force
+      }
+      $observedExists = Test-Path -LiteralPath ([string]$record.targetPath) -PathType Leaf
+      $observedHash = if ($observedExists) { Get-FileSha256 ([string]$record.targetPath) } else { '' }
+      $record | Add-Member -NotePropertyName observedAfterExists -NotePropertyValue ([bool]$observedExists) -Force
+      $record | Add-Member -NotePropertyName observedAfterHash -NotePropertyValue $observedHash -Force
+      # A command may be a safe no-op (foreign pointer preserved, pointer
+      # absent, already materialized).  Capture the actual post-command state
+      # so a later failure does not reject rollback merely because the desired
+      # payload was not installed by that no-op.
+      $record | Add-Member -NotePropertyName expectedAfterExists -NotePropertyValue ([bool]$observedExists) -Force
+      $record | Add-Member -NotePropertyName expectedAfterHash -NotePropertyValue $observedHash -Force
+      if ($observedExists) { $record | Add-Member -NotePropertyName afterHash -NotePropertyValue $observedHash -Force }
+      $record | Add-Member -NotePropertyName postStateKnown -NotePropertyValue $true -Force
+      if ($FaultAfter -gt 0 -and $index -eq $FaultAfter) { throw "TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZATION boundary=$index" }
+    }
+  } catch {
+    # A genuine materialization/validation failure must not leave a partially
+    # replaced contract, context, checkpoint, or pointer.  Fault injection is
+    # deliberately thrown after this function returns and is therefore left
+    # recoverable through the prepared transaction path.
+    if ($results.Count -gt 0) { Restore-TaskMaterialization $results }
+    throw
   }
   return @($results)
 }
 
-function Remove-TaskCompletionStaging([object[]]$Commands,[string]$ManifestPath) {
+function Remove-TaskCompletionStaging([object[]]$Commands,[string]$ManifestPath,[object[]]$Materialization=@()) {
   foreach ($command in @($Commands)) { Remove-StagingPayload ([string]$command.payloadPath) }
   Remove-StagingPayload $ManifestPath
+  $rollbackRoots = @($Materialization | ForEach-Object {
+      if ($_.PSObject.Properties['rollbackRoot'] -and -not [string]::IsNullOrWhiteSpace([string]$_.rollbackRoot)) {
+        [string]$_.rollbackRoot
+      } elseif (-not [string]::IsNullOrWhiteSpace([string]$_.beforePath)) {
+        Split-Path -Parent ([string]$_.beforePath)
+      }
+    } | Select-Object -Unique)
+  foreach ($root in $rollbackRoots) {
+    if ((Test-ChildPath $stagingRoot $root) -and (Test-Path -LiteralPath $root -PathType Container)) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+  }
 }
 
 function Complete-TaskState([string]$Id,[string]$ManifestPath,[int]$Expected,[string]$Writer,[switch]$Override,[string]$Reason) {
@@ -2025,21 +2301,36 @@ function Complete-TaskState([string]$Id,[string]$ManifestPath,[int]$Expected,[st
     }
     Add-StateEvent $Id $prepare
     if ($FaultPoint -eq 'after_prepare') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_PREPARE' }
-    $materialization = @(Invoke-TaskCompletionMaterialization $commands $Id $workspaceKey $transactionId $FaultAfterMaterialization)
-    if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
-    if ((Get-FileSha256 ([string]$completionReceiptCommand.targetPath)) -ne [string]$completionReceiptCommand.payloadHash) { throw 'TASK_STATE_COMPLETION_RECEIPT_HASH_MISMATCH' }
-    $active = @(Get-TaskCompletionActiveRecords $Id $workspaceKey)
-    if ($active.Count -gt 0) { throw "TASK_STATE_COMPLETION_ACTIVE_STATE_REMAINS count=$($active.Count)" }
-    $eventId = [guid]::NewGuid().ToString('n')
-    $committedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
-    $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='task_completion'; transactionId=$transactionId; authorityOutboxEventId=[string]$authority.outboxEventId; authorityStateHash=[string]$authority.stateHash; eventId=$eventId; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; entities=$entities; lifecycle=$lifecycle; source=Limit-Text $Writer 120; recordedAt=$committedAt; materialization=@($materialization) }
-    Add-StateEvent $Id $commit
-    if ($FaultPoint -eq 'after_commit') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_COMMIT' }
-    Commit-TaskCompletionProjection $projection $Id $entities $lifecycle $nextRevision $eventId $committedAt
-    $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
-    if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED' }
-    Remove-TaskCompletionStaging $commands $manifestRecord.path
-    return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; lifecycleStatus='completed'; transactionId=$transactionId; commandCount=$commands.Count; activeStateCount=0; authorityAggregateId=[string]$authority.aggregateId; authorityRevision=[int]$authority.revision; authorityStateHash=[string]$authority.stateHash; intentFulfillmentFingerprint=[string]$intentCompletion.fulfillmentFingerprint; terminalPlanSealPath=if($terminalPlanSealCommand){[string]$terminalPlanSealCommand.targetPath}else{''}; terminalPlanSealHash=if($terminalPlanSealCommand){[string]$terminalPlanSealCommand.payloadHash}else{''}; completionReceiptPath=[string]$completionReceiptCommand.targetPath; completionReceiptHash=[string]$completionReceiptCommand.payloadHash; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; maintenanceOverride=[bool]$Override }
+    $materialization = @()
+    $durableCommit = $false
+    try {
+      $materialization = @(Invoke-TaskCompletionMaterialization $commands $Id $workspaceKey $transactionId $FaultAfterMaterialization)
+      # Fault injection after materialization deliberately leaves the prepared
+      # transaction for the explicit reconciliation path.  A real validation
+      # or projection failure below is rolled back while the commit event is
+      # still absent.
+      if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
+      if ((Get-FileSha256 ([string]$completionReceiptCommand.targetPath)) -ne [string]$completionReceiptCommand.payloadHash) { throw 'TASK_STATE_COMPLETION_RECEIPT_HASH_MISMATCH' }
+      $active = @(Get-TaskCompletionActiveRecords $Id $workspaceKey)
+      if ($active.Count -gt 0) { throw "TASK_STATE_COMPLETION_ACTIVE_STATE_REMAINS count=$($active.Count)" }
+      $eventId = [guid]::NewGuid().ToString('n')
+      $committedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
+      $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='task_completion'; transactionId=$transactionId; authorityOutboxEventId=[string]$authority.outboxEventId; authorityStateHash=[string]$authority.stateHash; eventId=$eventId; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; entities=$entities; lifecycle=$lifecycle; source=Limit-Text $Writer 120; recordedAt=$committedAt; materialization=@($materialization) }
+      Add-StateEvent $Id $commit
+      $durableCommit = $true
+      if ($FaultPoint -eq 'after_commit') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_COMMIT' }
+      Commit-TaskCompletionProjection $projection $Id $entities $lifecycle $nextRevision $eventId $committedAt
+      $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
+      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED' }
+      Remove-TaskCompletionStaging $commands $manifestRecord.path $materialization
+      return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; lifecycleStatus='completed'; transactionId=$transactionId; commandCount=$commands.Count; activeStateCount=0; authorityAggregateId=[string]$authority.aggregateId; authorityRevision=[int]$authority.revision; authorityStateHash=[string]$authority.stateHash; intentFulfillmentFingerprint=[string]$intentCompletion.fulfillmentFingerprint; terminalPlanSealPath=if($terminalPlanSealCommand){[string]$terminalPlanSealCommand.targetPath}else{''}; terminalPlanSealHash=if($terminalPlanSealCommand){[string]$terminalPlanSealCommand.payloadHash}else{''}; completionReceiptPath=[string]$completionReceiptCommand.targetPath; completionReceiptHash=[string]$completionReceiptCommand.payloadHash; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; maintenanceOverride=[bool]$Override }
+    } catch {
+      $originalError = $_.Exception.Message
+      $preserveForRecovery = ($FaultPoint -eq 'after_materialize')
+      $rollback = if (-not $durableCommit -and -not $preserveForRecovery) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'} } }
+      if ($rollback.attempted -and -not $rollback.verified) { throw "TASK_STATE_COMPLETION_ROLLBACK_FAILED error=$($rollback.error) original=$originalError" }
+      throw
+    }
   }
 }
 
@@ -2098,9 +2389,36 @@ function Get-ContractContinuitySessionRebind([object]$Projection,[object]$Contra
     }
   }
   if ($candidates.Count -eq 0) { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_REQUIRED' }
+  # A contract with a required task intent legitimately carries two lineage
+  # receipts: one for the intent aggregate and one for the task aggregate.
+  # TaskStateStore must consume the task receipt here; treating the pair as an
+  # ambiguity incorrectly blocks otherwise valid cross-session continuity.
+  $taskCandidates = @($candidates | Where-Object {
+    ([string]$_.schema -eq 'super-brain.local-session-rebind-result.v1' -and [string]$_.aggregateKind -eq 'task') -or
+    [string]$_.schema -eq 'super-brain.task-session-rebind-receipt.v1'
+  })
+  if ($taskCandidates.Count -gt 0) { $candidates = $taskCandidates }
   if ($candidates.Count -ne 1) { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_AMBIGUOUS' }
   $receipt = $candidates[0]
   $schema = [string]$receipt.schema
+  if ($schema -eq 'super-brain.local-session-rebind-result.v1') {
+    if (-not $receipt.PSObject.Properties['status'] -or [string]$receipt.status -ne 'finalized') { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_NOT_FINALIZED' }
+    if (-not $receipt.PSObject.Properties['aggregateKind'] -or [string]$receipt.aggregateKind -ne 'task') { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_KIND_INVALID' }
+    foreach ($name in @('refHash','contractHash','planFingerprint','packageVersion')) {
+      if (-not $receipt.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$receipt.$name)) { throw "TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_FIELD_REQUIRED field=$name" }
+    }
+    if ([string]$receipt.refHash -notmatch '^[a-f0-9]{64}$' -or [string]$receipt.contractHash -notmatch '^[a-f0-9]{64}$') { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_HASH_INVALID' }
+    if (-not $receipt.PSObject.Properties['expectedRevision'] -or [int]$receipt.expectedRevision -lt 0) { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_TASK_REVISION_INVALID' }
+    if (-not $receipt.PSObject.Properties['contractRevision'] -or [int]$receipt.contractRevision -lt 1) { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_CONTRACT_REVISION_INVALID' }
+    if ($receipt.PSObject.Properties['expectedStateHash'] -and -not [string]::IsNullOrWhiteSpace([string]$receipt.expectedStateHash) -and [string]$receipt.expectedStateHash -notmatch '^[a-f0-9]{64}$') { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_TASK_HASH_INVALID' }
+    return [pscustomobject]@{
+      schema=$schema; aggregateId=[string]$receipt.aggregateId; rebindId=[string]$receipt.rebindId
+      taskId=$Id; taskInstanceId=[string]$Contract.taskInstanceId; workspaceKey=$WorkspaceKey
+      previousOwnerSessionKey=$previousSessionKey; newOwnerSessionKey=$nextSessionKey; packageVersion=[string]$receipt.packageVersion
+      status=[string]$receipt.status; aggregateKind='task'; expectedRevision=[int]$receipt.expectedRevision; expectedStateHash=([string]$receipt.expectedStateHash).ToLowerInvariant()
+      taskRevision=[int]$receipt.expectedRevision; taskStateHash=([string]$receipt.expectedStateHash).ToLowerInvariant(); contractRevision=[int]$receipt.contractRevision; planFingerprint=[string]$receipt.planFingerprint; refHash=[string]$receipt.refHash; contractHash=[string]$receipt.contractHash
+    }
+  }
   if ($schema -notin @('super-brain.intent-session-rebind-result.v1','super-brain.task-session-rebind-receipt.v1')) { throw 'TASK_STATE_CONTINUITY_SESSION_REBIND_RECEIPT_INVALID' }
   foreach ($entry in @(
     @('taskId',$Id),@('taskInstanceId',[string]$Contract.taskInstanceId),@('workspaceKey',$WorkspaceKey),
@@ -2359,13 +2677,11 @@ function Commit-ContractContinuity([string]$Id,[string]$ManifestPath,[string]$Wr
       bootstrapContext=$bootstrapContext; planCheckpointRequired=$planCheckpointRequired; checkpointProjectionIncluded=$checkpointProjectionIncluded; contextPath=[string]$validated.contextCommand.targetPath; contextHash=[string]$validated.contextPayload.hash; checkpointPath=if($checkpointProjectionIncluded){[string]$validated.checkpointCommand.targetPath}else{''}; checkpointHash=if($checkpointProjectionIncluded){[string]$validated.checkpointPayload.hash}else{''}; taskCardPath=[string]$validated.taskCardCommand.targetPath; taskCardHash=[string]$validated.taskCardPayload.hash; routePath=if($validated.routeCommand){[string]$validated.routeCommand.targetPath}else{''}; routeHash=if($validated.routeCommand){[string](Get-ContinuityCommand @($validated.commands) 'route_checkpoint').payloadHash}else{''}
     }
     if ($taskSessionRebind) { $continuity | Add-Member -NotePropertyName taskSessionRebind -NotePropertyValue $taskSessionRebind -Force }
-    $authority = Apply-TaskAuthorityTransition $Id $validated.contract $projection $entities $lifecycle @($validated.commands) $actualRevision $Writer 'contract_continuity' ([string]$manifest.hash) $null $taskSessionRebind
-    if (-not $authority.ok) { throw ('TASK_STATE_SQLITE_AUTHORITY_APPLY_FAILED code=' + [string]$authority.code + ' error=' + (Limit-Text ([string]$authority.error) 240)) }
-    $continuity | Add-Member -NotePropertyName authorityAggregateId -NotePropertyValue ([string]$authority.aggregateId) -Force
-    $continuity | Add-Member -NotePropertyName authorityRevision -NotePropertyValue ([int]$authority.revision) -Force
-    $continuity | Add-Member -NotePropertyName authorityStateHash -NotePropertyValue ([string]$authority.stateHash) -Force
-    $continuity | Add-Member -NotePropertyName authorityOutboxEventId -NotePropertyValue ([string]$authority.outboxEventId) -Force
-    if ($FaultPoint -eq 'after_authority') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_SQLITE_AUTHORITY' }
+    # The prepared WAL is the durable hand-off boundary.  Do not touch SQLite
+    # task authority until every H7 contract/context/checkpoint/task-card/route
+    # projection has been materialized and hash-verified below.  This keeps a
+    # projection failure from silently transferring the task owner early.
+    $continuity | Add-Member -NotePropertyName authorityState -NotePropertyValue 'pending' -Force
     $prepare = [pscustomobject]@{
       schema='super-brain.task-state-event.v2'; phase='prepared'; transactionKind='contract_continuity'; transactionId=$transactionId; eventId=[guid]::NewGuid().ToString('n')
       taskId=$Id; revision=0; targetRevision=$nextRevision; previousRevision=$actualRevision; commands=@($validated.commands); entities=$entities; lifecycle=$lifecycle; continuity=$continuity
@@ -2373,11 +2689,32 @@ function Commit-ContractContinuity([string]$Id,[string]$ManifestPath,[string]$Wr
     }
     Add-StateEvent $Id $prepare
     if ($FaultPoint -eq 'after_prepare') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_PREPARE' }
-    $materialization = @(Invoke-TaskCompletionMaterialization @($validated.commands) $Id $validated.workspaceKey $transactionId $FaultAfterMaterialization)
-    if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
+    $materialization = @()
+    $durableCommit = $false
+    try {
+      $materialization = @(Invoke-TaskCompletionMaterialization @($validated.commands) $Id $validated.workspaceKey $transactionId $FaultAfterMaterialization)
+      # Keep an injected post-materialization interruption replayable from the
+      # prepared WAL. Ordinary validation/projection failures are rolled back
+      # before the committed event becomes durable.
+      if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
     foreach ($record in @(@($continuity.contractPath,$continuity.contractHash),@($continuity.contextPath,$continuity.contextHash),@($continuity.checkpointPath,$continuity.checkpointHash),@($continuity.taskCardPath,$continuity.taskCardHash),@($continuity.routePath,$continuity.routeHash))) {
       if (-not [string]::IsNullOrWhiteSpace([string]$record[0]) -and (Get-FileSha256 ([string]$record[0])) -ne [string]$record[1]) { throw "TASK_STATE_CONTINUITY_MATERIALIZATION_HASH_MISMATCH path=$($record[0])" }
     }
+    $authority = Apply-TaskAuthorityTransition $Id $validated.contract $projection $entities $lifecycle @($validated.commands) $actualRevision $Writer 'contract_continuity' ([string]$manifest.hash) $null $taskSessionRebind
+    if (-not $authority.ok) {
+      # Authority is the owner/session source of truth. If it rejects the CAS
+      # after file materialization, restore every replaced target before
+      # surfacing the failure; the prepared event remains available for an
+      # explicit reconcile/replay and no stale new-owner projection leaks out.
+      if ($materialization.Count -gt 0) { Restore-TaskMaterialization $materialization }
+      throw ('TASK_STATE_SQLITE_AUTHORITY_APPLY_FAILED code=' + [string]$authority.code + ' error=' + (Limit-Text ([string]$authority.error) 240))
+    }
+    $continuity | Add-Member -NotePropertyName authorityState -NotePropertyValue 'applied' -Force
+    $continuity | Add-Member -NotePropertyName authorityAggregateId -NotePropertyValue ([string]$authority.aggregateId) -Force
+    $continuity | Add-Member -NotePropertyName authorityRevision -NotePropertyValue ([int]$authority.revision) -Force
+    $continuity | Add-Member -NotePropertyName authorityStateHash -NotePropertyValue ([string]$authority.stateHash) -Force
+    $continuity | Add-Member -NotePropertyName authorityOutboxEventId -NotePropertyValue ([string]$authority.outboxEventId) -Force
+    if ($FaultPoint -eq 'after_authority') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_SQLITE_AUTHORITY' }
     $eventId = [guid]::NewGuid().ToString('n')
     $committedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
     $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='contract_continuity'; transactionId=$transactionId; eventId=$eventId; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; entities=$entities; lifecycle=$lifecycle; continuity=$continuity; source=Limit-Text $Writer 120; recordedAt=$committedAt; materialization=@($materialization) }
@@ -2386,8 +2723,15 @@ function Commit-ContractContinuity([string]$Id,[string]$ManifestPath,[string]$Wr
     Commit-TaskCompletionProjection $projection $Id $entities $lifecycle $nextRevision $eventId $committedAt
     $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
     if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED' }
-    Remove-TaskCompletionStaging @($validated.commands) $manifest.path
+    Remove-TaskCompletionStaging @($validated.commands) $manifest.path $materialization
     return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; transactionId=$transactionId; revision=$nextRevision; previousRevision=$actualRevision; bootstrapContext=$bootstrapContext; planCheckpointRequired=$planCheckpointRequired; checkpointProjectionIncluded=$checkpointProjectionIncluded; contractRevision=[int]$validated.contract.revision; planFingerprint=[string]$validated.contract.planReceipt.planFingerprint; authorityAggregateId=[string]$authority.aggregateId; authorityRevision=[int]$authority.revision; authorityStateHash=[string]$authority.stateHash; contextPath=[string]$continuity.contextPath; checkpointPath=[string]$continuity.checkpointPath; taskCardPath=[string]$continuity.taskCardPath; routePath=[string]$continuity.routePath; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; guard=if($checkpointProjectionIncluded){'SQLite task authority committed contract, bound context, active checkpoint, active task card, routes, and compatibility pointers through one recoverable transaction.'}else{'SQLite task authority committed contract, bound context, active task card, routes, and compatibility pointers through one recoverable transaction; no active checkpoint was present.'} }
+    } catch {
+      $originalError = $_.Exception.Message
+      $preserveForRecovery = ($FaultPoint -eq 'after_materialize')
+      $rollback = if (-not $durableCommit -and -not $preserveForRecovery) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'} } }
+      if ($rollback.attempted -and -not $rollback.verified) { throw "TASK_STATE_CONTINUITY_ROLLBACK_FAILED error=$($rollback.error) original=$originalError" }
+      throw
+    }
   }
 }
 
@@ -2397,22 +2741,91 @@ function Complete-PreparedContractContinuity([object]$Prepare) {
   $projection = Ensure-ProjectionShape (Read-JsonFile (Get-ProjectionPath $id)) $id
   $actualRevision = [int]$projection.revision
   if ($actualRevision -ne [int]$Prepare.previousRevision -or [int]$Prepare.targetRevision -ne ($actualRevision + 1)) { return [pscustomobject]@{ ok=$false; reason='revision_advanced'; taskId=$id; transactionId=$Prepare.transactionId } }
+  $materialization = @()
+  $authorityCommitted = $false
+  $durableCommit = $false
   try {
+    # Re-validate the staged manifest before replay.  A prepared continuity
+    # record may have survived a process crash before SQLite authority was
+    # applied, so the recovery path must reconstruct the exact contract and
+    # hashes instead of assuming an authority outbox id was already written.
+    $manifestRecord = Get-ContinuityManifestRecord ([string]$Prepare.continuity.manifestPath) $id
+    $validated = Assert-ContractContinuityManifest $manifestRecord $id ([int]$Prepare.previousRevision)
     $materialization = @(Invoke-TaskCompletionMaterialization @($Prepare.commands) $id $workspaceKey ([string]$Prepare.transactionId) 0)
     foreach ($record in @(@([string]$Prepare.continuity.contractPath,[string]$Prepare.continuity.contractHash),@([string]$Prepare.continuity.contextPath,[string]$Prepare.continuity.contextHash),@([string]$Prepare.continuity.checkpointPath,[string]$Prepare.continuity.checkpointHash),@([string]$Prepare.continuity.taskCardPath,[string]$Prepare.continuity.taskCardHash),@([string]$Prepare.continuity.routePath,[string]$Prepare.continuity.routeHash))) {
-      if (-not [string]::IsNullOrWhiteSpace([string]$record[0]) -and (Get-FileSha256 ([string]$record[0])) -ne [string]$record[1]) { return [pscustomobject]@{ ok=$false; reason='materialized_hash_mismatch'; taskId=$id; transactionId=$Prepare.transactionId; path=[string]$record[0] } }
+      if (-not [string]::IsNullOrWhiteSpace([string]$record[0]) -and (Get-FileSha256 ([string]$record[0])) -ne [string]$record[1]) { throw "TASK_STATE_CONTINUITY_MATERIALIZATION_HASH_MISMATCH path=$($record[0])" }
     }
+    $taskSessionRebind = if ($Prepare.continuity.PSObject.Properties['taskSessionRebind']) { $Prepare.continuity.taskSessionRebind } else { $null }
+    $targetRevision = [int]$Prepare.targetRevision
+    $authority = $null
+    $pendingAuthority = @(
+      Get-PendingTaskAuthorityOutbox | Where-Object {
+        [string]$_.payload.taskId -eq $id -and
+        [int]$_.revision -eq $targetRevision -and
+        [string]$_.payload.schema -eq 'super-brain.task-projection-outbox.v1' -and
+        [string]$_.payload.projection.transactionKind -eq 'contract_continuity'
+      }
+    )
+    if ($pendingAuthority.Count -gt 1) { throw 'TASK_STATE_AUTHORITY_OUTBOX_AMBIGUOUS' }
+    if ($pendingAuthority.Count -eq 1) {
+      $candidate = $pendingAuthority[0]
+      if ($Prepare.continuity.PSObject.Properties['authorityStateHash'] -and -not [string]::IsNullOrWhiteSpace([string]$Prepare.continuity.authorityStateHash) -and [string]$candidate.payload.stateHash -ne [string]$Prepare.continuity.authorityStateHash) { throw 'TASK_STATE_AUTHORITY_OUTBOX_STATE_MISMATCH' }
+      $authorityCommitted = $true
+      $authority = [pscustomobject]@{
+        ok=$true; aggregateId=[string]$candidate.aggregateId; revision=[int]$candidate.revision;
+        stateHash=[string]$candidate.payload.stateHash; outboxEventId=[string]$candidate.eventId; idempotent=$true
+      }
+    } else {
+      # Inspect the current authority revision without mutating it.  If the
+      # process died after Apply-TaskAuthorityTransition committed, reuse that
+      # state and its durable outbox/snapshot rather than issuing a second CAS.
+      $authorityScope = [ordered]@{
+        taskId=$id; taskInstanceId=[string]$validated.contract.taskInstanceId; workspaceKey=$workspaceKey
+        ownerSessionKey=[string]$validated.contract.ownerSessionKey; packageVersion=[string]$validated.contract.packageVersion
+      }
+      if ($taskSessionRebind) { $authorityScope.taskSessionRebind = $taskSessionRebind }
+      $authorityRead = Invoke-TaskAuthorityControl 'prepare-task' $authorityScope
+      if (-not $authorityRead.ok) { throw ('TASK_STATE_AUTHORITY_READ_FAILED code=' + [string]$authorityRead.code) }
+      if ([int]$authorityRead.expectedRevision -eq $targetRevision) {
+        if (-not $authorityRead.state -or [int]$authorityRead.state.taskStateRevision -ne $targetRevision -or [string]$authorityRead.state.ownerSessionKey -ne [string]$validated.contract.ownerSessionKey) {
+          throw 'TASK_STATE_AUTHORITY_STATE_MISMATCH'
+        }
+        $snapshots = @(Get-TaskAuthorityProjectionSnapshots | Where-Object { [string]$_.payload.taskId -eq $id -and [int]$_.revision -eq $targetRevision -and [string]$_.payload.schema -eq 'super-brain.task-projection-outbox.v1' })
+        if ($snapshots.Count -ne 1) { throw 'TASK_STATE_AUTHORITY_SNAPSHOT_MISSING' }
+        $authorityCommitted = $true
+        $authority = [pscustomobject]@{
+          ok=$true; aggregateId=[string]$snapshots[0].aggregateId; revision=[int]$snapshots[0].revision;
+          stateHash=[string]$snapshots[0].payload.stateHash; outboxEventId=[string]$snapshots[0].eventId; idempotent=$true
+        }
+      } elseif ([int]$authorityRead.expectedRevision -eq [int]$Prepare.previousRevision) {
+        $authority = Apply-TaskAuthorityTransition $id $validated.contract $projection $Prepare.entities $Prepare.lifecycle @($validated.commands) ([int]$Prepare.previousRevision) ([string]$Prepare.source) 'contract_continuity' ([string]$manifestRecord.hash) $null $taskSessionRebind
+        if (-not $authority.ok) { throw ('TASK_STATE_AUTHORITY_APPLY_FAILED code=' + [string]$authority.code + ' error=' + [string]$authority.error) }
+        $authorityCommitted = $true
+      } else {
+        throw "TASK_STATE_AUTHORITY_REVISION_CONFLICT expected=$($Prepare.previousRevision) actual=$($authorityRead.expectedRevision)"
+      }
+    }
+    $continuity = $Prepare.continuity
+    $continuity | Add-Member -NotePropertyName authorityState -NotePropertyValue 'applied' -Force
+    $continuity | Add-Member -NotePropertyName authorityAggregateId -NotePropertyValue ([string]$authority.aggregateId) -Force
+    $continuity | Add-Member -NotePropertyName authorityRevision -NotePropertyValue ([int]$authority.revision) -Force
+    $continuity | Add-Member -NotePropertyName authorityStateHash -NotePropertyValue ([string]$authority.stateHash) -Force
+    $continuity | Add-Member -NotePropertyName authorityOutboxEventId -NotePropertyValue ([string]$authority.outboxEventId) -Force
     $eventId = [guid]::NewGuid().ToString('n')
     $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
-    $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='contract_continuity'; transactionId=[string]$Prepare.transactionId; eventId=$eventId; taskId=$id; revision=$actualRevision+1; previousRevision=$actualRevision; entities=$Prepare.entities; lifecycle=$Prepare.lifecycle; continuity=$Prepare.continuity; source=Limit-Text ([string]$Prepare.source) 120; recordedAt=$now; recovered=$true; materialization=@($materialization) }
+    $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='contract_continuity'; transactionId=[string]$Prepare.transactionId; eventId=$eventId; taskId=$id; revision=$actualRevision+1; previousRevision=$actualRevision; entities=$Prepare.entities; lifecycle=$Prepare.lifecycle; continuity=$continuity; source=Limit-Text ([string]$Prepare.source) 120; recordedAt=$now; recovered=$true; materialization=@($materialization) }
     Add-StateEvent $id $commit
+    $durableCommit = $true
     Commit-TaskCompletionProjection $projection $id $Prepare.entities $Prepare.lifecycle ($actualRevision+1) $eventId $now
-    $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$Prepare.continuity.authorityOutboxEventId)
-    if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { return [pscustomobject]@{ ok=$false; reason='authority_outbox_ack_failed'; taskId=$id; transactionId=$Prepare.transactionId } }
-    Remove-TaskCompletionStaging @($Prepare.commands) ([string]$Prepare.continuity.manifestPath)
+    $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
+    if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_AUTHORITY_OUTBOX_ACK_FAILED' }
+    Remove-TaskCompletionStaging @($Prepare.commands) ([string]$Prepare.continuity.manifestPath) $materialization
     return [pscustomobject]@{ ok=$true; taskId=$id; transactionId=$Prepare.transactionId; revision=$actualRevision+1; recovered=$true; contractRevision=[int]$Prepare.continuity.contractRevision; planFingerprint=[string]$Prepare.continuity.planFingerprint }
   } catch {
-    return [pscustomobject]@{ ok=$false; reason='materialization_failed'; error=$_.Exception.Message; taskId=$id; transactionId=$Prepare.transactionId }
+    $rollback = [pscustomobject]@{ attempted=$false; verified=$false; error='' }
+    if (-not $durableCommit) { $rollback = Restore-TaskMaterializationSafely $materialization }
+    elseif ($authorityCommitted) { $rollback.error = 'durable_commit_present' }
+    return [pscustomobject]@{ ok=$false; reason='materialization_failed'; error=$_.Exception.Message; taskId=$id; transactionId=$Prepare.transactionId; rollback=$rollback; authorityCommitted=$authorityCommitted }
   }
 }
 
@@ -2564,6 +2977,9 @@ function Commit-ActiveTaskBundle([string]$Id,[string]$ManifestPath,[string]$Writ
     $prepare = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='prepared'; transactionKind='active_task_bundle'; transactionId=$transactionId; eventId=[guid]::NewGuid().ToString('n'); taskId=$Id; revision=0; targetRevision=$nextRevision; previousRevision=$actualRevision; commands=@($validated.commands); entities=$entities; lifecycle=$lifecycle; bundle=$bundle; maintenance=$maintenance; source=Limit-Text $Writer 120; recordedAt=$now }
     Add-StateEvent $Id $prepare
     if ($FaultPoint -eq 'after_prepare') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_PREPARE' }
+    $materialization = @()
+    $durableCommit = $false
+    try {
     $materialization = @(Invoke-TaskCompletionMaterialization @($validated.commands) $Id $validated.workspaceKey $transactionId $FaultAfterMaterialization)
     if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
     foreach ($record in @(@($bundle.checkpointPath,$bundle.checkpointHash),@($bundle.taskCardPath,$bundle.taskCardHash))) {
@@ -2573,14 +2989,22 @@ function Commit-ActiveTaskBundle([string]$Id,[string]$ManifestPath,[string]$Writ
     $committedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
     $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='active_task_bundle'; transactionId=$transactionId; authorityOutboxEventId=if($authority){[string]$authority.outboxEventId}else{''}; authorityStateHash=if($authority){[string]$authority.stateHash}else{''}; eventId=$eventId; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; entities=$entities; lifecycle=$lifecycle; bundle=$bundle; maintenance=$maintenance; source=Limit-Text $Writer 120; recordedAt=$committedAt; materialization=@($materialization) }
     Add-StateEvent $Id $commit
+    $durableCommit = $true
     if ($FaultPoint -eq 'after_commit') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_COMMIT' }
     Commit-TaskCompletionProjection $projection $Id $entities $lifecycle $nextRevision $eventId $committedAt
     if ($authority) {
       $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId)
       if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED' }
     }
-    Remove-TaskCompletionStaging @($validated.commands) $manifest.path
+    Remove-TaskCompletionStaging @($validated.commands) $manifest.path $materialization
     return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; transactionId=$transactionId; revision=$nextRevision; previousRevision=$actualRevision; authorityMode=if($authority){'sqlite'}else{'deferred_until_task_authority'}; authorityRevision=if($authority){[int]$authority.revision}else{0}; checkpointPath=$bundle.checkpointPath; taskCardPath=$bundle.taskCardPath; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; materialization=@($materialization); maintenanceOverride=[bool]$MaintenanceOverride; maintenanceReason=if($maintenance){[string]$maintenance.reason}else{''}; guard=if($authority){'Existing SQLite task authority committed first; active checkpoint and task-card compatibility projections were then materialized and acknowledged.'}else{'No SQLite task aggregate exists yet. The recoverable file transaction remains a compatibility bootstrap and will be imported when a task-scoped contract establishes canonical authority.'} }
+    } catch {
+      $originalError = $_.Exception.Message
+      $preserveForRecovery = ($FaultPoint -eq 'after_materialize')
+      $rollback = if (-not $durableCommit -and -not $preserveForRecovery) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'} } }
+      if ($rollback.attempted -and -not $rollback.verified) { throw "TASK_STATE_ACTIVE_BUNDLE_ROLLBACK_FAILED error=$($rollback.error) original=$originalError" }
+      throw
+    }
   }
 }
 
@@ -2590,24 +3014,33 @@ function Complete-PreparedActiveTaskBundle([object]$Prepare) {
   $projection = Ensure-ProjectionShape (Read-JsonFile (Get-ProjectionPath $id)) $id
   $actualRevision = [int]$projection.revision
   if ($actualRevision -ne [int]$Prepare.previousRevision -or [int]$Prepare.targetRevision -ne ($actualRevision + 1)) { return [pscustomobject]@{ ok=$false; reason='revision_advanced'; taskId=$id; transactionId=$Prepare.transactionId } }
+  $materialization = @()
+  $authorityCommitted = [bool]($Prepare.bundle -and -not [string]::IsNullOrWhiteSpace([string]$Prepare.bundle.authorityOutboxEventId))
+  $durableCommit = $false
   try {
     $materialization = @(Invoke-TaskCompletionMaterialization @($Prepare.commands) $id $workspaceKey ([string]$Prepare.transactionId) 0)
     foreach ($record in @(@([string]$Prepare.bundle.checkpointPath,[string]$Prepare.bundle.checkpointHash),@([string]$Prepare.bundle.taskCardPath,[string]$Prepare.bundle.taskCardHash))) {
-      if ((Get-FileSha256 ([string]$record[0])) -ne [string]$record[1]) { return [pscustomobject]@{ ok=$false; reason='materialized_hash_mismatch'; taskId=$id; transactionId=$Prepare.transactionId; path=[string]$record[0] } }
+      if ((Get-FileSha256 ([string]$record[0])) -ne [string]$record[1]) { throw "TASK_STATE_ACTIVE_BUNDLE_MATERIALIZATION_HASH_MISMATCH path=$($record[0])" }
     }
     $eventId = [guid]::NewGuid().ToString('n')
     $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
     $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='active_task_bundle'; transactionId=[string]$Prepare.transactionId; authorityOutboxEventId=if($Prepare.bundle){[string]$Prepare.bundle.authorityOutboxEventId}else{''}; authorityStateHash=if($Prepare.bundle){[string]$Prepare.bundle.authorityStateHash}else{''}; eventId=$eventId; taskId=$id; revision=$actualRevision+1; previousRevision=$actualRevision; entities=$Prepare.entities; lifecycle=$Prepare.lifecycle; bundle=$Prepare.bundle; source=Limit-Text ([string]$Prepare.source) 120; recordedAt=$now; recovered=$true; materialization=@($materialization) }
     Add-StateEvent $id $commit
+    $durableCommit = $true
+    # Once the committed WAL event is durable, replay must finish the
+    # projection/outbox work rather than roll files back behind the journal.
     Commit-TaskCompletionProjection $projection $id $Prepare.entities $Prepare.lifecycle ($actualRevision+1) $eventId $now
     if ($Prepare.bundle -and -not [string]::IsNullOrWhiteSpace([string]$Prepare.bundle.authorityOutboxEventId)) {
       $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$Prepare.bundle.authorityOutboxEventId)
-      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { return [pscustomobject]@{ ok=$false; reason='authority_outbox_ack_failed'; taskId=$id; transactionId=$Prepare.transactionId } }
+      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_AUTHORITY_OUTBOX_ACK_FAILED' }
     }
-    Remove-TaskCompletionStaging @($Prepare.commands) ([string]$Prepare.bundle.manifestPath)
+    Remove-TaskCompletionStaging @($Prepare.commands) ([string]$Prepare.bundle.manifestPath) $materialization
     return [pscustomobject]@{ ok=$true; taskId=$id; transactionId=$Prepare.transactionId; revision=$actualRevision+1; recovered=$true }
   } catch {
-    return [pscustomobject]@{ ok=$false; reason='materialization_failed'; error=$_.Exception.Message; taskId=$id; transactionId=$Prepare.transactionId }
+    $rollback = [pscustomobject]@{ attempted=$false; verified=$false; error='' }
+    if (-not $durableCommit) { $rollback = Restore-TaskMaterializationSafely $materialization }
+    elseif ($authorityCommitted) { $rollback.error = 'durable_commit_present' }
+    return [pscustomobject]@{ ok=$false; reason='materialization_failed'; error=$_.Exception.Message; taskId=$id; transactionId=$Prepare.transactionId; rollback=$rollback; authorityCommitted=$authorityCommitted; durableCommit=$durableCommit }
   }
 }
 
@@ -2618,24 +3051,51 @@ function Complete-PreparedProjectionPathRebind([object]$Prepare) {
   if ($actualRevision -ne [int]$Prepare.previousRevision -or [int]$Prepare.targetRevision -ne ($actualRevision + 1)) { return [pscustomobject]@{ ok=$false; reason='revision_advanced'; taskId=$id; transactionId=$Prepare.transactionId } }
   if (-not $Prepare.rebind -or -not $Prepare.rebind.records) { return [pscustomobject]@{ ok=$false; reason='rebind_records_missing'; taskId=$id; transactionId=$Prepare.transactionId } }
   if (-not [string]::Equals([string]$projection.lifecycle.status,[string]$Prepare.rebind.sourceLifecycle,[StringComparison]::OrdinalIgnoreCase)) { return [pscustomobject]@{ ok=$false; reason='lifecycle_changed'; taskId=$id; transactionId=$Prepare.transactionId } }
+  $workspaceKey = Get-SuperBrainWorkspaceKey ([string]$projection.lifecycle.workspaceKey)
   $materialization = @()
+  $durableCommit = $false
   foreach ($record in @($Prepare.rebind.records)) {
     try {
       $canonical = Get-SuperBrainCanonicalTaskStateEntityPath $id ([string]$record.entityKind) $WorkspaceRoot $SharedRoot ([string]$record.materializationSourcePath)
-      if (-not [string]::Equals($canonical,[string]$record.targetPath,[StringComparison]::OrdinalIgnoreCase)) { return [pscustomobject]@{ ok=$false; reason='target_not_canonical'; taskId=$id; transactionId=$Prepare.transactionId; entityKind=[string]$record.entityKind } }
+      if (-not [string]::Equals($canonical,[string]$record.targetPath,[StringComparison]::OrdinalIgnoreCase)) { throw "TASK_STATE_REBIND_TARGET_NOT_CANONICAL entityKind=$($record.entityKind)" }
       $source = Read-Entity ([string]$record.materializationSourcePath) $id
       if (-not [string]::Equals([string]$source.hash,[string]$record.hash,[StringComparison]::OrdinalIgnoreCase) -or -not [string]::Equals([string]$source.status,[string]$record.status,[StringComparison]::OrdinalIgnoreCase)) {
-        return [pscustomobject]@{ ok=$false; reason='materialization_source_changed'; taskId=$id; transactionId=$Prepare.transactionId; entityKind=[string]$record.entityKind }
+        throw "TASK_STATE_REBIND_MATERIALIZATION_SOURCE_CHANGED entityKind=$($record.entityKind)"
       }
       if (-not (Test-Path -LiteralPath $canonical -PathType Leaf)) {
-        $materialization += Materialize-ProjectionPathRebindTarget ([string]$record.materializationSourcePath) $canonical ([string]$record.hash) ([string]$Prepare.transactionId)
+        $role = switch ([string]$record.entityKind) {
+          'context' { 'current_context' }
+          'checkpoint' { 'active_checkpoint' }
+          'task_card' { 'active_task_card' }
+          default { throw "TASK_STATE_ENTITY_KIND_INVALID kind=$($record.entityKind)" }
+        }
+        $backupCommand = [pscustomobject]@{
+          role=$role; operation='replace_if_hash'; targetPath=$canonical; payloadPath=[string]$record.materializationSourcePath; payloadHash=[string]$record.hash; expectedTargetHash=Get-FileSha256 $canonical
+          expectedTaskId=$id; expectedWorkspaceKey=$workspaceKey
+        }
+        $backup = New-TaskMaterializationBackup $backupCommand $id $workspaceKey ([string]$Prepare.transactionId) (@($materialization).Count + 1)
+        $materializedRecord = [pscustomobject]@{
+          targetPath=[string]$backup.targetPath; beforeExists=[bool]$backup.beforeExists; beforePath=[string]$backup.beforePath
+          beforeHash=[string]$backup.beforeHash; rollbackRoot=[string]$backup.rollbackRoot
+          expectedAfterExists=[bool]$backup.expectedAfterExists; expectedAfterHash=[string]$backup.expectedAfterHash
+          role=[string]$backup.role; ordinal=[int]$backup.ordinal; action='pending'; changed=$false
+        }
+        $materialization += $materializedRecord
+        $result = Materialize-ProjectionPathRebindTarget ([string]$record.materializationSourcePath) $canonical ([string]$record.hash) ([string]$Prepare.transactionId)
+        foreach ($property in @($result.PSObject.Properties)) {
+          if ($property.Name -in @('targetPath','beforeExists','beforePath','beforeHash','rollbackRoot','expectedAfterExists','expectedAfterHash','role','ordinal')) { continue }
+          $materializedRecord | Add-Member -NotePropertyName ([string]$property.Name) -NotePropertyValue $property.Value -Force
+        }
+        $materializedRecord | Add-Member -NotePropertyName afterHash -NotePropertyValue (Get-FileSha256 ([string]$materializedRecord.targetPath)) -Force
       }
       $target = Read-Entity $canonical $id
       if (-not [string]::Equals([string]$target.hash,[string]$record.hash,[StringComparison]::OrdinalIgnoreCase) -or -not [string]::Equals([string]$target.status,[string]$record.status,[StringComparison]::OrdinalIgnoreCase)) {
-        return [pscustomobject]@{ ok=$false; reason='target_changed'; taskId=$id; transactionId=$Prepare.transactionId; entityKind=[string]$record.entityKind }
+        throw "TASK_STATE_REBIND_TARGET_CHANGED entityKind=$($record.entityKind)"
       }
     } catch {
-      return [pscustomobject]@{ ok=$false; reason='target_invalid'; taskId=$id; transactionId=$Prepare.transactionId; entityKind=[string]$record.entityKind; error=$_.Exception.Message }
+      $failure = $_.Exception.Message
+      $rollback = if (-not $durableCommit) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error='durable_commit_present' } }
+      return [pscustomobject]@{ ok=$false; reason='target_invalid'; taskId=$id; transactionId=$Prepare.transactionId; entityKind=[string]$record.entityKind; error=$failure; rollback=$rollback; durableCommit=$durableCommit }
     }
   }
   try {
@@ -2645,14 +3105,17 @@ function Complete-PreparedProjectionPathRebind([object]$Prepare) {
     $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
     $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='projection_path_rebind'; transactionId=[string]$Prepare.transactionId; authorityOutboxEventId=if($Prepare.PSObject.Properties['authorityOutboxEventId']){[string]$Prepare.authorityOutboxEventId}else{''}; authorityStateHash=if($Prepare.PSObject.Properties['authorityStateHash']){[string]$Prepare.authorityStateHash}else{''}; eventId=$eventId; taskId=$id; revision=$actualRevision+1; previousRevision=$actualRevision; entities=$Prepare.entities; lifecycle=$Prepare.lifecycle; rebind=$rebind; maintenance=if($Prepare.PSObject.Properties['maintenance']){$Prepare.maintenance}else{$null}; source=Limit-Text ([string]$Prepare.source) 120; recordedAt=$now; recovered=$true }
     Add-StateEvent $id $commit
+    $durableCommit = $true
     Commit-TaskCompletionProjection $projection $id $Prepare.entities $Prepare.lifecycle ($actualRevision+1) $eventId $now
     if ($Prepare.PSObject.Properties['authorityOutboxEventId'] -and -not [string]::IsNullOrWhiteSpace([string]$Prepare.authorityOutboxEventId)) {
       $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$Prepare.authorityOutboxEventId)
-      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { return [pscustomobject]@{ ok=$false; reason='authority_outbox_ack_failed'; taskId=$id; transactionId=$Prepare.transactionId } }
+      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_AUTHORITY_OUTBOX_ACK_FAILED' }
     }
-    return [pscustomobject]@{ ok=$true; taskId=$id; transactionId=$Prepare.transactionId; revision=$actualRevision+1; recovered=$true; guard='Recovered the entire prepared projection-path rebind as one task transaction after revalidating every canonical target.' }
+    Remove-TaskCompletionStaging @() '' $materialization
+    return [pscustomobject]@{ ok=$true; taskId=$id; transactionId=$Prepare.transactionId; revision=$actualRevision+1; recovered=$true; materialization=@($materialization); guard='Recovered the entire prepared projection-path rebind as one task transaction after revalidating every canonical target.' }
   } catch {
-    return [pscustomobject]@{ ok=$false; reason='commit_failed'; taskId=$id; transactionId=$Prepare.transactionId; error=$_.Exception.Message }
+    $rollback = if (-not $durableCommit) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error='durable_commit_present' } }
+    return [pscustomobject]@{ ok=$false; reason='commit_failed'; taskId=$id; transactionId=$Prepare.transactionId; error=$_.Exception.Message; rollback=$rollback; durableCommit=$durableCommit }
   }
 }
 
@@ -2662,6 +3125,8 @@ function Complete-PreparedTaskCompletion([object]$Prepare) {
   $projection = Ensure-ProjectionShape (Read-JsonFile (Get-ProjectionPath $id)) $id
   $actualRevision = [int]$projection.revision
   if ($actualRevision -ne [int]$Prepare.previousRevision -or [int]$Prepare.targetRevision -ne ($actualRevision + 1)) { return [pscustomobject]@{ ok=$false; reason='revision_advanced'; taskId=$id; transactionId=$Prepare.transactionId } }
+  $materialization = @()
+  $durableCommit = $false
   try {
     $completionEvidence = if($Prepare.PSObject.Properties['completion']){$Prepare.completion}else{$null}
     $verificationPath = if($completionEvidence -and $completionEvidence.PSObject.Properties['verificationPath']){[string]$completionEvidence.verificationPath}else{''}
@@ -2675,22 +3140,24 @@ function Complete-PreparedTaskCompletion([object]$Prepare) {
     $receiptCommand = @($Prepare.commands | Where-Object { [string]$_.role -eq 'task_completion_receipt' } | Select-Object -First 1)
     if ($receiptRequired -and ($receiptCommand.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$receiptCommand[0].payloadHash))) { return [pscustomobject]@{ ok=$false; reason='completion_receipt_missing_after_prepare'; taskId=$id; transactionId=$Prepare.transactionId } }
     $materialization = @(Invoke-TaskCompletionMaterialization @($Prepare.commands) $id $workspaceKey ([string]$Prepare.transactionId) 0)
-    if ($receiptRequired -and (Get-FileSha256 ([string]$receiptCommand[0].targetPath)) -ne [string]$receiptCommand[0].payloadHash) { return [pscustomobject]@{ ok=$false; reason='completion_receipt_changed_after_prepare'; taskId=$id; transactionId=$Prepare.transactionId } }
+    if ($receiptRequired -and (Get-FileSha256 ([string]$receiptCommand[0].targetPath)) -ne [string]$receiptCommand[0].payloadHash) { throw 'TASK_STATE_COMPLETION_RECEIPT_CHANGED_AFTER_PREPARE' }
     $active = @(Get-TaskCompletionActiveRecords $id $workspaceKey)
-    if ($active.Count -gt 0) { return [pscustomobject]@{ ok=$false; reason='active_state_remains'; taskId=$id; transactionId=$Prepare.transactionId; activeStateCount=$active.Count; active=@($active) } }
+    if ($active.Count -gt 0) { throw "TASK_STATE_COMPLETION_ACTIVE_STATE_REMAINS count=$($active.Count)" }
     $eventId = [guid]::NewGuid().ToString('n')
     $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
     $commit = [pscustomobject]@{ schema='super-brain.task-state-event.v2'; phase='committed'; transactionKind='task_completion'; transactionId=[string]$Prepare.transactionId; authorityOutboxEventId=if($completionEvidence){[string]$completionEvidence.authorityOutboxEventId}else{''}; authorityStateHash=if($completionEvidence){[string]$completionEvidence.authorityStateHash}else{''}; eventId=$eventId; taskId=$id; revision=$actualRevision+1; previousRevision=$actualRevision; entities=$Prepare.entities; lifecycle=$Prepare.lifecycle; source=Limit-Text ([string]$Prepare.source) 120; recordedAt=$now; recovered=$true; materialization=@($materialization) }
     Add-StateEvent $id $commit
+    $durableCommit = $true
     Commit-TaskCompletionProjection $projection $id $Prepare.entities $Prepare.lifecycle ($actualRevision+1) $eventId $now
     if ($completionEvidence -and -not [string]::IsNullOrWhiteSpace([string]$completionEvidence.authorityOutboxEventId)) {
       $authorityAck = Acknowledge-TaskAuthorityOutbox ([string]$completionEvidence.authorityOutboxEventId)
-      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { return [pscustomobject]@{ ok=$false; reason='authority_outbox_ack_failed'; taskId=$id; transactionId=$Prepare.transactionId } }
+      if (-not $authorityAck.ok -or [int]$authorityAck.materialized -ne 1) { throw 'TASK_STATE_AUTHORITY_OUTBOX_ACK_FAILED' }
     }
-    Remove-TaskCompletionStaging @($Prepare.commands) ([string]$Prepare.completion.manifestPath)
+    Remove-TaskCompletionStaging @($Prepare.commands) ([string]$Prepare.completion.manifestPath) $materialization
     return [pscustomobject]@{ ok=$true; taskId=$id; transactionId=$Prepare.transactionId; revision=$actualRevision+1; recovered=$true; activeStateCount=0 }
   } catch {
-    return [pscustomobject]@{ ok=$false; reason='materialization_failed'; error=$_.Exception.Message; taskId=$id; transactionId=$Prepare.transactionId }
+    $rollback = if (-not $durableCommit) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error='durable_commit_present' } }
+    return [pscustomobject]@{ ok=$false; reason='materialization_failed'; error=$_.Exception.Message; taskId=$id; transactionId=$Prepare.transactionId; rollback=$rollback; durableCommit=$durableCommit }
   }
 }
 
@@ -3054,19 +3521,32 @@ function Invoke-AmbiguousStateQuarantine([object]$Preflight,[string]$Writer) {
     }
     Add-StateEvent $id $prepare
     if ($FaultPoint -eq 'after_prepare') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_PREPARE' }
+    $materialization=@()
+    $durableCommit=$false
+    try {
     $materialization=@(Invoke-TaskCompletionMaterialization @($commands) $id ([string]$candidate.workspaceKey) $transactionId $FaultAfterMaterialization)
+    # Preserve an injected post-materialization interruption for explicit WAL
+    # reconciliation. Ordinary validation failures roll files back here.
     if ($FaultPoint -eq 'after_materialize') { throw 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZE' }
     if (@(Get-TaskWakeReferences $id @()).Count -gt 0) { throw "TASK_STATE_QUARANTINE_WAKE_REFERENCE_REMAINS taskId=$id" }
     if ((Get-FileSha256 $manifestTargetPath) -ne $manifestHash) { throw "TASK_STATE_QUARANTINE_MANIFEST_HASH_MISMATCH taskId=$id" }
     foreach ($entity in @($candidate.entities | Where-Object { $_.currentExists })) { if (Test-Path -LiteralPath $entity.currentPath -PathType Leaf) { throw "TASK_STATE_QUARANTINE_SOURCE_REMAINS kind=$($entity.kind) taskId=$id" } }
-    $eventId=[guid]::NewGuid().ToString('n')
+     $eventId=[guid]::NewGuid().ToString('n')
     $committedAt=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
     $commit=[pscustomobject]@{schema='super-brain.task-state-event.v2';phase='committed';transactionKind='task_quarantine';transactionId=$transactionId;authorityOutboxEventId=if($authority){[string]$authority.outboxEventId}else{''};authorityStateHash=if($authority){[string]$authority.stateHash}else{''};eventId=$eventId;taskId=$id;revision=$nextRevision;previousRevision=$actualRevision;entities=$entities;lifecycle=$lifecycle;quarantine=$prepare.quarantine;source=Limit-Text $Writer 120;recordedAt=$committedAt;materialization=@($materialization)}
-    Add-StateEvent $id $commit
+     Add-StateEvent $id $commit
+     $durableCommit=$true
     Commit-TaskCompletionProjection $projection $id $entities $lifecycle $nextRevision $eventId $committedAt
     if($authority){$authorityAck=Acknowledge-TaskAuthorityOutbox ([string]$authority.outboxEventId);if(-not$authorityAck.ok-or[int]$authorityAck.materialized-ne1){throw'TASK_STATE_SQLITE_AUTHORITY_OUTBOX_ACK_FAILED'}}
-    Remove-TaskCompletionStaging @($commands) $manifestStagingPath
-    return [pscustomobject]@{ok=$true;taskId=$id;classification=$candidate.classification;revision=$nextRevision;previousRevision=$actualRevision;transactionId=$transactionId;manifestPath=$manifestTargetPath;manifestHash=$manifestHash;sourceCount=$candidate.sourceCount;wakeReferenceCount=0;lifecycleStatus='quarantined'}
+     Remove-TaskCompletionStaging @($commands) $manifestStagingPath $materialization
+     return [pscustomobject]@{ok=$true;taskId=$id;classification=$candidate.classification;revision=$nextRevision;previousRevision=$actualRevision;transactionId=$transactionId;manifestPath=$manifestTargetPath;manifestHash=$manifestHash;sourceCount=$candidate.sourceCount;wakeReferenceCount=0;lifecycleStatus='quarantined'}
+    } catch {
+      $originalError=$_.Exception.Message
+      $preserveForRecovery=($FaultPoint -eq 'after_materialize')
+      $rollback=if(-not$durableCommit -and -not$preserveForRecovery){Restore-TaskMaterializationSafely $materialization}else{[pscustomobject]@{attempted=$false;verified=$false;error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'}}}
+      if($rollback.attempted-and-not$rollback.verified){throw "TASK_STATE_QUARANTINE_ROLLBACK_FAILED error=$($rollback.error) original=$originalError"}
+      throw
+    }
   }
 }
 
@@ -3075,20 +3555,24 @@ function Complete-PreparedTaskQuarantine([object]$Prepare) {
   $projection=Ensure-ProjectionShape (Read-JsonFile (Get-ProjectionPath $id)) $id
   $actualRevision=[int]$projection.revision
   if ($actualRevision -ne [int]$Prepare.previousRevision -or [int]$Prepare.targetRevision -ne ($actualRevision+1)) { return [pscustomobject]@{ok=$false;reason='revision_advanced';taskId=$id;transactionId=$Prepare.transactionId} }
+  $materialization=@()
+  $durableCommit=$false
   try {
     $materialization=@(Invoke-TaskCompletionMaterialization @($Prepare.commands) $id ([string]$Prepare.lifecycle.workspaceKey) ([string]$Prepare.transactionId) 0)
-    if (@(Get-TaskWakeReferences $id @()).Count -gt 0) { return [pscustomobject]@{ok=$false;reason='wake_reference_remains';taskId=$id;transactionId=$Prepare.transactionId} }
-    if ((Get-FileSha256 ([string]$Prepare.quarantine.manifestTargetPath)) -ne [string]$Prepare.quarantine.manifestHash) { return [pscustomobject]@{ok=$false;reason='manifest_hash_mismatch';taskId=$id;transactionId=$Prepare.transactionId} }
+    if (@(Get-TaskWakeReferences $id @()).Count -gt 0) { throw 'TASK_STATE_QUARANTINE_WAKE_REFERENCE_REMAINS' }
+    if ((Get-FileSha256 ([string]$Prepare.quarantine.manifestTargetPath)) -ne [string]$Prepare.quarantine.manifestHash) { throw 'TASK_STATE_QUARANTINE_MANIFEST_HASH_MISMATCH' }
     $eventId=[guid]::NewGuid().ToString('n')
     $now=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
     $commit=[pscustomobject]@{schema='super-brain.task-state-event.v2';phase='committed';transactionKind='task_quarantine';transactionId=[string]$Prepare.transactionId;authorityOutboxEventId=if($Prepare.quarantine){[string]$Prepare.quarantine.authorityOutboxEventId}else{''};authorityStateHash=if($Prepare.quarantine){[string]$Prepare.quarantine.authorityStateHash}else{''};eventId=$eventId;taskId=$id;revision=$actualRevision+1;previousRevision=$actualRevision;entities=$Prepare.entities;lifecycle=$Prepare.lifecycle;quarantine=$Prepare.quarantine;source=Limit-Text ([string]$Prepare.source) 120;recordedAt=$now;recovered=$true;materialization=@($materialization)}
     Add-StateEvent $id $commit
+    $durableCommit=$true
     Commit-TaskCompletionProjection $projection $id $Prepare.entities $Prepare.lifecycle ($actualRevision+1) $eventId $now
-    if($Prepare.quarantine-and-not[string]::IsNullOrWhiteSpace([string]$Prepare.quarantine.authorityOutboxEventId)){$authorityAck=Acknowledge-TaskAuthorityOutbox ([string]$Prepare.quarantine.authorityOutboxEventId);if(-not$authorityAck.ok-or[int]$authorityAck.materialized-ne1){return[pscustomobject]@{ok=$false;reason='authority_outbox_ack_failed';taskId=$id;transactionId=$Prepare.transactionId}}}
-    Remove-TaskCompletionStaging @($Prepare.commands) ([string]$Prepare.quarantine.manifestStagingPath)
+    if($Prepare.quarantine-and-not[string]::IsNullOrWhiteSpace([string]$Prepare.quarantine.authorityOutboxEventId)){$authorityAck=Acknowledge-TaskAuthorityOutbox ([string]$Prepare.quarantine.authorityOutboxEventId);if(-not$authorityAck.ok-or[int]$authorityAck.materialized-ne1){throw'TASK_STATE_AUTHORITY_OUTBOX_ACK_FAILED'}}
+    Remove-TaskCompletionStaging @($Prepare.commands) ([string]$Prepare.quarantine.manifestStagingPath) $materialization
     return [pscustomobject]@{ok=$true;taskId=$id;transactionId=$Prepare.transactionId;revision=$actualRevision+1;recovered=$true;lifecycleStatus='quarantined'}
   } catch {
-    return [pscustomobject]@{ok=$false;reason='materialization_failed';error=$_.Exception.Message;taskId=$id;transactionId=$Prepare.transactionId}
+    $rollback = if (-not $durableCommit) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error='durable_commit_present' } }
+    return [pscustomobject]@{ok=$false;reason='materialization_failed';error=$_.Exception.Message;taskId=$id;transactionId=$Prepare.transactionId;rollback=$rollback;durableCommit=$durableCommit}
   }
 }
 
@@ -3467,8 +3951,23 @@ function Complete-PreparedTransaction([object]$Prepare) {
   $command = $Prepare.command
   $target = Assert-EntityTarget ([string]$Prepare.entityKind) ([string]$command.targetPath) $id
   $op = [string]$Prepare.operation
+  $expectedTargetHash = if ($command.PSObject.Properties['expectedTargetHash']) { [string]$command.expectedTargetHash } else { '' }
+  $currentTargetHash = Get-FileSha256 $target
+  # Recovery must honor the target observation captured before the prepared
+  # transaction.  A different current hash may be a legitimate already-
+  # materialized result, but any other drift belongs to explicit reconciliation
+  # and must never be overwritten by replay.
+  $targetMatchesExpected = if ([string]::IsNullOrWhiteSpace($expectedTargetHash)) {
+    [string]::IsNullOrWhiteSpace($currentTargetHash)
+  } else {
+    [string]::Equals($currentTargetHash,$expectedTargetHash,[StringComparison]::OrdinalIgnoreCase)
+  }
+  $alreadyMaterialized = ([string]$op -eq 'upsert' -and [string]::Equals($currentTargetHash,[string]$command.payloadHash,[StringComparison]::OrdinalIgnoreCase))
+  if (-not $targetMatchesExpected -and -not $alreadyMaterialized) {
+    return [pscustomobject]@{ ok=$false; reason='target_changed_after_prepare'; taskId=$id; transactionId=$Prepare.transactionId; path=$target; expectedTargetHash=$expectedTargetHash; actualTargetHash=$currentTargetHash }
+  }
   if ($op -eq 'upsert' -or -not [string]::IsNullOrWhiteSpace([string]$command.payloadPath)) {
-    $targetHash = Get-FileSha256 $target
+    $targetHash = $currentTargetHash
     if ($targetHash -ne [string]$command.payloadHash) {
       if (-not (Test-Path -LiteralPath $command.payloadPath -PathType Leaf) -or (Get-FileSha256 $command.payloadPath) -ne [string]$command.payloadHash) { return [pscustomobject]@{ ok=$false; reason='payload_missing_or_changed'; taskId=$id; transactionId=$Prepare.transactionId } }
       $targetHash = Materialize-Payload ([string]$command.payloadPath) $target ([string]$Prepare.transactionId)
@@ -3570,6 +4069,8 @@ function Complete-TaskAuthorityOutbox([object]$Outbox) {
   $recoveryEvidence = if ($envelope.PSObject.Properties['recoveryEvidence']) { $envelope.recoveryEvidence } else { $null }
   $transactionId = if ($recoveryEvidence -and -not [string]::IsNullOrWhiteSpace([string]$recoveryEvidence.transactionId)) { [string]$recoveryEvidence.transactionId } else { 'sqlite-' + ([string]$Outbox.eventId -replace '[^A-Za-z0-9._-]+','-') }
   $recoveryCommands = @()
+  $materialization = @()
+  $durableCommit = $false
   try {
     if ($transactionKind -eq 'task_completion') {
       if (-not $recoveryEvidence) { throw 'TASK_STATE_SQLITE_AUTHORITY_COMPLETION_EVIDENCE_REQUIRED' }
@@ -3612,6 +4113,11 @@ function Complete-TaskAuthorityOutbox([object]$Outbox) {
       }
       Add-StateEvent $id $event
     }
+    # Whether the event was newly appended or already present from an earlier
+    # replay, the durable journal is now the source of truth.  Any later
+    # projection/ack failure must be repaired from it rather than rolling files
+    # back behind a committed event.
+    $durableCommit = $true
     if (-not (Test-TaskAuthorityProjectionParity $projection $envelope $targetRevision)) {
       Commit-TaskCompletionProjection $projection $id $envelope.entities $envelope.lifecycle $targetRevision ([string]$event.eventId) ([string]$event.recordedAt)
       $projection = Ensure-ProjectionShape (Read-JsonFile (Get-ProjectionPath $id)) $id
@@ -3622,7 +4128,8 @@ function Complete-TaskAuthorityOutbox([object]$Outbox) {
     foreach ($command in $recoveryCommands) { Remove-StagingPayload ([string]$command.payloadPath) }
     return [pscustomobject]@{ ok=$true; taskId=$id; eventId=[string]$Outbox.eventId; revision=$targetRevision; transactionKind=$transactionKind; recovered=$true }
   } catch {
-    return [pscustomobject]@{ ok=$false; reason='authority_projection_recovery_failed'; error=$_.Exception.Message; taskId=$id; eventId=[string]$Outbox.eventId; revision=$targetRevision }
+    $rollback = if (-not $durableCommit) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error='durable_commit_present' } }
+    return [pscustomobject]@{ ok=$false; reason='authority_projection_recovery_failed'; error=$_.Exception.Message; taskId=$id; eventId=[string]$Outbox.eventId; revision=$targetRevision; rollback=$rollback; durableCommit=$durableCommit }
   }
 }
 

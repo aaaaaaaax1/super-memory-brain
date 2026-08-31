@@ -779,6 +779,97 @@ def test_unbound_channel_gets_a_pairing_grace_window() -> None:
             client.close()
 
 
+def test_pairing_request_ref_routes_exact_concurrent_channels() -> None:
+    """The control plane pairs the connection that issued each ref."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-pairing-ref-") as directory:
+        state = Path(directory) / "state"
+        project_a = Path(directory) / "project-a"
+        project_b = Path(directory) / "project-b"
+        project_a.mkdir()
+        project_b.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        runtime = ROOT / "runtime" / "scope_broker_ipc.py"
+        control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=runtime)
+        client_a = ScopeBrokerClient(state, auto_start=False, runtime_path=runtime)
+        client_b = ScopeBrokerClient(state, auto_start=False, runtime_path=runtime)
+        channels: list[tuple[ScopeBrokerClient, str]] = []
+        try:
+            registrations = []
+            for project in (project_a, project_b):
+                value = _contract(project)
+                registration = control.register_workline(
+                    value,
+                    expected_contract_hash=_contract_hash(value),
+                    project_root=project,
+                )
+                assert registration.get("ok") is True, registration
+                registrations.append(registration)
+
+            channel_a = client_a.open_channel()
+            channel_b = client_b.open_channel()
+            channels.extend(((client_a, channel_a), (client_b, channel_b)))
+            ref_a = client_a.last_pairing_request_ref
+            ref_b = client_b.last_pairing_request_ref
+            assert channel_a and channel_b and ref_a and ref_b
+            assert ref_a.startswith("sbpr-") and ref_b.startswith("sbpr-") and ref_a != ref_b
+            assert client_a.status(channel_a).get("pairingRequestRef") == ref_a
+            assert client_b.status(channel_b).get("pairingRequestRef") == ref_b
+
+            listed = control.list_channels().get("channels", [])
+            assert {str(item.get("channelId", "")) for item in listed if isinstance(item, dict)} >= {channel_a, channel_b}, listed
+            # Pairing refs belong exclusively to the MCP connection that
+            # received them from open/status.  The global control-plane list
+            # must not expose another connection's opaque pairing capability.
+            listed_serialized = json.dumps(listed, ensure_ascii=False)
+            assert "pairingRequestRef" not in listed_serialized, listed
+            assert ref_a not in listed_serialized and ref_b not in listed_serialized, listed
+
+            results: list[dict[str, object] | None] = [None, None]
+
+            def pair(index: int, ref: str, registration: dict[str, object]) -> None:
+                results[index] = control.pair_request(
+                    ref,
+                    str(registration["scope"]["worklineId"]),
+                    access_mode="read",
+                )
+
+            threads = [
+                threading.Thread(target=pair, args=(0, ref_a, registrations[0])),
+                threading.Thread(target=pair, args=(1, ref_b, registrations[1])),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=8)
+            assert all(isinstance(result, dict) and result.get("ok") is True for result in results), results
+
+            status_a = client_a.status(channel_a)
+            status_b = client_b.status(channel_b)
+            assert status_a.get("state") == "bound" and status_b.get("state") == "bound"
+            assert status_a.get("scope", {}).get("workspaceKey") == registrations[0]["scope"]["workspaceKey"], status_a
+            assert status_b.get("scope", {}).get("workspaceKey") == registrations[1]["scope"]["workspaceKey"], status_b
+            assert "pairingRequestRef" not in status_a and "pairingRequestRef" not in status_b
+
+            replay = control.pair_request(ref_a, str(registrations[0]["scope"]["worklineId"]), access_mode="read")
+            assert replay.get("ok") is False, replay
+            serialized = json.dumps({"listed": listed, "results": results, "a": status_a, "b": status_b}, ensure_ascii=False)
+            for private_marker in ("leaseId", "pairingToken", "sbpg-v1.", "sbl-", "projectRoot"):
+                assert private_marker not in serialized, serialized
+        finally:
+            for client, channel in channels:
+                if channel:
+                    try:
+                        client.close_channel(channel)
+                    except Exception:
+                        pass
+            server.stop()
+            control.close()
+            client_a.close()
+            client_b.close()
+
+
 def test_channel_activity_index_ignores_unknown_authenticated_ids() -> None:
     """Rejected channel IDs cannot grow the Broker's activity map."""
 
@@ -821,6 +912,7 @@ def main() -> None:
     test_cli_bind_stdout_never_emits_private_capabilities()
     test_existing_channel_calls_never_autostart_a_replacement()
     test_unbound_channel_gets_a_pairing_grace_window()
+    test_pairing_request_ref_routes_exact_concurrent_channels()
     test_channel_activity_index_ignores_unknown_authenticated_ids()
     print("runtime_scope_broker_ipc_regression: PASS")
 

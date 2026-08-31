@@ -711,9 +711,9 @@ ${scopeBrokerIpcRuntimeText} = Read-Utf8 'runtime\scope_broker_ipc.py'
 if (
   (Test-ContainsAll $selfModelRuntimeText @('MCP_RUNTIME_MODE_STDIO','def mcp_transport_status','def _mcp_adapter_binding_status','deploymentAdapter','H7_MCP_LOCAL_STDIO_CURRENT')) -and
   (Test-ContainsAll ${mcpTransportHealthText} @('LocalBrokerStdioTransportHealth','local_scope_broker_stdio','H7_MCP_LOCAL_STDIO_CURRENT','super-brain.mcp-live-handshake.v2')) -and
-  (Test-ContainsAll ${scopeBrokerRuntimeText} @('class ScopeBroker','H7_SCOPE_CHANNEL_UNBOUND','H7_SCOPE_WRITE_LEASE_REQUIRED')) -and
+  (Test-ContainsAll ${scopeBrokerRuntimeText} @('class ScopeBroker','H7_SCOPE_CHANNEL_UNBOUND','H7_SCOPE_WRITE_LEASE_REQUIRED','open_channel_with_ref','pair_request','pairing_request_ref')) -and
   (Test-ContainsAll ${scopeProviderRuntimeText} @('class BrokerScopeProvider','H7_SCOPE_BROKER_CONTEXT_INVALID','scope_broker_channel')) -and
-  (Test-ContainsAll ${scopeBrokerIpcRuntimeText} @('class ScopeBrokerServer','H7_SCOPE_BROKER_NOT_IDLE','shutdown_if_idle'))
+  (Test-ContainsAll ${scopeBrokerIpcRuntimeText} @('class ScopeBrokerServer','H7_SCOPE_BROKER_NOT_IDLE','shutdown_if_idle','pair_request','pairingRequestRef'))
 ) { Mark-Ok 'platform-neutral local MCP scope-broker transport guard' } else { Mark-Fail 'platform-neutral local MCP scope-broker transport guard missing' }
 if ($selfModelRuntimeText -like '*def _self_model_candidates*' -and $selfModelRuntimeText -like '*snapshotStatus*' -and $selfModelRuntimeText -like '*verificationStatus*' -and $selfModelRuntimeText -like '*rawPromptStored*' -and $selfModelRuntimeText -like '*KNOWN_LIMITATION*' -and $selfModelRuntimeText -like '*if verification_status == "verified"*') { Mark-Ok 'native runtime self-model evidence and degradation guard' } else { Mark-Fail 'native runtime self-model evidence and degradation guard missing' }
 if ($selfModelRuntimeText -like '*def _retrieval_output_policy*' -and $selfModelRuntimeText -like '*summary_confidence*' -and $selfModelRuntimeText -like '*inject_confidence*' -and $selfModelRuntimeText -like '*recallDisposition*' -and $selfModelRuntimeText -like '*injectReady*') { Mark-Ok 'native runtime retrieval policy parity guard' } else { Mark-Fail 'native runtime retrieval policy parity guard missing' }

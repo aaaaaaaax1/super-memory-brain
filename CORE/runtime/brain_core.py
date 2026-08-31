@@ -595,6 +595,35 @@ class BrainCore:
             value = {"ok": False, "state": "withheld", "code": "H7_SCOPE_PROVIDER_UNAVAILABLE"}
         return dict(value) if isinstance(value, Mapping) else {"ok": False, "state": "withheld", "code": "H7_SCOPE_PROVIDER_INVALID"}
 
+    def refresh_scope_contract(self, contract: Mapping[str, Any]) -> dict[str, Any]:
+        """Refresh a broker projection after the local H7 contract commits.
+
+        The provider owns the channel-private lease and may expose this seam
+        only to the turn runtime.  Legacy CLI providers intentionally return a
+        non-authorizing not-applicable result.
+        """
+
+        refresher = getattr(self._scope_provider, "refresh_contract", None)
+        if not callable(refresher):
+            return {
+                "ok": True,
+                "state": "not_applicable",
+                "code": "H7_SCOPE_CONTRACT_REFRESH_NOT_APPLICABLE",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        try:
+            value = refresher(contract)
+        except Exception:
+            value = {"ok": False, "state": "withheld", "code": "H7_SCOPE_CONTRACT_REFRESH_FAILED"}
+        return dict(value) if isinstance(value, Mapping) else {
+            "ok": False,
+            "state": "withheld",
+            "code": "H7_SCOPE_CONTRACT_REFRESH_INVALID",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+
     def _scope_snapshot(self, *, force: bool = False) -> dict[str, Any]:
         try:
             value = self._scope_provider.snapshot(force=force)
@@ -1637,6 +1666,14 @@ class BrainCore:
             "acceptedGoal": str(contract.get("focusLabel", "")),
             "currentStep": str(contract.get("currentStep", "")),
             "nextAction": str(contract.get("nextAction", "")),
+            # Keep the compact context projection useful to the local CLI
+            # recovery seam. These are typed identity/proof fields only; no
+            # raw instruction or transcript is added to the projection.
+            "contractHash": context_canonical_hash(contract),
+            "intentRevision": contract.get("intentRevision", 0),
+            "intentAggregateId": str(contract.get("intentAggregateId", "")),
+            "intentContractRequired": contract.get("intentContractRequired") is True,
+            "intentResolutionReceipt": contract.get("intentResolutionReceipt") if isinstance(contract.get("intentResolutionReceipt"), dict) else None,
             "_source": "memory\\workspace\\runtime-state\\execution-contracts",
             "_trust": "authoritative",
         }

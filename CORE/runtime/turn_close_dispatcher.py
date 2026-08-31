@@ -24,7 +24,7 @@ import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from continuation_policy import decide_turn_close
 
@@ -1333,6 +1333,7 @@ def record_progress_checkpoint(
     latest_user_instruction: str | None = None,
     project_root: str | Path | None = None,
     current_contract: Mapping[str, Any] | None = None,
+    scope_contract_refresher: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     transition_id: str = "",
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
@@ -1708,6 +1709,82 @@ def record_progress_checkpoint(
                 "rawPromptStored": False,
                 "rawTranscriptStored": False,
             }
+    scope_refresh: dict[str, Any] = {
+        "ok": True,
+        "state": "not_applicable",
+        "code": "H7_SCOPE_CONTRACT_REFRESH_NOT_APPLICABLE",
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    if scope_contract_refresher is not None:
+        refresh_source: Mapping[str, Any] | None = updated
+        # PowerShell adds response-only fields (continuityRefresh,
+        # continuationReceipt, hotIndex, and replay markers) after publishing
+        # the contract.  Never hash that response envelope as Broker state;
+        # re-read the persisted H7 contract so its canonical hash is exact.
+        refresh_get_code, persisted_contract = _invoke_contract(
+            package,
+            state,
+            action="Get",
+            task_id=resolved_task,
+            workspace_key=workspace,
+            session_key=session,
+            timeout=transaction_timeout,
+            execution_cwd=root,
+        )
+        if refresh_get_code == 0 and isinstance(persisted_contract, dict) and persisted_contract.get("ok") is True:
+            refresh_source = persisted_contract
+        else:
+            refresh_source = None
+        try:
+            refreshed_scope = (
+                scope_contract_refresher(refresh_source)
+                if refresh_source is not None
+                else {
+                    "ok": False,
+                    "state": "withheld",
+                    "code": "H7_SCOPE_CONTRACT_REFRESH_SOURCE_UNAVAILABLE",
+                }
+            )
+            scope_refresh = (
+                dict(refreshed_scope)
+                if isinstance(refreshed_scope, Mapping)
+                else {
+                    "ok": False,
+                    "state": "withheld",
+                    "code": "H7_SCOPE_CONTRACT_REFRESH_INVALID",
+                }
+            )
+        except Exception:
+            scope_refresh = {
+                "ok": False,
+                "state": "withheld",
+                "code": "H7_SCOPE_CONTRACT_REFRESH_FAILED",
+            }
+        for key in ("leaseId", "pairingToken", "h7Scope"):
+            scope_refresh.pop(key, None)
+        scope_refresh.setdefault("rawPromptStored", False)
+        scope_refresh.setdefault("rawTranscriptStored", False)
+        if scope_refresh.get("ok") is not True:
+            return {
+                "ok": False,
+                "schema": SCHEMA,
+                "code": "H7_SCOPE_CONTRACT_PROJECTION_SYNC_REQUIRED",
+                "contractCommitted": True,
+                "stateMutated": not bool(updated.get("idempotentReplay")),
+                "taskId": _compact(updated.get("taskId") or resolved_task, 160),
+                "revision": int(updated.get("revision", revision) or revision),
+                "transitionId": resolved_transition,
+                "scopeRefresh": {
+                    "ok": False,
+                    "state": str(scope_refresh.get("state", "withheld")),
+                    "code": str(scope_refresh.get("code", "H7_SCOPE_CONTRACT_REFRESH_FAILED")),
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                },
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
     return {
         "ok": True,
         "schema": SCHEMA,
@@ -1740,6 +1817,7 @@ def record_progress_checkpoint(
         "rawPromptStored": False,
         "rawTranscriptStored": False,
         "contractReadPath": contract_read_path,
+        "scopeRefresh": scope_refresh,
     }
 
 

@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from brain_control import read_mcp_snapshot, read_mcp_task_projection
+from brain_control import BrainControl, BrainControlError, read_mcp_snapshot, read_mcp_task_projection
 from brain_core import (
     DEFAULT_RECALL_MAX_TOKENS,
     DEFAULT_RECALL_TOP_K,
@@ -334,6 +334,32 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "brain_rebind_local_session",
+        "description": "Issue or consume one-time local session recovery. Scope identity is always taken from this MCP channel; callers cannot select another task or workspace.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["issue", "consume", "finalize", "query", "revoke"]},
+                "command_id": {"type": "string", "minLength": 1, "maxLength": 160},
+                "target_command_id": {"type": "string", "minLength": 1, "maxLength": 160, "description": "Original issue command id for scope-bound metadata query or issuer repair when the one-time reference was lost; never returns the reference."},
+                "recovery_ref": {"type": "string", "pattern": "^rr-[A-Za-z0-9_-]{32,128}$"},
+                "aggregate_kind": {"type": "string", "enum": ["intent", "task"], "description": "Optional assertion checked against the transaction; omitted values never select a default aggregate kind."},
+                "expected_revision": {"type": "integer", "minimum": 0},
+                "contract_revision": {"type": "integer", "minimum": 1},
+                "contract_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "plan_fingerprint": {"type": "string", "maxLength": 128},
+                "expected_state_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "previous_receipt_id": {"type": "string", "maxLength": 160},
+                "previous_receipt_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "project_proof_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+                "source": {"type": "string", "maxLength": 160},
+            },
+            "required": ["action", "command_id"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -419,6 +445,174 @@ def _ensure_scoped_activation(core: BrainCore) -> None:
         return_point=contract.get("returnPoint") if isinstance(contract.get("returnPoint"), dict) else None,
         require_scope=True,
     )
+
+
+def _local_rebind_request_from_channel(
+    core: BrainCore,
+    arguments: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Build a recovery command from the current Broker-bound scope.
+
+    The MCP caller may provide an opaque reference and bounded proof values,
+    but never task/workspace/session selectors.  The channel projection is the
+    sole source for those fields and is re-authorized for each operation.
+    """
+
+    forbidden_scope_fields = {
+        "taskId",
+        "task_id",
+        "taskInstanceId",
+        "task_instance_id",
+        "workspaceKey",
+        "workspace_key",
+        "ownerSessionKey",
+        "owner_session_key",
+        "newOwnerSessionKey",
+        "previousOwnerSessionKey",
+    }
+    if forbidden_scope_fields.intersection(arguments):
+        return None, {
+            "ok": False,
+            "schema": "super-brain.scope-binding.v1",
+            "available": False,
+            "code": "H7_SCOPE_SELECTOR_FORBIDDEN",
+            "state": "withheld",
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    action = str(arguments.get("action", "")).strip().lower()
+    write = action in {"issue", "consume", "finalize", "revoke"}
+    authorized = core.authorize_scope(write=write)
+    if authorized.get("ok") is not True:
+        return None, {
+            "ok": False,
+            "schema": "super-brain.scope-binding.v1",
+            "available": False,
+            "code": str(authorized.get("code", "H7_SCOPE_CHANNEL_UNBOUND")),
+            "state": str(authorized.get("state", "withheld")),
+            "scopeBinding": core.scope_status(),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    bound = authorized.get("scope") if isinstance(authorized.get("scope"), Mapping) else authorized
+    task_id = str((bound or {}).get("taskId", "")).strip()
+    task_instance_id = str((bound or {}).get("taskInstanceId", "")).strip()
+    workspace_key = str((bound or {}).get("workspaceKey", "")).strip().lower()
+    owner_session_key = str((bound or {}).get("ownerSessionKey", "")).strip().lower()
+    package_version = str((bound or {}).get("packageVersion", "")).strip()
+    contract_revision = (bound or {}).get("contractRevision")
+    contract_hash = str((bound or {}).get("contractHash", "")).strip().lower()
+    # The Broker owns the connection identity.  A successor may be attached
+    # to a live channel even when its local execution-contract file has not
+    # been materialized yet, so non-issue actions must not require the full
+    # task projection.  ``issue`` is different: it snapshots the current
+    # aggregate and therefore still requires a complete Broker contract
+    # proof.  Any identity fields that are present for later actions remain
+    # useful optional consistency checks inside BrainControl.
+    if not owner_session_key:
+        return None, {
+            "ok": False,
+            "schema": "super-brain.scope-binding.v1",
+            "available": False,
+            "code": "H7_SCOPE_LOCAL_SESSION_REQUIRED",
+            "state": "withheld",
+            "scopeBinding": core.scope_status(),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    if action == "issue" and not all((task_id, task_instance_id, workspace_key, package_version)):
+        return None, {
+            "ok": False,
+            "schema": "super-brain.scope-binding.v1",
+            "available": False,
+            "code": "H7_SCOPE_LOCAL_TASK_REQUIRED",
+            "state": "withheld",
+            "scopeBinding": core.scope_status(),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    if action == "issue" and (
+        not isinstance(contract_revision, int)
+        or isinstance(contract_revision, bool)
+        or contract_revision < 1
+        or not re.fullmatch(r"^[a-f0-9]{64}$", contract_hash)
+    ):
+        return None, {
+            "ok": False,
+            "schema": "super-brain.scope-binding.v1",
+            "available": False,
+            "code": "H7_SCOPE_CONTRACT_REQUIRED",
+            "state": "withheld",
+            "scopeBinding": core.scope_status(),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+    request: dict[str, Any] = {
+        "action": action,
+        "commandId": str(arguments.get("command_id", "")).strip(),
+        "requestingSessionKey": owner_session_key,
+        "source": str(arguments.get("source", "brain_mcp.brain_rebind_local_session")),
+    }
+    for key, value in (
+        ("taskId", task_id),
+        ("taskInstanceId", task_instance_id),
+        ("workspaceKey", workspace_key),
+        ("packageVersion", package_version),
+    ):
+        if value not in (None, ""):
+            request[key] = value
+    # The retiring contract proof is authoritative for issue. A successor
+    # channel may legitimately carry a newly materialized contract whose
+    # revision/hash differ from the transaction being consumed/finalized, so
+    # never inject those fields as implicit assertions on non-issue actions.
+    # Callers that still possess the old proof may pass explicit arguments and
+    # BrainControl will verify them byte-for-byte.
+    if action == "issue":
+        if isinstance(contract_revision, int) and not isinstance(contract_revision, bool) and contract_revision >= 1:
+            request["contractRevision"] = contract_revision
+        if re.fullmatch(r"^[a-f0-9]{64}$", contract_hash):
+            request["contractHash"] = contract_hash
+    mapping = {
+        "target_command_id": "targetCommandId",
+        "recovery_ref": "recoveryRef",
+        "aggregate_kind": "aggregateKind",
+        "expected_revision": "expectedRevision",
+        "expected_state_hash": "expectedStateHash",
+        "contract_revision": "contractRevision",
+        "contract_hash": "contractHash",
+        "plan_fingerprint": "planFingerprint",
+        "previous_receipt_id": "previousReceiptId",
+        "previous_receipt_hash": "previousReceiptHash",
+        "project_proof_hash": "projectProofHash",
+        "ttl_seconds": "ttlSeconds",
+    }
+    for source, target in mapping.items():
+        if source in arguments:
+            request[target] = arguments[source]
+    return request, None
+
+
+def _handle_local_rebind(core: BrainCore, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    request, failure = _local_rebind_request_from_channel(core, arguments)
+    if failure is not None:
+        return tool_result(failure, True)
+    assert request is not None
+    try:
+        result = BrainControl(core.memory_base).local_rebind(request)
+    except BrainControlError as exc:
+        return tool_result(
+            {
+                "ok": False,
+                "schema": "super-brain.local-session-rebind-result.v1",
+                "available": False,
+                "code": exc.code,
+                "message": str(exc),
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            },
+            True,
+        )
+    return tool_result(result, not bool(result.get("ok", False)))
 
 
 def _live_mcp_handshake(
@@ -729,9 +923,16 @@ def handle_tool(
     # The offline replay exists solely to test stdio framing and response
     # schemas.  A governed lifecycle call must be visibly withheld before it
     # reaches activation, a CLI bridge, or any scope-derived state path.
-    if core.runtime_mode == MCP_RUNTIME_MODE_OFFLINE_REPLAY and name == "brain_turn":
+    if core.runtime_mode == MCP_RUNTIME_MODE_OFFLINE_REPLAY and name in {"brain_turn", "brain_rebind_local_session"}:
         return tool_result(
-            run_turn(core, phase=str(arguments.get("phase", "open"))),
+            {
+                "ok": False,
+                "schema": "super-brain.local-session-rebind-result.v1" if name == "brain_rebind_local_session" else "super-brain.turn-runtime.v1",
+                "available": False,
+                "code": "H7_MCP_OFFLINE_REPLAY_NOT_LIVE",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            },
             True,
         )
     broker_bound_adapter = getattr(getattr(core, "_scope_provider", None), "provider_kind", "") == "scope_broker_channel"
@@ -771,6 +972,21 @@ def handle_tool(
                 },
                 True,
             )
+    if name == "brain_rebind_local_session":
+        if not broker_bound_adapter:
+            return tool_result(
+                {
+                    "ok": False,
+                    "schema": "super-brain.scope-binding.v1",
+                    "available": False,
+                    "code": "H7_SCOPE_BROKER_REQUIRED",
+                    "state": "withheld",
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                },
+                True,
+            )
+        return _handle_local_rebind(core, arguments)
     if name == "brain_turn" and "continuation_capsule" in arguments:
         return tool_result(
             {

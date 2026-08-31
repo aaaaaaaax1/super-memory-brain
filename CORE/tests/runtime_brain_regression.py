@@ -2104,7 +2104,13 @@ def test_context_recovers_from_a_lagging_hot_index_after_a_committed_transition(
 def test_mcp_does_not_expose_untrusted_host_context() -> None:
     tool_names = {str(tool.get("name", "")) for tool in MCP_TOOLS}
     assert "brain_context" not in tool_names
-    assert tool_names == {"brain_recall", "brain_status", "brain_recent", "brain_turn"}
+    assert tool_names == {
+        "brain_recall",
+        "brain_status",
+        "brain_recent",
+        "brain_turn",
+        "brain_rebind_local_session",
+    }
 
 
 def test_mcp_status_stays_truthful_while_stale_worker_uses_current_cli() -> None:

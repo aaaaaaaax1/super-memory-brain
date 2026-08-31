@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import uuid
@@ -28,7 +29,7 @@ from migration_control import LegacyMigrationControl, MigrationControlError
 from memory_consolidation import plan as plan_memory_consolidation
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 CARD_KINDS = frozenset({"decision", "preference", "experience", "note", "procedure", "reflection"})
 LIFECYCLES = frozenset({"proposed", "active", "superseded", "cancelled", "rejected", "archived", "trashed", "forgotten"})
 AUTHORITIES = frozenset({"user_confirmed", "system", "legacy", "unknown"})
@@ -217,6 +218,16 @@ INSTRUCTION_ANCHOR_MAX_CHARS = 480
 INSTRUCTION_ANCHOR_MAX_SOURCE_CHARS = 160
 CONTINUATION_RECEIPT_SCHEMA = "super-brain.continuation-receipt.v1"
 CONTINUATION_RECEIPT_MAX_TEXT = 480
+LOCAL_REBIND_SCHEMA = "super-brain.local-session-rebind.v1"
+LOCAL_REBIND_RESULT_SCHEMA = "super-brain.local-session-rebind-result.v1"
+LOCAL_REBIND_STATUSES = frozenset({"issued", "consumed", "finalized", "expired", "revoked"})
+LOCAL_REBIND_DEFAULT_TTL_SECONDS = 300
+LOCAL_REBIND_MAX_TTL_SECONDS = 900
+LOCAL_REBIND_REF_RE = re.compile(r"^rr-[A-Za-z0-9_-]{32,128}$")
+LOCAL_REBIND_KINDS = frozenset({"intent", "task"})
+LOCAL_REBIND_EVENT_SCHEMA = "super-brain.local-session-rebind-event.v1"
+LOCAL_REBIND_REF_HASH_SCHEMA = "sha256:recovery-ref"
+LOCAL_REBIND_PENDING_OWNER = ""
 NATIVE_MEMORY_LEARNING_SUGGESTED_KINDS = frozenset({"preference", "experience", "decision", "procedure", "reflection", "note"})
 NATIVE_MEMORY_LEARNING_KIND_LABELS = {
     "preference": "偏好",
@@ -264,6 +275,12 @@ def _sha256(value: Any) -> str:
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _local_rebind_ref_hash(value: str) -> str:
+    """Hash the one-time recovery reference without ever persisting plaintext."""
+
+    return _sha256_bytes(value.encode("utf-8"))
 
 
 def _raw_sha256(value: Any) -> str:
@@ -2360,6 +2377,76 @@ class BrainControl:
             connection.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", (17, _utc_now())
             )
+        if 18 not in applied:
+            # Local session recovery is an append-only transaction log.  The
+            # opaque reference is deliberately represented only by its
+            # SHA-256 digest; status changes are events rather than UPDATEs so
+            # immutable lineage survives expiry, revoke, replay, and restart.
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS local_rebind_transactions (
+                  rebind_id TEXT PRIMARY KEY,
+                  command_id TEXT NOT NULL UNIQUE,
+                  aggregate_kind TEXT NOT NULL CHECK(aggregate_kind IN ('intent','task')),
+                  aggregate_id TEXT NOT NULL,
+                  task_id TEXT NOT NULL,
+                  task_instance_id TEXT NOT NULL,
+                  workspace_key TEXT NOT NULL,
+                  previous_owner_session_key TEXT NOT NULL,
+                  new_owner_session_key TEXT NOT NULL,
+                  package_version TEXT NOT NULL,
+                  expected_revision INTEGER NOT NULL,
+                  expected_state_hash TEXT NOT NULL DEFAULT '',
+                  contract_revision INTEGER NOT NULL,
+                  contract_hash TEXT NOT NULL,
+                  plan_fingerprint TEXT NOT NULL,
+                  previous_receipt_id TEXT NOT NULL DEFAULT '',
+                  previous_receipt_hash TEXT NOT NULL DEFAULT '',
+                  project_proof_hash TEXT NOT NULL DEFAULT '',
+                  ref_hash TEXT NOT NULL UNIQUE,
+                  payload_hash TEXT NOT NULL,
+                  source TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  expires_at TEXT NOT NULL,
+                  FOREIGN KEY (command_id) REFERENCES command_log(command_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_local_rebind_transactions_scope
+                  ON local_rebind_transactions(aggregate_kind, aggregate_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_local_rebind_transactions_expiry
+                  ON local_rebind_transactions(expires_at);
+                CREATE TABLE IF NOT EXISTS local_rebind_events (
+                  rebind_id TEXT NOT NULL,
+                  sequence INTEGER NOT NULL,
+                  event_id TEXT PRIMARY KEY,
+                  command_id TEXT NOT NULL,
+                  event_type TEXT NOT NULL CHECK(event_type IN ('issued','consumed','finalized','expired','revoked')),
+                  status TEXT NOT NULL CHECK(status IN ('issued','consumed','finalized','expired','revoked')),
+                  payload_hash TEXT NOT NULL,
+                  details_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  UNIQUE(rebind_id, sequence),
+                  FOREIGN KEY (rebind_id) REFERENCES local_rebind_transactions(rebind_id),
+                  FOREIGN KEY (command_id) REFERENCES command_log(command_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_local_rebind_events_latest
+                  ON local_rebind_events(rebind_id, sequence DESC);
+                CREATE TRIGGER IF NOT EXISTS local_rebind_transactions_no_update
+                  BEFORE UPDATE ON local_rebind_transactions
+                  BEGIN SELECT RAISE(ABORT, 'local rebind transactions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS local_rebind_transactions_no_delete
+                  BEFORE DELETE ON local_rebind_transactions
+                  BEGIN SELECT RAISE(ABORT, 'local rebind transactions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS local_rebind_events_no_update
+                  BEFORE UPDATE ON local_rebind_events
+                  BEGIN SELECT RAISE(ABORT, 'local rebind events are append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS local_rebind_events_no_delete
+                  BEFORE DELETE ON local_rebind_events
+                  BEGIN SELECT RAISE(ABORT, 'local rebind events are append-only'); END;
+                """
+            )
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", (18, _utc_now())
+            )
 
     @staticmethod
     def _write_card_search_row(
@@ -2425,6 +2512,19 @@ class BrainControl:
                     "SELECT COUNT(*) FROM migration_epochs WHERE status IN ('staged','imported','verified','cutover')"
                 ).fetchone()[0]
             )
+            local_rebind_transactions = int(
+                connection.execute("SELECT COUNT(*) FROM local_rebind_transactions").fetchone()[0]
+            )
+            local_rebind_active = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM local_rebind_transactions t
+                    JOIN local_rebind_events e ON e.rebind_id=t.rebind_id
+                    WHERE e.sequence=(SELECT MAX(e2.sequence) FROM local_rebind_events e2 WHERE e2.rebind_id=t.rebind_id)
+                      AND e.status IN ('issued','consumed')
+                    """
+                ).fetchone()[0]
+            )
         return {
             "ok": True,
             "schema": "super-brain.brain-control-status.v1",
@@ -2444,6 +2544,8 @@ class BrainControl:
             "continuationReceipts": continuation_receipts,
             "migrationEpochs": migration_epochs,
             "activeMigrationEpochs": active_migration_epochs,
+            "localRebindTransactions": local_rebind_transactions,
+            "activeLocalRebindTransactions": local_rebind_active,
         }
 
     def _legacy_migration(self) -> LegacyMigrationControl:
@@ -3634,6 +3736,7 @@ class BrainControl:
             "planFingerprint": _require_string(request.get("planFingerprint"), "planFingerprint", 64),
             "latestInstructionHash": _require_sha256(request.get("latestInstructionHash"), "latestInstructionHash"),
             "intentContract": _normalize_intent_contract(contract),
+            "sessionRebind": request.get("sessionRebind"),
             "source": _require_string(request.get("source", "brain_control.resolve_intent"), "source", 160),
         }
 
@@ -3648,13 +3751,22 @@ class BrainControl:
                 "BRAIN_CONTROL_INTENT_EXPECTED_REVISION_INVALID",
                 "expectedIntentRevision must be a positive integer for session rebind",
             )
+        previous_owner = _require_string(
+            request.get("previousOwnerSessionKey"), "previousOwnerSessionKey", 120
+        )
+        new_owner = _require_string(request.get("newOwnerSessionKey"), "newOwnerSessionKey", 120)
+        if previous_owner.casefold() == new_owner.casefold():
+            raise BrainControlError(
+                "BRAIN_CONTROL_INTENT_REBIND_OWNER_UNCHANGED",
+                "intent session rebind requires a different new owner",
+            )
         return {
             "commandId": _require_string(request.get("commandId"), "commandId", 160),
             "taskId": _require_string(request.get("taskId"), "taskId", 160),
             "taskInstanceId": _require_string(request.get("taskInstanceId"), "taskInstanceId", 80),
             "workspaceKey": _require_string(request.get("workspaceKey"), "workspaceKey", 120),
-            "previousOwnerSessionKey": _require_string(request.get("previousOwnerSessionKey"), "previousOwnerSessionKey", 120),
-            "newOwnerSessionKey": _require_string(request.get("newOwnerSessionKey"), "newOwnerSessionKey", 120),
+            "previousOwnerSessionKey": previous_owner,
+            "newOwnerSessionKey": new_owner,
             "expectedIntentRevision": expected_revision,
             "latestReceiptId": _require_string(request.get("latestReceiptId"), "latestReceiptId", 80),
             "latestReceiptPayloadHash": _require_sha256(request.get("latestReceiptPayloadHash"), "latestReceiptPayloadHash"),
@@ -3772,6 +3884,78 @@ class BrainControl:
             # Other pending mutations must remain visible to the reader.
             pass
 
+    def _clear_safe_intent_pending_markers(
+        self,
+        connection: sqlite3.Connection,
+        result: Mapping[str, Any],
+        marker: Path,
+    ) -> None:
+        """Remove only stale markers proven by the same aggregate's journal.
+
+        A successor may publish a receipt after a legacy/v18 hand-off marker
+        was created.  That marker is then safe to clear, but an unrelated
+        in-flight mutation must remain blocking.  Marker filenames contain
+        only a hash, so match them against immutable command-log ids and
+        require a later receipt owned by the successor before removal.
+        """
+
+        receipt = result.get("intentResolutionReceipt")
+        if not isinstance(receipt, Mapping):
+            return
+        aggregate_id = str(result.get("aggregateId", ""))
+        current_receipt_id = str(receipt.get("receiptId", ""))
+        current_owner = str(receipt.get("ownerSessionKey", ""))
+        current_row = connection.execute(
+            "SELECT owner_session_key,intent_revision,created_at FROM intent_receipts WHERE receipt_id=?",
+            (current_receipt_id,),
+        ).fetchone()
+        if current_row is None:
+            return
+        current_created = _parse_utc_timestamp(str(current_row["created_at"] or ""))
+        pending_root = marker.parent
+        if not pending_root.is_dir():
+            return
+        commands = connection.execute(
+            "SELECT command_id,command_type,created_at,result_json FROM command_log WHERE aggregate_id=?",
+            (aggregate_id,),
+        ).fetchall()
+        marker_commands: dict[str, sqlite3.Row] = {}
+        for row in commands:
+            marker_commands[_sha256({"mutationId": str(row["command_id"])})] = row
+        for candidate in pending_root.glob("*.json"):
+            if not candidate.is_file() or candidate == marker:
+                continue
+            try:
+                pending = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            mutation_ref = str(pending.get("mutationRef", "")) if isinstance(pending, Mapping) else ""
+            row = marker_commands.get(mutation_ref)
+            if row is None:
+                continue
+            event_created = _parse_utc_timestamp(str(row["created_at"] or ""))
+            if current_created is None or event_created is None or current_created <= event_created:
+                continue
+            command_type = str(row["command_type"] or "")
+            safe = False
+            if command_type == "resolve_intent":
+                try:
+                    command_result = json.loads(str(row["result_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    command_result = {}
+                old_receipt = command_result.get("intentResolutionReceipt") if isinstance(command_result, Mapping) else None
+                old_receipt_id = str(old_receipt.get("receiptId", "")) if isinstance(old_receipt, Mapping) else ""
+                safe = old_receipt_id == current_receipt_id or old_receipt_id != ""
+            elif command_type in {"rebind_intent_session", "finalize_local_rebind", "compat_rebind_intent_projection"}:
+                try:
+                    command_result = json.loads(str(row["result_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    command_result = {}
+                successor = str(command_result.get("newOwnerSessionKey", "")) if isinstance(command_result, Mapping) else ""
+                safe = bool(successor) and successor.casefold() == current_owner.casefold()
+            if safe:
+                self._remove_intent_context_marker(candidate)
+
     def _finalize_intent_context_projection(
         self,
         connection: sqlite3.Connection,
@@ -3790,31 +3974,15 @@ class BrainControl:
         receipt_id = _require_string(receipt.get("receiptId"), "intentReceipt.receiptId", 80)
         connection.execute("BEGIN IMMEDIATE")
         try:
-            row = connection.execute(
-                "SELECT latest_receipt_id FROM intent_aggregates WHERE aggregate_id=?",
-                (aggregate_id,),
-            ).fetchone()
-            current_head = row is not None and str(row["latest_receipt_id"]) == receipt_id
-            if current_head:
-                pending_root = intent_context_pending_root(
-                    self.state_root,
-                    task_id=str(receipt["taskId"]),
-                    task_instance_id=str(receipt["taskInstanceId"]),
-                    workspace_key=str(receipt["workspaceKey"]),
-                )
-                for candidate in pending_root.glob("*.json"):
-                    if candidate.is_file():
-                        candidate.unlink()
-                try:
-                    pending_root.rmdir()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    # Another unexpected file means the conservative reader
-                    # will remain blocked; do not remove it by guess.
-                    pass
-            else:
-                self._remove_intent_context_marker(marker)
+            # Clear only the marker created by this command.  A second writer
+            # may have committed another pending marker after the authority
+            # transaction released SQLite but before projection publication;
+            # deleting the whole directory would erase that unfinished
+            # mutation and let the reader proceed unsafely.  If our receipt is
+            # no longer the aggregate head, removing our own marker is still
+            # safe because it cannot authorize a different head.
+            self._remove_intent_context_marker(marker)
+            self._clear_safe_intent_pending_markers(connection, result, marker)
             connection.execute("COMMIT")
         except Exception:
             try:
@@ -3947,10 +4115,7 @@ class BrainControl:
             ).fetchone()
             actual_revision = int(aggregate["head_revision"]) if aggregate is not None else 0
             if aggregate is not None and str(aggregate["owner_session_key"]) != owner_session_key:
-                raise BrainControlError(
-                    "BRAIN_CONTROL_INTENT_SESSION_MISMATCH",
-                    "intent aggregate belongs to another root session",
-                )
+                self._verify_intent_local_rebind(connection, request, aggregate)
             previous = None
             if actual_revision > 0:
                 previous = connection.execute(
@@ -3971,7 +4136,1343 @@ class BrainControl:
             "ready": not bool(contract["materialUnknowns"]),
         }
 
+    @staticmethod
+    def _verify_intent_local_rebind(
+        connection: sqlite3.Connection,
+        request: Mapping[str, Any],
+        aggregate: sqlite3.Row,
+    ) -> dict[str, Any]:
+        """Verify a finalized local successor authorization without changing owner.
+
+        Intent preparation/resolution may run after ``finalize_local_rebind``
+        while the aggregate still carries its previous owner.  The immutable
+        event chain is the only evidence that permits that one transition.
+        """
+
+        evidence = request.get("sessionRebind")
+        if not isinstance(evidence, Mapping):
+            raise BrainControlError("BRAIN_CONTROL_INTENT_SESSION_MISMATCH", "intent aggregate belongs to another root session")
+        if str(evidence.get("schema", "")) != LOCAL_REBIND_RESULT_SCHEMA:
+            raise BrainControlError("BRAIN_CONTROL_INTENT_REBIND_UNVERIFIED", "intent session rebind evidence schema is invalid")
+        if str(evidence.get("aggregateKind", "")).lower() != "intent":
+            raise BrainControlError("BRAIN_CONTROL_INTENT_REBIND_UNVERIFIED", "intent session rebind evidence kind is invalid")
+        if str(evidence.get("status", "")).lower() != "finalized":
+            raise BrainControlError("BRAIN_CONTROL_INTENT_REBIND_UNVERIFIED", "intent session rebind must be finalized")
+        rebind_id = _require_string(evidence.get("rebindId"), "sessionRebind.rebindId", 160)
+        row = connection.execute(
+            """
+            SELECT t.*,e.status,e.sequence,e.details_json
+            FROM local_rebind_transactions t
+            JOIN local_rebind_events e ON e.rebind_id=t.rebind_id
+            WHERE t.rebind_id=?
+              AND e.sequence=(SELECT MAX(e2.sequence) FROM local_rebind_events e2 WHERE e2.rebind_id=t.rebind_id)
+            """,
+            (rebind_id,),
+        ).fetchone()
+        if row is None or str(row["status"]) != "finalized":
+            raise BrainControlError("BRAIN_CONTROL_INTENT_REBIND_UNVERIFIED", "referenced intent recovery is not finalized")
+        effective_owner = BrainControl._local_rebind_effective_new_owner(row, row)
+        expected = {
+            "aggregate_id": str(evidence.get("aggregateId", "")),
+            "aggregate_kind": "intent",
+            "task_id": str(request.get("taskId", "")),
+            "task_instance_id": str(request.get("taskInstanceId", "")),
+            "workspace_key": str(request.get("workspaceKey", "")),
+            "previous_owner_session_key": str(aggregate["owner_session_key"]),
+            "new_owner_session_key": str(request.get("ownerSessionKey", "")),
+            "expected_revision": int(request.get("expectedIntentRevision", aggregate["head_revision"])),
+            "contract_hash": str(evidence.get("contractHash", "")),
+            "plan_fingerprint": str(evidence.get("planFingerprint", "")),
+            "ref_hash": str(evidence.get("refHash", "")),
+        }
+        for column, value in expected.items():
+            actual = effective_owner if column == "new_owner_session_key" else row[column]
+            if str(actual) != str(value):
+                raise BrainControlError("BRAIN_CONTROL_INTENT_REBIND_UNVERIFIED", f"intent recovery {column} does not match")
+        if int(aggregate["head_revision"]) != int(row["expected_revision"]):
+            raise BrainControlError("BRAIN_CONTROL_INTENT_REBIND_STALE", "intent aggregate advanced after session rebind authorization")
+        previous_receipt_id = str(row["previous_receipt_id"])
+        if previous_receipt_id and str(aggregate["latest_receipt_id"]) != previous_receipt_id:
+            raise BrainControlError("BRAIN_CONTROL_INTENT_REBIND_STALE", "intent receipt changed after session rebind authorization")
+        return dict(evidence)
+
+    @staticmethod
+    def _normalize_local_rebind_request(
+        request: Mapping[str, Any],
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        """Normalize one local recovery-ref command.
+
+        The public recovery token is intentionally the only capability that
+        crosses the consume/finalize/query/revoke boundary.  Scope fields are
+        accepted on ``issue`` for the CLI/control-plane seam, but callers may
+        leave the owner fields blank so the aggregate remains the source of
+        truth.  MCP fills these fields from its broker-bound channel before
+        invoking this method.
+        """
+
+        if not isinstance(request, Mapping):
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REQUEST_INVALID", "local rebind request must be an object")
+        _ensure_safe(request, "localRebindRequest")
+        action_value = str(action or request.get("action", "")).strip().lower()
+        if action_value not in {"issue", "consume", "finalize", "query", "revoke"}:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_ACTION_INVALID", "unsupported local rebind action")
+        normalized: dict[str, Any] = {
+            "action": action_value,
+            "commandId": _require_string(request.get("commandId"), "commandId", 160),
+            "requestingSessionKey": _require_string(
+                request.get("requestingSessionKey", request.get("newOwnerSessionKey", "")),
+                "requestingSessionKey",
+                120,
+            ),
+            "source": _require_string(request.get("source", "brain_control.local_rebind"), "source", 160),
+        }
+        if action_value != "issue":
+            recovery_ref = request.get("recoveryRef", "")
+            target_command_id = request.get("targetCommandId", "")
+            if recovery_ref not in (None, ""):
+                recovery_ref = _require_string(recovery_ref, "recoveryRef", 128)
+                if not LOCAL_REBIND_REF_RE.fullmatch(recovery_ref):
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REF_INVALID", "recoveryRef is invalid")
+                if target_command_id not in (None, ""):
+                    raise BrainControlError(
+                        "BRAIN_CONTROL_LOCAL_REBIND_SELECTOR_CONFLICT",
+                        "recoveryRef and targetCommandId cannot be supplied together",
+                    )
+                normalized["recoveryRef"] = recovery_ref
+                normalized["refHash"] = _local_rebind_ref_hash(recovery_ref)
+            elif action_value in {"query", "revoke"} and target_command_id not in (None, ""):
+                # A crashed issue call may have lost the one-time plaintext
+                # reference.  Query/revoke-by-command is a scope-bound repair
+                # seam: it exposes only status metadata and never recreates or
+                # returns the capability itself.
+                normalized["targetCommandId"] = _require_string(target_command_id, "targetCommandId", 160)
+                normalized["recoveryRef"] = ""
+                normalized["refHash"] = ""
+            else:
+                raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REF_REQUIRED", "recoveryRef is required")
+            for name, maximum in (
+                ("taskId", 160),
+                ("taskInstanceId", 80),
+                ("workspaceKey", 120),
+            ):
+                value = request.get(name)
+                if value not in (None, ""):
+                    normalized[name] = _require_string(value, name, maximum)
+            aggregate_kind = request.get("aggregateKind", "")
+            if aggregate_kind not in (None, ""):
+                aggregate_kind = _require_string(aggregate_kind, "aggregateKind", 24).lower()
+                if aggregate_kind not in LOCAL_REBIND_KINDS:
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_KIND_INVALID", "aggregateKind must be intent or task")
+                normalized["aggregateKind"] = aggregate_kind
+            package_version = request.get("packageVersion", "")
+            if package_version not in (None, ""):
+                normalized["packageVersion"] = _require_string(package_version, "packageVersion", 48)
+            expected_revision = request.get("expectedRevision")
+            if expected_revision not in (None, ""):
+                if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REVISION_INVALID", "expectedRevision must be a non-negative integer")
+                normalized["expectedRevision"] = expected_revision
+            expected_state_hash = request.get("expectedStateHash", request.get("taskStateHash", ""))
+            if expected_state_hash not in (None, ""):
+                normalized["expectedStateHash"] = _require_sha256(expected_state_hash, "expectedStateHash")
+            normalized["contractRevision"] = request.get("contractRevision")
+            if normalized["contractRevision"] not in (None, ""):
+                if isinstance(normalized["contractRevision"], bool) or not isinstance(normalized["contractRevision"], int) or normalized["contractRevision"] < 1:
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_CONTRACT_REVISION_INVALID", "contractRevision must be a positive integer")
+            for name in ("contractHash", "projectProofHash", "previousReceiptHash"):
+                value = request.get(name, "")
+                if value not in (None, ""):
+                    normalized[name] = _require_sha256(value, name)
+                else:
+                    normalized[name] = ""
+            normalized["planFingerprint"] = _optional_string(request.get("planFingerprint"), "planFingerprint", 128)
+            normalized["previousReceiptId"] = _optional_string(request.get("previousReceiptId"), "previousReceiptId", 160)
+            return normalized
+
+        normalized.update(
+            {
+                "aggregateKind": str(request.get("aggregateKind", "task")).strip().lower(),
+                "taskId": _require_string(request.get("taskId"), "taskId", 160),
+                "taskInstanceId": _require_string(request.get("taskInstanceId"), "taskInstanceId", 80),
+                "workspaceKey": _require_string(request.get("workspaceKey"), "workspaceKey", 120),
+                "previousOwnerSessionKey": _optional_string(request.get("previousOwnerSessionKey"), "previousOwnerSessionKey", 120),
+                "newOwnerSessionKey": _optional_string(request.get("newOwnerSessionKey"), "newOwnerSessionKey", 120),
+                "packageVersion": _require_string(request.get("packageVersion"), "packageVersion", 48),
+                "expectedRevision": request.get("expectedRevision", request.get("expectedTaskRevision")),
+                "expectedStateHash": _optional_string(request.get("expectedStateHash", request.get("taskStateHash")), "expectedStateHash", 128).lower(),
+                "contractRevision": request.get("contractRevision", request.get("expectedContractRevision")),
+                "contractHash": _require_sha256(request.get("contractHash"), "contractHash"),
+                "planFingerprint": _require_string(request.get("planFingerprint", request.get("expectedPlanFingerprint")), "planFingerprint", 128),
+                "previousReceiptId": _optional_string(request.get("previousReceiptId", request.get("latestReceiptId")), "previousReceiptId", 160),
+                "previousReceiptHash": "",
+                "projectProofHash": "",
+            }
+        )
+        if normalized["aggregateKind"] not in LOCAL_REBIND_KINDS:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_KIND_INVALID", "aggregateKind must be intent or task")
+        expected_revision = normalized["expectedRevision"]
+        if expected_revision is not None and (isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0):
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REVISION_INVALID", "expectedRevision must be a non-negative integer")
+        contract_revision = normalized["contractRevision"]
+        if isinstance(contract_revision, bool) or not isinstance(contract_revision, int) or contract_revision < 1:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_CONTRACT_REVISION_INVALID", "contractRevision must be a positive integer")
+        # A task state hash may be omitted by a local caller: issue derives
+        # it from the immutable aggregate head inside the same transaction.
+        # If supplied, it is still checked byte-for-byte against that head.
+        if normalized["previousReceiptId"]:
+            supplied_hash = request.get("previousReceiptHash", request.get("latestReceiptPayloadHash", ""))
+            normalized["previousReceiptHash"] = _require_sha256(supplied_hash, "previousReceiptHash")
+        ttl_seconds = request.get("ttlSeconds", LOCAL_REBIND_DEFAULT_TTL_SECONDS)
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds < 1 or ttl_seconds > LOCAL_REBIND_MAX_TTL_SECONDS:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_TTL_INVALID", "ttlSeconds is outside the allowed range")
+        normalized["ttlSeconds"] = ttl_seconds
+        # A recovery ref is normally issued by the retiring owner and claimed
+        # by the successor session during ``consume``.  Therefore issue may
+        # intentionally leave the successor empty; the first consume binds it
+        # to that caller.  Explicit successor values remain supported for the
+        # trusted compatibility seam, but are never inferred from Host data.
+        if normalized["requestingSessionKey"] != normalized["newOwnerSessionKey"] and normalized["newOwnerSessionKey"]:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REQUESTER_MISMATCH", "requestingSessionKey must be the new owner")
+        if action_value == "issue" and not normalized["newOwnerSessionKey"]:
+            # Keep the database column non-null while representing an
+            # unclaimed successor.  The effective owner is carried by the
+            # immutable consumed event once a new local session claims it.
+            normalized["newOwnerSessionKey"] = LOCAL_REBIND_PENDING_OWNER
+        elif not normalized["newOwnerSessionKey"]:
+            # consume/finalize/query/revoke receive the effective owner from
+            # the caller's current local scope or from the transaction event;
+            # leave it empty here so the lookup can perform that binding.
+            normalized["newOwnerSessionKey"] = ""
+        if normalized["previousOwnerSessionKey"] and normalized["newOwnerSessionKey"] and normalized["previousOwnerSessionKey"] == normalized["newOwnerSessionKey"]:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_OWNER_UNCHANGED", "local rebind requires a different owner")
+        return normalized
+
+    @staticmethod
+    def _local_rebind_latest_event(
+        connection: sqlite3.Connection,
+        rebind_id: str,
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            "SELECT * FROM local_rebind_events WHERE rebind_id=? ORDER BY sequence DESC LIMIT 1",
+            (rebind_id,),
+        ).fetchone()
+
+    @staticmethod
+    def _local_rebind_effective_new_owner(
+        transaction: sqlite3.Row,
+        event: sqlite3.Row | None,
+    ) -> str:
+        """Return the successor owner claimed by the immutable event chain.
+
+        Issue-time transactions deliberately leave ``new_owner_session_key``
+        empty: the successor is not known until a fresh local session presents
+        the one-time recovery reference.  Once consumed, the claimed owner is
+        stored in the append-only event details and becomes the only owner
+        allowed to finalize the transfer.
+        """
+
+        stored = str(transaction["new_owner_session_key"] or "")
+        if stored:
+            return stored
+        if event is not None:
+            try:
+                details = json.loads(str(event["details_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                details = {}
+            claimed = details.get("newOwnerSessionKey") if isinstance(details, Mapping) else ""
+            if isinstance(claimed, str) and claimed.strip():
+                return claimed.strip()
+        return ""
+
+    @staticmethod
+    def _intent_local_rebind_consumed(
+        connection: sqlite3.Connection,
+        aggregate: sqlite3.Row,
+        transaction: sqlite3.Row,
+    ) -> bool:
+        """Return whether a finalized intent hand-off has been applied.
+
+        Finalization authorizes the successor but intentionally leaves the
+        aggregate owner and receipt untouched.  Consumption is therefore
+        proven by the successor's later intent receipt, not by a revision
+        increment: resolving an unchanged contract keeps the same intent
+        revision while still publishing a new receipt.  Looking through the
+        receipt history also keeps older finalized transactions from blocking
+        a later legacy rebind after ownership has moved again.
+        """
+
+        effective_owner = BrainControl._local_rebind_effective_new_owner(transaction, transaction)
+        if not effective_owner:
+            return False
+        previous_receipt_id = str(transaction["previous_receipt_id"] or "")
+        aggregate_owner = str(aggregate["owner_session_key"] or "")
+        latest_receipt_id = str(aggregate["latest_receipt_id"] or "")
+        # Fast path for the common immediate-resolve case.  Equality on the
+        # intent revision is valid when the contract did not change.
+        try:
+            expected_revision = int(transaction["expected_revision"])
+            head_revision = int(aggregate["head_revision"])
+        except (TypeError, ValueError):
+            return False
+        latest_receipt = connection.execute(
+            "SELECT owner_session_key,intent_revision,created_at FROM intent_receipts WHERE receipt_id=?",
+            (latest_receipt_id,),
+        ).fetchone() if latest_receipt_id else None
+        latest_created_at = _parse_utc_timestamp(str(latest_receipt["created_at"] or "")) if latest_receipt is not None else None
+        finalized_created_at = _parse_utc_timestamp(str(transaction["event_created_at"] or transaction["created_at"] or ""))
+        if (
+            aggregate_owner.casefold() == effective_owner.casefold()
+            and latest_receipt_id
+            and latest_receipt_id != previous_receipt_id
+            and head_revision == expected_revision
+        ):
+            if (
+                latest_receipt is not None
+                and str(latest_receipt["owner_session_key"]).casefold() == effective_owner.casefold()
+                and int(latest_receipt["intent_revision"]) == expected_revision
+                and latest_created_at is not None
+                and finalized_created_at is not None
+                and latest_created_at > finalized_created_at
+            ):
+                return True
+
+        # If a later transfer has already changed the aggregate owner, the
+        # current owner no longer identifies this transaction.  A receipt
+        # issued to this transaction's successor after its finalized event is
+        # immutable evidence that the one-time authorization was consumed.
+        finalized_at = str(transaction["event_created_at"] or transaction["created_at"] or "")
+        if not finalized_at:
+            return False
+        row = connection.execute(
+            """
+            SELECT receipt_id
+            FROM intent_receipts
+            WHERE aggregate_id=?
+              AND owner_session_key=?
+              AND receipt_id<>?
+              AND intent_revision>=?
+              AND created_at>?
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (
+                str(transaction["aggregate_id"]),
+                effective_owner,
+                previous_receipt_id,
+                expected_revision,
+                finalized_at,
+            ),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _task_local_rebind_consumed(
+        connection: sqlite3.Connection,
+        aggregate: sqlite3.Row,
+        transaction: sqlite3.Row,
+    ) -> bool:
+        """Return whether a finalized task hand-off was applied.
+
+        Task ownership moves together with the next task-state CAS. Unlike an
+        intent refresh, that mutation always advances the task revision, so a
+        post-finalize state revision owned by the claimed successor is the
+        durable consumption proof. A finalized transaction remains blocking
+        until this proof exists; otherwise two successor authorizations could
+        be issued against the same previous task head.
+        """
+
+        effective_owner = BrainControl._local_rebind_effective_new_owner(transaction, transaction)
+        if not effective_owner:
+            return False
+        try:
+            expected_revision = int(transaction["expected_revision"])
+            head_revision = int(aggregate["head_revision"])
+        except (TypeError, ValueError):
+            return False
+        if head_revision <= expected_revision or str(aggregate["owner_session_key"]).casefold() != effective_owner.casefold():
+            return False
+        finalized_at = str(transaction["event_created_at"] or transaction["created_at"] or "")
+        if not finalized_at:
+            return False
+        row = connection.execute(
+            """
+            SELECT state_json
+            FROM task_state_revisions
+            WHERE aggregate_id=? AND task_revision>? AND created_at>?
+            ORDER BY task_revision ASC
+            LIMIT 1
+            """,
+            (str(transaction["aggregate_id"]), expected_revision, finalized_at),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            state = json.loads(str(row["state_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return isinstance(state, Mapping) and str(state.get("ownerSessionKey", "")).casefold() == effective_owner.casefold()
+
+    @staticmethod
+    def _append_local_rebind_event(
+        connection: sqlite3.Connection,
+        transaction: sqlite3.Row,
+        *,
+        command_id: str,
+        event_type: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        latest = BrainControl._local_rebind_latest_event(connection, str(transaction["rebind_id"]))
+        sequence = int(latest["sequence"]) + 1 if latest is not None else 1
+        body = dict(details or {})
+        body.update({"rebindId": str(transaction["rebind_id"]), "status": event_type})
+        payload_hash = _sha256(body)
+        connection.execute(
+            """
+            INSERT INTO local_rebind_events(
+              rebind_id,sequence,event_id,command_id,event_type,status,payload_hash,details_json,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                str(transaction["rebind_id"]),
+                sequence,
+                "evt-" + uuid.uuid4().hex,
+                command_id,
+                event_type,
+                event_type,
+                payload_hash,
+                _canonical_json(body),
+                _utc_now(),
+            ),
+        )
+        return {"sequence": sequence, "status": event_type, "payloadHash": payload_hash}
+
+    @staticmethod
+    def _local_rebind_result(
+        transaction: sqlite3.Row,
+        event: sqlite3.Row,
+        *,
+        idempotent: bool = False,
+        recovery_ref: str = "",
+    ) -> dict[str, Any]:
+        effective_new_owner = BrainControl._local_rebind_effective_new_owner(transaction, event)
+        result = {
+            "ok": True,
+            "schema": LOCAL_REBIND_RESULT_SCHEMA,
+            "rebindId": str(transaction["rebind_id"]),
+            "aggregateKind": str(transaction["aggregate_kind"]),
+            "aggregateId": str(transaction["aggregate_id"]),
+            "taskId": str(transaction["task_id"]),
+            "taskInstanceId": str(transaction["task_instance_id"]),
+            "workspaceKey": str(transaction["workspace_key"]),
+            "previousOwnerSessionKey": str(transaction["previous_owner_session_key"]),
+            "newOwnerSessionKey": effective_new_owner,
+            "packageVersion": str(transaction["package_version"]),
+            "expectedRevision": int(transaction["expected_revision"]),
+            "expectedStateHash": str(transaction["expected_state_hash"]),
+            "contractRevision": int(transaction["contract_revision"]),
+            "contractHash": str(transaction["contract_hash"]),
+            "planFingerprint": str(transaction["plan_fingerprint"]),
+            "previousReceiptId": str(transaction["previous_receipt_id"]),
+            "previousReceiptHash": str(transaction["previous_receipt_hash"]),
+            "projectProofHash": str(transaction["project_proof_hash"]),
+            "refHash": str(transaction["ref_hash"]),
+            "status": str(event["status"]),
+            "sequence": int(event["sequence"]),
+            "createdAt": str(transaction["created_at"]),
+            "expiresAt": str(transaction["expires_at"]),
+            "eventPayloadHash": str(event["payload_hash"]),
+            "idempotent": bool(idempotent),
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+        if recovery_ref:
+            result["recoveryRef"] = recovery_ref
+            result["recoveryRefAvailable"] = True
+        else:
+            result["recoveryRefAvailable"] = False
+        return result
+
+    @staticmethod
+    def _local_rebind_issue_replay_matches(
+        transaction: sqlite3.Row,
+        event: sqlite3.Row | None,
+        normalized: Mapping[str, Any],
+        request: Mapping[str, Any],
+    ) -> bool:
+        """Check a replay against immutable issue lineage without live-state reads.
+
+        An idempotent retry must still return its original result after the
+        aggregate has advanced. Compare every required selector/proof and any
+        optional field explicitly supplied by the caller, while allowing
+        omitted aggregate-derived defaults to remain omitted on replay.
+        """
+
+        for name, column in (
+            ("aggregateKind", "aggregate_kind"),
+            ("taskId", "task_id"),
+            ("taskInstanceId", "task_instance_id"),
+            ("workspaceKey", "workspace_key"),
+            ("packageVersion", "package_version"),
+            ("contractRevision", "contract_revision"),
+            ("contractHash", "contract_hash"),
+            ("planFingerprint", "plan_fingerprint"),
+        ):
+            if str(normalized.get(name, "")) != str(transaction[column]):
+                return False
+        if "newOwnerSessionKey" in request and str(normalized.get("newOwnerSessionKey", "")) != str(transaction["new_owner_session_key"] or ""):
+            return False
+        if str(transaction["new_owner_session_key"] or "") and "newOwnerSessionKey" not in request:
+            return False
+        for name, column in (
+            ("expectedRevision", "expected_revision"),
+            ("expectedStateHash", "expected_state_hash"),
+            ("previousReceiptId", "previous_receipt_id"),
+            ("previousReceiptHash", "previous_receipt_hash"),
+            ("projectProofHash", "project_proof_hash"),
+        ):
+            if name in request and str(normalized.get(name, "") or "") != str(transaction[column] or ""):
+                return False
+        if "source" in request and str(normalized.get("source", "")) != str(transaction["source"]):
+            return False
+        if "ttlSeconds" in request:
+            created = _parse_utc_timestamp(str(transaction["created_at"] or ""))
+            expires = _parse_utc_timestamp(str(transaction["expires_at"] or ""))
+            if created is None or expires is None or int(round((expires - created).total_seconds())) != int(normalized.get("ttlSeconds", 0)):
+                return False
+        effective_owner = BrainControl._local_rebind_effective_new_owner(transaction, event)
+        requester = str(normalized.get("requestingSessionKey", ""))
+        if requester.casefold() not in {str(transaction["previous_owner_session_key"]).casefold(), effective_owner.casefold()}:
+            return False
+        return True
+
+    @staticmethod
+    def _local_rebind_expire_if_needed(
+        connection: sqlite3.Connection,
+        transaction: sqlite3.Row,
+        event: sqlite3.Row,
+    ) -> sqlite3.Row:
+        if str(event["status"]) not in {"issued", "consumed"}:
+            return event
+        expires_at = _parse_utc_timestamp(str(transaction["expires_at"]))
+        if expires_at is None or datetime.now(UTC) <= expires_at:
+            return event
+        command_id = "local-rebind-expire-" + uuid.uuid4().hex
+        now = _utc_now()
+        details = {"reason": "ttl_expired", "expiredAt": now}
+        result = {
+            "ok": True,
+            "schema": LOCAL_REBIND_RESULT_SCHEMA,
+            "rebindId": str(transaction["rebind_id"]),
+            "status": "expired",
+            "idempotent": False,
+        }
+        connection.execute(
+            "INSERT INTO command_log(command_id,command_type,aggregate_id,expected_revision,payload_hash,result_json,created_at) VALUES (?,?,?,?,?,?,?)",
+            (command_id, "expire_local_rebind", str(transaction["aggregate_id"]), int(transaction["expected_revision"]), _sha256(details), _canonical_json(result), now),
+        )
+        BrainControl._append_local_rebind_event(
+            connection,
+            transaction,
+            command_id=command_id,
+            event_type="expired",
+            details=details,
+        )
+        refreshed = BrainControl._local_rebind_latest_event(connection, str(transaction["rebind_id"]))
+        assert refreshed is not None
+        return refreshed
+
+    def _local_rebind_transaction_for_ref(
+        self,
+        connection: sqlite3.Connection,
+        normalized: Mapping[str, Any],
+    ) -> tuple[sqlite3.Row, sqlite3.Row]:
+        transaction = connection.execute(
+            "SELECT * FROM local_rebind_transactions WHERE ref_hash=?",
+            (str(normalized["refHash"]),),
+        ).fetchone()
+        if transaction is None:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_NOT_FOUND", "recoveryRef is unknown")
+        requested_kind = str(normalized.get("aggregateKind", "") or "").strip().lower()
+        if requested_kind and requested_kind != str(transaction["aggregate_kind"]):
+            raise BrainControlError(
+                "BRAIN_CONTROL_LOCAL_REBIND_KIND_MISMATCH",
+                "aggregateKind does not match the recovery transaction",
+            )
+        # An explicitly targeted transaction is bound to the successor from
+        # the moment it is issued.  An unclaimed transaction deliberately has
+        # an empty successor column; its first consume binds that successor
+        # in the append-only event chain instead of comparing against an empty
+        # placeholder.
+        stored_new_owner = str(transaction["new_owner_session_key"] or "")
+        if stored_new_owner and str(normalized["requestingSessionKey"]) != stored_new_owner:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REQUESTER_MISMATCH", "recoveryRef is bound to another local session")
+        for name, column in (("taskId", "task_id"), ("taskInstanceId", "task_instance_id"), ("workspaceKey", "workspace_key")):
+            supplied = str(normalized.get(name, "") or "")
+            if supplied and supplied != str(transaction[column]):
+                raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_SCOPE_MISMATCH", f"recoveryRef {name} does not match")
+        event = self._local_rebind_latest_event(connection, str(transaction["rebind_id"]))
+        if event is None:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_LINEAGE_INVALID", "recoveryRef has no status event")
+        event = self._local_rebind_expire_if_needed(connection, transaction, event)
+        status = str(event["status"])
+        effective_new_owner = self._local_rebind_effective_new_owner(transaction, event)
+        requester = str(normalized["requestingSessionKey"])
+        previous_owner = str(transaction["previous_owner_session_key"])
+        # The issuing owner may inspect/revoke an unclaimed ref.  A successor
+        # may claim it exactly once from a different local session.  After
+        # consume, only that claimed successor can inspect/finalize/revoke.
+        if status == "issued":
+            action = str(normalized.get("action", ""))
+            if action == "consume":
+                # A consume must come from a distinct successor.  When the
+                # transaction was explicitly targeted, the upfront check
+                # above already restricted it to that exact successor.
+                if requester == previous_owner:
+                    raise BrainControlError(
+                        "BRAIN_CONTROL_LOCAL_REBIND_SUCCESSOR_SESSION_REQUIRED",
+                        "the issuing session cannot consume its own recoveryRef",
+                    )
+            elif requester not in {previous_owner, stored_new_owner}:
+                raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REQUESTER_MISMATCH", "recoveryRef is not bound to this local session")
+        elif effective_new_owner:
+            if requester != effective_new_owner:
+                raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REQUESTER_MISMATCH", "recoveryRef is bound to another local session")
+        elif requester != previous_owner:
+            # Expired/revoked refs never acquire a successor owner; retain the
+            # issuer-only read boundary instead of making a known token a
+            # workspace/task enumeration capability.
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REQUESTER_MISMATCH", "recoveryRef is not bound to this local session")
+        return transaction, event
+
+    def _local_rebind_transaction_for_command(
+        self,
+        connection: sqlite3.Connection,
+        normalized: Mapping[str, Any],
+    ) -> tuple[sqlite3.Row, sqlite3.Row]:
+        """Resolve a lost-reference recovery by its original issue command.
+
+        The command id is not a substitute for the one-time recoveryRef.  It
+        is accepted only for the read/repair actions, and every lookup remains
+        bound to the caller's current local session plus the optional task
+        scope supplied by that same caller.  No plaintext capability is ever
+        returned from this path.
+        """
+
+        target_command_id = str(normalized.get("targetCommandId", "")).strip()
+        if not target_command_id:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REF_REQUIRED", "recoveryRef is required")
+        transaction = connection.execute(
+            "SELECT * FROM local_rebind_transactions WHERE command_id=?",
+            (target_command_id,),
+        ).fetchone()
+        if transaction is None:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_NOT_FOUND", "local rebind issue command is unknown")
+        requested_kind = str(normalized.get("aggregateKind", "") or "").strip().lower()
+        if requested_kind and requested_kind != str(transaction["aggregate_kind"]):
+            raise BrainControlError(
+                "BRAIN_CONTROL_LOCAL_REBIND_KIND_MISMATCH",
+                "aggregateKind does not match the recovery transaction",
+            )
+        for name, column in (("taskId", "task_id"), ("taskInstanceId", "task_instance_id"), ("workspaceKey", "workspace_key")):
+            supplied = str(normalized.get(name, "") or "")
+            if supplied and supplied != str(transaction[column]):
+                raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_SCOPE_MISMATCH", f"local rebind {name} does not match")
+        event = self._local_rebind_latest_event(connection, str(transaction["rebind_id"]))
+        if event is None:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_LINEAGE_INVALID", "local rebind issue has no status event")
+        event = self._local_rebind_expire_if_needed(connection, transaction, event)
+        effective_new_owner = self._local_rebind_effective_new_owner(transaction, event)
+        requester = str(normalized["requestingSessionKey"])
+        allowed_requesters = {str(transaction["previous_owner_session_key"])}
+        if str(transaction["new_owner_session_key"] or ""):
+            allowed_requesters.add(str(transaction["new_owner_session_key"]))
+        if effective_new_owner:
+            allowed_requesters.add(effective_new_owner)
+        if requester not in allowed_requesters:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REQUESTER_MISMATCH", "local rebind issue is bound to another local session")
+        return transaction, event
+
+    def _verify_local_rebind_aggregate(
+        self,
+        connection: sqlite3.Connection,
+        transaction: sqlite3.Row,
+    ) -> None:
+        kind = str(transaction["aggregate_kind"])
+        aggregate_id = str(transaction["aggregate_id"])
+        if kind == "intent":
+            aggregate = connection.execute(
+                "SELECT * FROM intent_aggregates WHERE aggregate_id=?", (aggregate_id,)
+            ).fetchone()
+            if aggregate is None:
+                raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_AGGREGATE_MISSING", "intent aggregate is missing")
+            if str(aggregate["owner_session_key"]) != str(transaction["previous_owner_session_key"]):
+                raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_OWNER", "intent owner changed before finalize")
+            if int(aggregate["head_revision"]) != int(transaction["expected_revision"]):
+                raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_REVISION", "intent revision changed before finalize")
+            receipt_id = str(transaction["previous_receipt_id"])
+            if receipt_id:
+                if str(aggregate["latest_receipt_id"]) != receipt_id:
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_RECEIPT", "intent receipt changed before finalize")
+                receipt = connection.execute(
+                    "SELECT owner_session_key,payload_hash,package_version,contract_revision,plan_fingerprint FROM intent_receipts WHERE receipt_id=?",
+                    (receipt_id,),
+                ).fetchone()
+                if receipt is None or str(receipt["owner_session_key"]) != str(transaction["previous_owner_session_key"]):
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_RECEIPT", "intent receipt is unavailable")
+                if str(transaction["previous_receipt_hash"]) and str(receipt["payload_hash"]) != str(transaction["previous_receipt_hash"]):
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_RECEIPT", "intent receipt hash changed before finalize")
+                if str(receipt["package_version"]) != str(transaction["package_version"]):
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_PACKAGE", "intent package version changed before finalize")
+                if int(receipt["contract_revision"]) != int(transaction["contract_revision"]):
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_CONTRACT", "intent contract revision changed before finalize")
+                if str(receipt["plan_fingerprint"]) != str(transaction["plan_fingerprint"]):
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_PLAN", "intent plan fingerprint changed before finalize")
+            return
+        aggregate = connection.execute(
+            "SELECT * FROM task_aggregates WHERE aggregate_id=?", (aggregate_id,)
+        ).fetchone()
+        if aggregate is None:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_AGGREGATE_MISSING", "task aggregate is missing")
+        if str(aggregate["owner_session_key"]) != str(transaction["previous_owner_session_key"]):
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_OWNER", "task owner changed before finalize")
+        if int(aggregate["head_revision"]) != int(transaction["expected_revision"]):
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_REVISION", "task revision changed before finalize")
+        if str(transaction["expected_state_hash"]) and str(aggregate["head_state_hash"]) != str(transaction["expected_state_hash"]):
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_STATE", "task state changed before finalize")
+        if str(aggregate["package_version"]) != str(transaction["package_version"]):
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_PACKAGE", "task package version changed before finalize")
+        state_row = connection.execute(
+            "SELECT state_json FROM task_state_revisions WHERE aggregate_id=? AND task_revision=?",
+            (aggregate_id, int(transaction["expected_revision"])),
+        ).fetchone()
+        if state_row is None:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_STATE", "task state revision is unavailable")
+        try:
+            state = json.loads(str(state_row["state_json"]))
+        except json.JSONDecodeError as exc:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_STATE", "task state revision is invalid") from exc
+        if int(state.get("contractRevision", -1)) != int(transaction["contract_revision"]):
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_CONTRACT", "task contract revision changed before finalize")
+        if str(state.get("planFingerprint", "")) != str(transaction["plan_fingerprint"]):
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_PLAN", "task plan fingerprint changed before finalize")
+
+    def issue_local_rebind(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_local_rebind_request(request, action="issue")
+        aggregate_id = (
+            self._intent_aggregate_id(normalized["taskId"], normalized["taskInstanceId"], normalized["workspaceKey"])
+            if normalized["aggregateKind"] == "intent"
+            else self._task_aggregate_id(normalized["taskId"], normalized["workspaceKey"])
+        )
+        now_dt = datetime.now(UTC)
+        now = _utc_timestamp(now_dt)
+        expires_at = _utc_timestamp(now_dt + timedelta(seconds=int(normalized["ttlSeconds"])))
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                # Command idempotency is authoritative even when the live
+                # aggregate moved after the first issue. Check the immutable
+                # issue row before applying current-head CAS guards; otherwise
+                # a harmless retry is misreported as a stale revision/receipt.
+                replay = connection.execute(
+                    "SELECT command_type,payload_hash,result_json FROM command_log WHERE command_id=?",
+                    (normalized["commandId"],),
+                ).fetchone()
+                if replay is not None:
+                    if str(replay["command_type"]) != "issue_local_rebind":
+                        raise BrainControlError("BRAIN_CONTROL_COMMAND_ID_REUSED", "commandId was already used by another command")
+                    transaction = connection.execute(
+                        "SELECT * FROM local_rebind_transactions WHERE command_id=?",
+                        (normalized["commandId"],),
+                    ).fetchone()
+                    if transaction is None:
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REPLAY_UNVERIFIED", "issue replay has no immutable transaction")
+                    event = self._local_rebind_latest_event(connection, str(transaction["rebind_id"]))
+                    if event is None or not self._local_rebind_issue_replay_matches(transaction, event, normalized, request):
+                        raise BrainControlError("BRAIN_CONTROL_COMMAND_ID_REUSED", "commandId was already used with a different local rebind payload")
+                    result = json.loads(str(replay["result_json"]))
+                    result["idempotent"] = True
+                    result["recoveryRef"] = ""
+                    result["recoveryRefAvailable"] = False
+                    connection.execute("COMMIT")
+                    return result
+                if normalized["aggregateKind"] == "intent":
+                    aggregate = connection.execute("SELECT * FROM intent_aggregates WHERE aggregate_id=?", (aggregate_id,)).fetchone()
+                else:
+                    aggregate = connection.execute("SELECT * FROM task_aggregates WHERE aggregate_id=?", (aggregate_id,)).fetchone()
+                if aggregate is None:
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_AGGREGATE_MISSING", "aggregate is missing")
+                if normalized["expectedRevision"] is None:
+                    normalized["expectedRevision"] = int(aggregate["head_revision"])
+                previous_owner = str(aggregate["owner_session_key"])
+                new_owner = str(normalized["newOwnerSessionKey"] or "")
+                if new_owner and previous_owner == new_owner:
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_OWNER_UNCHANGED", "aggregate is already owned by the requesting session")
+                if normalized["previousOwnerSessionKey"] and normalized["previousOwnerSessionKey"] != previous_owner:
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_OWNER_MISMATCH", "previous owner does not match aggregate")
+                if new_owner:
+                    # Explicitly targeted issue requests are a narrow trusted
+                    # seam: the caller must already be the successor it names.
+                    if new_owner != str(normalized["requestingSessionKey"]):
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REQUESTER_MISMATCH", "new owner must be the current local session")
+                elif str(normalized["requestingSessionKey"]) != previous_owner:
+                    # An unclaimed recovery ref is issued by the retiring
+                    # owner.  The successor is intentionally unknown until a
+                    # distinct local session presents the one-time ref to
+                    # consume it.
+                    raise BrainControlError(
+                        "BRAIN_CONTROL_LOCAL_REBIND_ISSUER_MISMATCH",
+                        "an unclaimed recoveryRef must be issued by the current aggregate owner",
+                    )
+                if str(aggregate["task_instance_id"]) != str(normalized["taskInstanceId"]):
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_INSTANCE_MISMATCH", "task instance does not match aggregate")
+                if int(aggregate["head_revision"]) != int(normalized["expectedRevision"]):
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_REVISION", "aggregate revision changed before issue")
+                if normalized["aggregateKind"] == "task":
+                    if str(aggregate["package_version"]) != str(normalized["packageVersion"]):
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_PACKAGE", "task package version does not match")
+                    state = connection.execute(
+                        "SELECT state_hash,state_json FROM task_state_revisions WHERE aggregate_id=? AND task_revision=?",
+                        (aggregate_id, int(normalized["expectedRevision"])),
+                    ).fetchone()
+                    if state is None or str(state["state_hash"]) != str(aggregate["head_state_hash"]):
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_STATE", "task head state is unavailable")
+                    if not normalized["expectedStateHash"]:
+                        normalized["expectedStateHash"] = str(state["state_hash"])
+                    try:
+                        state_value = json.loads(str(state["state_json"]))
+                    except json.JSONDecodeError as exc:
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_STATE", "task state revision is invalid") from exc
+                    if int(state_value.get("contractRevision", -1)) != int(normalized["contractRevision"]):
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_CONTRACT_MISMATCH", "task state contract revision does not match")
+                    if str(state_value.get("planFingerprint", "")) != str(normalized["planFingerprint"]):
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_PLAN_MISMATCH", "task state plan fingerprint does not match")
+                    if normalized["expectedStateHash"] and str(state["state_hash"]) != str(normalized["expectedStateHash"]):
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STATE_MISMATCH", "task state hash does not match")
+                previous_receipt_id = str(normalized["previousReceiptId"])
+                previous_receipt_hash = str(normalized["previousReceiptHash"])
+                if normalized["aggregateKind"] == "intent":
+                    previous_receipt_id = previous_receipt_id or str(aggregate["latest_receipt_id"])
+                    receipt = connection.execute("SELECT payload_hash FROM intent_receipts WHERE receipt_id=?", (previous_receipt_id,)).fetchone()
+                    if receipt is None:
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_RECEIPT", "intent head receipt is unavailable")
+                    previous_receipt_hash = previous_receipt_hash or str(receipt["payload_hash"])
+                    if str(aggregate["latest_receipt_id"]) != previous_receipt_id:
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_STALE_RECEIPT", "intent receipt is not the aggregate head")
+                # Compute the idempotency hash only after all aggregate-bound
+                # defaults (revision, state hash, and receipt identity) have
+                # been derived.  Omitted defaults must replay identically.
+                payload_hash = _sha256({key: value for key, value in normalized.items() if key != "action"})
+                existing_active = connection.execute(
+                    """
+                    SELECT t.*,e.status,e.sequence,e.details_json,e.created_at AS event_created_at
+                    FROM local_rebind_transactions t
+                    JOIN local_rebind_events e ON e.rebind_id=t.rebind_id
+                    WHERE t.aggregate_id=?
+                      AND e.sequence=(SELECT MAX(e2.sequence) FROM local_rebind_events e2 WHERE e2.rebind_id=t.rebind_id)
+                      AND e.status IN ('issued','consumed','finalized')
+                    ORDER BY e.sequence DESC
+                    """,
+                    (aggregate_id,),
+                ).fetchall()
+                for existing in existing_active:
+                    status = str(existing["status"])
+                    if status in {"issued", "consumed"}:
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_ACTIVE_EXISTS", "an active local rebind already exists for this aggregate")
+                    if normalized["aggregateKind"] == "intent":
+                        current_aggregate = connection.execute(
+                            "SELECT * FROM intent_aggregates WHERE aggregate_id=?", (aggregate_id,)
+                        ).fetchone()
+                        consumed = current_aggregate is not None and self._intent_local_rebind_consumed(connection, current_aggregate, existing)
+                    else:
+                        current_aggregate = connection.execute(
+                            "SELECT * FROM task_aggregates WHERE aggregate_id=?", (aggregate_id,)
+                        ).fetchone()
+                        consumed = current_aggregate is not None and self._task_local_rebind_consumed(connection, current_aggregate, existing)
+                    if not consumed:
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_ACTIVE_EXISTS", "a finalized local rebind is still pending consumption for this aggregate")
+                raw_ref = ""
+                ref_hash = ""
+                for _ in range(8):
+                    raw_ref = "rr-" + secrets.token_urlsafe(48)
+                    if LOCAL_REBIND_REF_RE.fullmatch(raw_ref):
+                        ref_hash = _local_rebind_ref_hash(raw_ref)
+                        if connection.execute("SELECT 1 FROM local_rebind_transactions WHERE ref_hash=?", (ref_hash,)).fetchone() is None:
+                            break
+                else:
+                    raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_REF_GENERATION_FAILED", "unable to generate a unique recoveryRef")
+                rebind_id = "lrb-" + uuid.uuid4().hex
+                expected_state_hash = str(normalized["expectedStateHash"])
+                transaction_values = (
+                    rebind_id,
+                    normalized["commandId"],
+                    normalized["aggregateKind"],
+                    aggregate_id,
+                    normalized["taskId"],
+                    normalized["taskInstanceId"],
+                    normalized["workspaceKey"],
+                    previous_owner,
+                    new_owner,
+                    normalized["packageVersion"],
+                    int(normalized["expectedRevision"]),
+                    expected_state_hash,
+                    int(normalized["contractRevision"]),
+                    normalized["contractHash"],
+                    normalized["planFingerprint"],
+                    previous_receipt_id,
+                    previous_receipt_hash,
+                    normalized["projectProofHash"],
+                    ref_hash,
+                    payload_hash,
+                    normalized["source"],
+                    now,
+                    expires_at,
+                )
+                public_result = {
+                    "ok": True,
+                    "schema": LOCAL_REBIND_RESULT_SCHEMA,
+                    "rebindId": rebind_id,
+                    "aggregateKind": normalized["aggregateKind"],
+                    "aggregateId": aggregate_id,
+                    "taskId": normalized["taskId"],
+                    "taskInstanceId": normalized["taskInstanceId"],
+                    "workspaceKey": normalized["workspaceKey"],
+                    "previousOwnerSessionKey": previous_owner,
+                    "newOwnerSessionKey": new_owner,
+                    "packageVersion": normalized["packageVersion"],
+                    "expectedRevision": int(normalized["expectedRevision"]),
+                    "expectedStateHash": expected_state_hash,
+                    "contractRevision": int(normalized["contractRevision"]),
+                    "contractHash": normalized["contractHash"],
+                    "planFingerprint": normalized["planFingerprint"],
+                    "previousReceiptId": previous_receipt_id,
+                    "previousReceiptHash": previous_receipt_hash,
+                    "projectProofHash": normalized["projectProofHash"],
+                    "refHash": ref_hash,
+                    "status": "issued",
+                    "sequence": 1,
+                    "createdAt": now,
+                    "expiresAt": expires_at,
+                    "idempotent": False,
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                }
+                connection.execute(
+                    "INSERT INTO command_log(command_id,command_type,aggregate_id,expected_revision,payload_hash,result_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (normalized["commandId"], "issue_local_rebind", aggregate_id, int(normalized["expectedRevision"]), payload_hash, _canonical_json(public_result), now),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO local_rebind_transactions(
+                      rebind_id,command_id,aggregate_kind,aggregate_id,task_id,task_instance_id,workspace_key,
+                      previous_owner_session_key,new_owner_session_key,package_version,expected_revision,
+                      expected_state_hash,contract_revision,contract_hash,plan_fingerprint,previous_receipt_id,
+                      previous_receipt_hash,project_proof_hash,ref_hash,payload_hash,source,created_at,expires_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    transaction_values,
+                )
+                transaction = connection.execute("SELECT * FROM local_rebind_transactions WHERE rebind_id=?", (rebind_id,)).fetchone()
+                assert transaction is not None
+                self._append_local_rebind_event(connection, transaction, command_id=normalized["commandId"], event_type="issued", details={"source": normalized["source"]})
+                connection.execute("COMMIT")
+                public_result["recoveryRef"] = raw_ref
+                public_result["recoveryRefAvailable"] = True
+                return public_result
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def consume_local_rebind(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_local_rebind_request(request, action="consume")
+        payload_hash = _sha256({key: value for key, value in normalized.items() if key not in {"action", "recoveryRef"}} | {"refHash": normalized["refHash"]})
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                replay = connection.execute("SELECT payload_hash,result_json FROM command_log WHERE command_id=?", (normalized["commandId"],)).fetchone()
+                if replay is not None:
+                    if str(replay["payload_hash"]) != payload_hash:
+                        raise BrainControlError("BRAIN_CONTROL_COMMAND_ID_REUSED", "commandId was already used with a different local rebind consume payload")
+                    result = json.loads(str(replay["result_json"]))
+                    result["idempotent"] = True
+                    connection.execute("COMMIT")
+                    return result
+                transaction, event = self._local_rebind_transaction_for_ref(connection, normalized)
+                if str(event["status"]) == "expired":
+                    result = self._local_rebind_result(transaction, event)
+                    result.update({"ok": False, "available": False, "code": "BRAIN_CONTROL_LOCAL_REBIND_EXPIRED"})
+                    connection.execute("COMMIT")
+                    return result
+                if str(event["status"]) != "issued":
+                    code = "BRAIN_CONTROL_LOCAL_REBIND_ALREADY_CONSUMED" if str(event["status"]) == "consumed" else "BRAIN_CONTROL_LOCAL_REBIND_NOT_ISSUED"
+                    raise BrainControlError(code, f"recoveryRef cannot be consumed from {event['status']} state")
+                if str(normalized["requestingSessionKey"]) == str(transaction["previous_owner_session_key"]):
+                    raise BrainControlError(
+                        "BRAIN_CONTROL_LOCAL_REBIND_SUCCESSOR_SESSION_REQUIRED",
+                        "the issuing session cannot consume its own recoveryRef",
+                    )
+                now = _utc_now()
+                result = self._local_rebind_result(transaction, event, recovery_ref="")
+                result["status"] = "consumed"
+                result["sequence"] = int(event["sequence"]) + 1
+                connection.execute(
+                    "INSERT INTO command_log(command_id,command_type,aggregate_id,expected_revision,payload_hash,result_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (normalized["commandId"], "consume_local_rebind", str(transaction["aggregate_id"]), int(transaction["expected_revision"]), payload_hash, _canonical_json(result), now),
+                )
+                self._append_local_rebind_event(
+                    connection,
+                    transaction,
+                    command_id=normalized["commandId"],
+                    event_type="consumed",
+                    details={
+                        "source": normalized["source"],
+                        "newOwnerSessionKey": str(normalized["requestingSessionKey"]),
+                    },
+                )
+                latest = self._local_rebind_latest_event(connection, str(transaction["rebind_id"]))
+                assert latest is not None
+                result = self._local_rebind_result(transaction, latest)
+                connection.execute("COMMIT")
+                return result
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def _insert_legacy_rebind_projection(
+        self,
+        connection: sqlite3.Connection,
+        transaction: sqlite3.Row,
+        event: sqlite3.Row,
+        compatibility: Mapping[str, Any],
+    ) -> None:
+        """Persist a read-only projection for one legacy wrapper call.
+
+        The v18 local transaction/event ledger remains authoritative.  These
+        rows exist only so an older in-process caller can continue to validate
+        its receipt while it migrates.  They are inserted in the same SQLite
+        transaction as owner finalization; a compatibility projection can
+        therefore never outlive a failed transfer.
+        """
+
+        kind = str(compatibility.get("kind", "")).strip().lower()
+        if kind not in LOCAL_REBIND_KINDS:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_COMPATIBILITY_INVALID", "legacy projection kind is invalid")
+        command_id = _require_string(compatibility.get("commandId"), "legacyProjection.commandId", 160)
+        source = _require_string(compatibility.get("source", transaction["source"]), "legacyProjection.source", 160)
+        payload_hash = _sha256({
+            "kind": kind,
+            "rebindId": str(transaction["rebind_id"]),
+            "commandId": command_id,
+            "source": source,
+        })
+        result = self._local_rebind_result(transaction, event)
+        result["idempotent"] = False
+        if kind == "intent":
+            latest_receipt_id = _require_string(compatibility.get("latestReceiptId"), "legacyProjection.latestReceiptId", 160)
+            latest_receipt_hash = _require_sha256(compatibility.get("latestReceiptPayloadHash"), "legacyProjection.latestReceiptPayloadHash")
+            result = {
+                **result,
+                "schema": "super-brain.intent-session-rebind-result.v1",
+                "intentRevision": int(transaction["expected_revision"]),
+                "latestReceiptId": latest_receipt_id,
+                "latestReceiptPayloadHash": latest_receipt_hash,
+                "source": source,
+            }
+            existing = connection.execute(
+                "SELECT payload_hash FROM command_log WHERE command_id=?", (command_id,)
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    "INSERT INTO command_log(command_id,command_type,aggregate_id,expected_revision,payload_hash,result_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (command_id, "compat_rebind_intent_projection", str(transaction["aggregate_id"]), int(transaction["expected_revision"]), payload_hash, _canonical_json(result), _utc_now()),
+                )
+            elif str(existing["payload_hash"]) != payload_hash:
+                raise BrainControlError("BRAIN_CONTROL_COMMAND_ID_REUSED", "legacy intent projection commandId was reused")
+            row = connection.execute(
+                "SELECT rebind_id FROM intent_session_rebinds WHERE rebind_id=?", (str(transaction["rebind_id"]),)
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO intent_session_rebinds(
+                      rebind_id,command_id,aggregate_id,task_id,task_instance_id,workspace_key,
+                      previous_owner_session_key,new_owner_session_key,intent_revision,
+                      latest_receipt_id,latest_receipt_payload_hash,payload_hash,source,created_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        str(transaction["rebind_id"]), command_id, str(transaction["aggregate_id"]),
+                        str(transaction["task_id"]), str(transaction["task_instance_id"]), str(transaction["workspace_key"]),
+                        str(transaction["previous_owner_session_key"]), str(transaction["new_owner_session_key"] or self._local_rebind_effective_new_owner(transaction, event)),
+                        int(transaction["expected_revision"]), latest_receipt_id, latest_receipt_hash,
+                        payload_hash, source, _utc_now(),
+                    ),
+                )
+            return
+
+        package_version = _require_string(compatibility.get("packageVersion"), "legacyProjection.packageVersion", 48)
+        task_revision = compatibility.get("taskRevision")
+        if isinstance(task_revision, bool) or not isinstance(task_revision, int) or task_revision < 0:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_COMPATIBILITY_INVALID", "legacy task revision is invalid")
+        task_state_hash = _require_sha256(compatibility.get("taskStateHash"), "legacyProjection.taskStateHash")
+        contract_revision = compatibility.get("contractRevision")
+        if isinstance(contract_revision, bool) or not isinstance(contract_revision, int) or contract_revision < 1:
+            raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_COMPATIBILITY_INVALID", "legacy task contract revision is invalid")
+        plan_fingerprint = _require_string(compatibility.get("planFingerprint"), "legacyProjection.planFingerprint", 128)
+        result = {
+            **result,
+            "schema": "super-brain.task-session-rebind-receipt.v1",
+            "packageVersion": package_version,
+            "taskRevision": task_revision,
+            "taskStateHash": task_state_hash,
+            "contractRevision": contract_revision,
+            "planFingerprint": plan_fingerprint,
+            "source": source,
+        }
+        existing = connection.execute(
+            "SELECT payload_hash FROM command_log WHERE command_id=?", (command_id,)
+        ).fetchone()
+        if existing is None:
+            connection.execute(
+                "INSERT INTO command_log(command_id,command_type,aggregate_id,expected_revision,payload_hash,result_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                (command_id, "compat_rebind_task_projection", str(transaction["aggregate_id"]), int(task_revision), payload_hash, _canonical_json(result), _utc_now()),
+            )
+        elif str(existing["payload_hash"]) != payload_hash:
+            raise BrainControlError("BRAIN_CONTROL_COMMAND_ID_REUSED", "legacy task projection commandId was reused")
+        row = connection.execute(
+            "SELECT rebind_id FROM task_session_rebinds WHERE rebind_id=?", (str(transaction["rebind_id"]),)
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                """
+                INSERT INTO task_session_rebinds(
+                  rebind_id,command_id,aggregate_id,task_id,task_instance_id,workspace_key,
+                  previous_owner_session_key,new_owner_session_key,package_version,task_revision,
+                  task_state_hash,contract_revision,plan_fingerprint,payload_hash,source,created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    str(transaction["rebind_id"]), command_id, str(transaction["aggregate_id"]),
+                    str(transaction["task_id"]), str(transaction["task_instance_id"]), str(transaction["workspace_key"]),
+                    str(transaction["previous_owner_session_key"]), str(transaction["new_owner_session_key"] or self._local_rebind_effective_new_owner(transaction, event)),
+                    package_version, task_revision, task_state_hash, contract_revision, plan_fingerprint,
+                    payload_hash, source, _utc_now(),
+                ),
+            )
+
+    def finalize_local_rebind(
+        self,
+        request: Mapping[str, Any],
+        *,
+        legacy_compatibility: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized = self._normalize_local_rebind_request(request, action="finalize")
+        payload_hash = _sha256({key: value for key, value in normalized.items() if key not in {"action", "recoveryRef"}} | {"refHash": normalized["refHash"]})
+        pending_marker: Path | None = None
+        committed = False
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                replay = connection.execute("SELECT payload_hash,result_json FROM command_log WHERE command_id=?", (normalized["commandId"],)).fetchone()
+                if replay is not None:
+                    if str(replay["payload_hash"]) != payload_hash:
+                        raise BrainControlError("BRAIN_CONTROL_COMMAND_ID_REUSED", "commandId was already used with a different local rebind finalize payload")
+                    result = json.loads(str(replay["result_json"]))
+                    result["idempotent"] = True
+                    connection.execute("COMMIT")
+                    return result
+                transaction, event = self._local_rebind_transaction_for_ref(connection, normalized)
+                if str(event["status"]) == "expired":
+                    result = self._local_rebind_result(transaction, event)
+                    result.update({"ok": False, "available": False, "code": "BRAIN_CONTROL_LOCAL_REBIND_EXPIRED"})
+                    connection.execute("COMMIT")
+                    return result
+                if str(event["status"]) != "consumed":
+                    code = "BRAIN_CONTROL_LOCAL_REBIND_ALREADY_FINALIZED" if str(event["status"]) == "finalized" else "BRAIN_CONTROL_LOCAL_REBIND_NOT_CONSUMED"
+                    raise BrainControlError(code, f"recoveryRef cannot be finalized from {event['status']} state")
+                effective_new_owner = self._local_rebind_effective_new_owner(transaction, event)
+                if not effective_new_owner:
+                    raise BrainControlError(
+                        "BRAIN_CONTROL_LOCAL_REBIND_SUCCESSOR_SESSION_REQUIRED",
+                        "the recoveryRef has not been claimed by a successor session",
+                    )
+                if str(normalized["requestingSessionKey"]) != effective_new_owner:
+                    raise BrainControlError(
+                        "BRAIN_CONTROL_LOCAL_REBIND_REQUESTER_MISMATCH",
+                        "only the claimed successor session may finalize this recovery",
+                    )
+                # The immutable issue transaction already contains the exact
+                # contract/plan/project/receipt proofs and
+                # ``_verify_local_rebind_aggregate`` rechecks those values
+                # against the live aggregate.  A successor often has no
+                # materialized copy of the retiring session's contract, so
+                # these fields are optional assertions rather than required
+                # re-submissions.  If supplied, every value must still match;
+                # omission does not weaken the recoveryRef + claimed-session
+                # capability boundary.
+                for name, column in (("contractRevision", "contract_revision"), ("contractHash", "contract_hash"), ("planFingerprint", "plan_fingerprint"), ("projectProofHash", "project_proof_hash"), ("previousReceiptId", "previous_receipt_id"), ("previousReceiptHash", "previous_receipt_hash")):
+                    supplied = normalized.get(name, "")
+                    expected = str(transaction[column])
+                    if supplied not in (None, "", 0) and str(supplied) != expected:
+                        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_PROOF_STALE", f"{name} does not match the issued recovery transaction")
+                self._verify_local_rebind_aggregate(connection, transaction)
+                if str(transaction["aggregate_kind"]) == "intent":
+                    # Finalize records a verified successor authorization but
+                    # deliberately leaves the intent aggregate owner unchanged.
+                    # The next intent resolution commits owner + receipt in
+                    # one SQLite transaction after continuity has passed.
+                    pending_marker = self._begin_intent_context_projection_pending(
+                        task_id=str(transaction["task_id"]),
+                        task_instance_id=str(transaction["task_instance_id"]),
+                        workspace_key=str(transaction["workspace_key"]),
+                        mutation_id=normalized["commandId"],
+                    )
+                now = _utc_now()
+                result = self._local_rebind_result(transaction, event)
+                result["status"] = "finalized"
+                result["ownerTransferred"] = False
+                result["ownerTransferState"] = "pending"
+                result["idempotent"] = False
+                connection.execute(
+                    "INSERT INTO command_log(command_id,command_type,aggregate_id,expected_revision,payload_hash,result_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (normalized["commandId"], "finalize_local_rebind", str(transaction["aggregate_id"]), int(transaction["expected_revision"]), payload_hash, _canonical_json(result), now),
+                )
+                self._append_local_rebind_event(
+                    connection,
+                    transaction,
+                    command_id=normalized["commandId"],
+                    event_type="finalized",
+                    details={
+                        "source": normalized["source"],
+                        "newOwnerSessionKey": effective_new_owner,
+                        "ownerTransferred": False,
+                        "ownerTransferState": "pending",
+                    },
+                )
+                latest = self._local_rebind_latest_event(connection, str(transaction["rebind_id"]))
+                assert latest is not None
+                if legacy_compatibility is not None:
+                    self._insert_legacy_rebind_projection(connection, transaction, latest, legacy_compatibility)
+                result = self._local_rebind_result(transaction, latest)
+                result["ownerTransferred"] = False
+                result["ownerTransferState"] = "pending"
+                connection.execute("COMMIT")
+                committed = True
+                return result
+            except Exception:
+                try:
+                    connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                if pending_marker is not None and not committed:
+                    try:
+                        self._remove_intent_context_marker(pending_marker)
+                    except BrainControlError:
+                        pass
+                raise
+
+    def query_local_rebind(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_local_rebind_request(request, action="query")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                transaction, event = (
+                    self._local_rebind_transaction_for_command(connection, normalized)
+                    if normalized.get("targetCommandId")
+                    else self._local_rebind_transaction_for_ref(connection, normalized)
+                )
+                result = self._local_rebind_result(transaction, event)
+                # A command-bound lookup is intentionally metadata-only.  Do
+                # not expose the one-time reference even if a future caller
+                # accidentally passes an internal recovery value through.
+                if normalized.get("targetCommandId"):
+                    result["recoveryRef"] = ""
+                    result["recoveryRefAvailable"] = False
+                    result["targetCommandId"] = str(normalized["targetCommandId"])
+                connection.execute("COMMIT")
+                return result
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def revoke_local_rebind(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_local_rebind_request(request, action="revoke")
+        payload_hash = _sha256({key: value for key, value in normalized.items() if key not in {"action", "recoveryRef"}} | {"refHash": normalized["refHash"]})
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                replay = connection.execute("SELECT payload_hash,result_json FROM command_log WHERE command_id=?", (normalized["commandId"],)).fetchone()
+                if replay is not None:
+                    if str(replay["payload_hash"]) != payload_hash:
+                        raise BrainControlError("BRAIN_CONTROL_COMMAND_ID_REUSED", "commandId was already used with a different local rebind revoke payload")
+                    result = json.loads(str(replay["result_json"]))
+                    result["idempotent"] = True
+                    connection.execute("COMMIT")
+                    return result
+                transaction, event = (
+                    self._local_rebind_transaction_for_command(connection, normalized)
+                    if normalized.get("targetCommandId")
+                    else self._local_rebind_transaction_for_ref(connection, normalized)
+                )
+                if str(event["status"]) == "expired":
+                    result = self._local_rebind_result(transaction, event)
+                    result.update({"ok": False, "available": False, "code": "BRAIN_CONTROL_LOCAL_REBIND_EXPIRED"})
+                    connection.execute("COMMIT")
+                    return result
+                if str(event["status"]) not in {"issued", "consumed"}:
+                    code = "BRAIN_CONTROL_LOCAL_REBIND_ALREADY_REVOKED" if str(event["status"]) == "revoked" else "BRAIN_CONTROL_LOCAL_REBIND_NOT_ACTIVE"
+                    raise BrainControlError(code, f"recoveryRef cannot be revoked from {event['status']} state")
+                now = _utc_now()
+                result = self._local_rebind_result(transaction, event)
+                result["status"] = "revoked"
+                connection.execute(
+                    "INSERT INTO command_log(command_id,command_type,aggregate_id,expected_revision,payload_hash,result_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (normalized["commandId"], "revoke_local_rebind", str(transaction["aggregate_id"]), int(transaction["expected_revision"]), payload_hash, _canonical_json(result), now),
+                )
+                self._append_local_rebind_event(connection, transaction, command_id=normalized["commandId"], event_type="revoked", details={"source": normalized["source"]})
+                latest = self._local_rebind_latest_event(connection, str(transaction["rebind_id"]))
+                assert latest is not None
+                result = self._local_rebind_result(transaction, latest)
+                connection.execute("COMMIT")
+                return result
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def local_rebind(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        action = str(request.get("action", "") if isinstance(request, Mapping) else "").strip().lower()
+        if action == "issue":
+            return self.issue_local_rebind(request)
+        if action == "consume":
+            return self.consume_local_rebind(request)
+        if action == "finalize":
+            return self.finalize_local_rebind(request)
+        if action == "query":
+            return self.query_local_rebind(request)
+        if action == "revoke":
+            return self.revoke_local_rebind(request)
+        raise BrainControlError("BRAIN_CONTROL_LOCAL_REBIND_ACTION_INVALID", "unsupported local rebind action")
+
     def rebind_intent_session(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Compatibility entry for the pre-v18 intent transfer contract.
+
+        New callers must use the explicit local ``issue -> consume ->
+        finalize`` protocol.  The old API remains a narrow, single-database
+        compatibility operation so existing installed clients do not fail
+        open or silently switch to a different ownership model.  It is kept
+        mutually exclusive with an active v18 local recovery transaction.
+        """
+
+        if isinstance(request, Mapping) and (
+            request.get("recoveryRef") or str(request.get("action", "")).strip().lower() in {"finalize", "query", "revoke", "consume"}
+        ):
+            normalized = dict(request)
+            normalized.setdefault("action", "finalize" if request.get("recoveryRef") else request.get("action"))
+            return self.local_rebind(normalized)
+        return self._legacy_rebind_intent_session(request)
+
+    def _legacy_rebind_intent_session(self, request: Mapping[str, Any]) -> dict[str, Any]:
         normalized = self._normalize_intent_session_rebind_request(request)
         request_hash = _sha256(normalized)
         aggregate_id = self._intent_aggregate_id(
@@ -3983,15 +5484,6 @@ class BrainControl:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                # A rebind changes aggregate ownership but deliberately does
-                # not mint a fresh receipt.  Keep context blocked until the
-                # next resolve_intent publishes one for the new owner.
-                pending_marker = self._begin_intent_context_projection_pending(
-                    task_id=normalized["taskId"],
-                    task_instance_id=normalized["taskInstanceId"],
-                    workspace_key=normalized["workspaceKey"],
-                    mutation_id=normalized["commandId"],
-                )
                 replay = connection.execute(
                     "SELECT payload_hash,result_json FROM command_log WHERE command_id=?",
                     (normalized["commandId"],),
@@ -4002,11 +5494,45 @@ class BrainControl:
                             "BRAIN_CONTROL_COMMAND_ID_REUSED",
                             "commandId was already used with a different intent session rebind payload",
                         )
+                    lineage = connection.execute(
+                        "SELECT rebind_id,aggregate_id,previous_owner_session_key,new_owner_session_key,intent_revision,latest_receipt_id,latest_receipt_payload_hash,payload_hash FROM intent_session_rebinds WHERE command_id=?",
+                        (normalized["commandId"],),
+                    ).fetchone()
+                    if lineage is None or str(lineage["aggregate_id"]) != aggregate_id:
+                        raise BrainControlError(
+                            "BRAIN_CONTROL_INTENT_REBIND_REPLAY_UNVERIFIED",
+                            "intent session rebind replay has no matching immutable lineage",
+                        )
+                    for column, expected in (
+                        ("previous_owner_session_key", normalized["previousOwnerSessionKey"]),
+                        ("new_owner_session_key", normalized["newOwnerSessionKey"]),
+                        ("intent_revision", normalized["expectedIntentRevision"]),
+                        ("latest_receipt_id", normalized["latestReceiptId"]),
+                        ("latest_receipt_payload_hash", normalized["latestReceiptPayloadHash"]),
+                        ("payload_hash", request_hash),
+                    ):
+                        if str(lineage[column]) != str(expected):
+                            raise BrainControlError(
+                                "BRAIN_CONTROL_INTENT_REBIND_REPLAY_UNVERIFIED",
+                                f"intent session rebind replay {column} does not match immutable lineage",
+                            )
                     result = json.loads(str(replay["result_json"]))
                     result["idempotent"] = True
                     connection.execute("COMMIT")
                     committed = True
                     return result
+
+                # A rebind changes aggregate ownership but deliberately does
+                # not mint a fresh receipt.  Keep context blocked until the
+                # next resolve_intent publishes one for the new owner.  This
+                # marker is intentionally created only for a first execution;
+                # idempotent replay above must remain completely non-mutating.
+                pending_marker = self._begin_intent_context_projection_pending(
+                    task_id=normalized["taskId"],
+                    task_instance_id=normalized["taskInstanceId"],
+                    workspace_key=normalized["workspaceKey"],
+                    mutation_id=normalized["commandId"],
+                )
 
                 aggregate = connection.execute(
                     "SELECT * FROM intent_aggregates WHERE aggregate_id=?", (aggregate_id,)
@@ -4018,6 +5544,37 @@ class BrainControl:
                         "BRAIN_CONTROL_INTENT_REBIND_OWNER_MISMATCH",
                         "intent aggregate owner does not match the verified previous session",
                     )
+                active_local = connection.execute(
+                    """
+                    SELECT t.*,e.status,e.sequence,e.details_json
+                          ,e.created_at AS event_created_at
+                    FROM local_rebind_transactions t
+                    JOIN local_rebind_events e ON e.rebind_id=t.rebind_id
+                    WHERE t.aggregate_id=?
+                      AND e.sequence=(SELECT MAX(e2.sequence) FROM local_rebind_events e2 WHERE e2.rebind_id=t.rebind_id)
+                      AND e.status IN ('issued','consumed','finalized')
+                    ORDER BY e.sequence DESC
+                    """,
+                    (aggregate_id,),
+                ).fetchall()
+                for local in active_local:
+                    status = str(local["status"])
+                    if status != "finalized":
+                        raise BrainControlError(
+                            "BRAIN_CONTROL_LOCAL_REBIND_ACTIVE_EXISTS",
+                            "legacy intent rebind cannot race an active local recovery transaction",
+                        )
+                    # A finalized v18 intent transaction remains pending until
+                    # the successor resolves the next intent receipt.  Once
+                    # that receipt is published, the aggregate owner and head
+                    # receipt prove that the hand-off was consumed; only then
+                    # may this legacy compatibility seam proceed.
+                    consumed = self._intent_local_rebind_consumed(connection, aggregate, local)
+                    if not consumed:
+                        raise BrainControlError(
+                            "BRAIN_CONTROL_LOCAL_REBIND_ACTIVE_EXISTS",
+                            "legacy intent rebind cannot race a pending finalized local recovery transaction",
+                        )
                 if int(aggregate["head_revision"]) != normalized["expectedIntentRevision"]:
                     raise BrainControlError(
                         "BRAIN_CONTROL_INTENT_STALE_REVISION",
@@ -4123,6 +5680,22 @@ class BrainControl:
                 raise
 
     def issue_task_session_rebind(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Compatibility entry for the pre-v18 task transfer receipt.
+
+        Explicit v18 action requests are routed to the local transaction
+        state machine.  The old receipt request remains supported as an
+        atomic prepare-only authorization consumed by ``apply_task``; it
+        never changes the aggregate owner by itself and is rejected when a
+        v18 recovery is already active for the same aggregate.
+        """
+
+        if isinstance(request, Mapping) and str(request.get("action", "")).strip().lower() in {"issue", "consume", "finalize", "query", "revoke"}:
+            normalized = dict(request)
+            normalized.setdefault("aggregateKind", "task")
+            return self.local_rebind(normalized)
+        return self._legacy_issue_task_session_rebind(request)
+
+    def _legacy_issue_task_session_rebind(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Issue immutable authority for one future task-owner transfer.
 
         Unlike an intent rebind, this receipt deliberately does not update the
@@ -4167,6 +5740,23 @@ class BrainControl:
                     raise BrainControlError(
                         "BRAIN_CONTROL_TASK_SESSION_REBIND_OWNER_MISMATCH",
                         "task aggregate owner does not match the verified previous session",
+                    )
+                active_local = connection.execute(
+                    """
+                    SELECT t.rebind_id
+                    FROM local_rebind_transactions t
+                    JOIN local_rebind_events e ON e.rebind_id=t.rebind_id
+                    WHERE t.aggregate_id=?
+                      AND e.sequence=(SELECT MAX(e2.sequence) FROM local_rebind_events e2 WHERE e2.rebind_id=t.rebind_id)
+                      AND e.status IN ('issued','consumed')
+                    LIMIT 1
+                    """,
+                    (aggregate_id,),
+                ).fetchone()
+                if active_local is not None:
+                    raise BrainControlError(
+                        "BRAIN_CONTROL_LOCAL_REBIND_ACTIVE_EXISTS",
+                        "legacy task rebind cannot race an active local recovery transaction",
                     )
                 if str(aggregate["package_version"]) != normalized["packageVersion"]:
                     raise BrainControlError(
@@ -4306,11 +5896,9 @@ class BrainControl:
                         "BRAIN_CONTROL_INTENT_STALE_REVISION",
                         f"expected intent revision {normalized['expectedIntentRevision']}, found {actual_revision}",
                     )
+                session_rebind = None
                 if aggregate is not None and str(aggregate["owner_session_key"]) != normalized["ownerSessionKey"]:
-                    raise BrainControlError(
-                        "BRAIN_CONTROL_INTENT_SESSION_MISMATCH",
-                        "intent aggregate belongs to another root session",
-                    )
+                    session_rebind = self._verify_intent_local_rebind(connection, normalized, aggregate)
 
                 contract_fingerprint = _sha256(normalized["intentContract"])
                 previous = None
@@ -4403,10 +5991,16 @@ class BrainControl:
                         "" if receipt["ready"] else "material_unknown", normalized["source"], now,
                     ),
                 )
-                connection.execute(
-                    "UPDATE intent_aggregates SET head_revision=?,latest_receipt_id=?,updated_at=? WHERE aggregate_id=?",
-                    (intent_revision, receipt_id, now, aggregate_id),
-                )
+                if session_rebind is not None:
+                    connection.execute(
+                        "UPDATE intent_aggregates SET owner_session_key=?,head_revision=?,latest_receipt_id=?,updated_at=? WHERE aggregate_id=?",
+                        (normalized["ownerSessionKey"], intent_revision, receipt_id, now, aggregate_id),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE intent_aggregates SET head_revision=?,latest_receipt_id=?,updated_at=? WHERE aggregate_id=?",
+                        (intent_revision, receipt_id, now, aggregate_id),
+                    )
                 connection.execute("COMMIT")
                 committed = True
                 return self._publish_intent_context_projection(
@@ -6811,7 +8405,28 @@ class BrainControl:
             "previousOwnerSessionKey": _require_string(value.get("previousOwnerSessionKey"), "taskSessionRebind.previousOwnerSessionKey", 120),
             "newOwnerSessionKey": _require_string(value.get("newOwnerSessionKey"), "taskSessionRebind.newOwnerSessionKey", 120),
         }
-        if normalized["schema"] == "super-brain.intent-session-rebind-result.v1":
+        if normalized["schema"] == LOCAL_REBIND_RESULT_SCHEMA:
+            normalized.update(
+                {
+                    "status": _require_string(value.get("status"), "taskSessionRebind.status", 24).lower(),
+                    "refHash": _require_sha256(value.get("refHash"), "taskSessionRebind.refHash"),
+                    "aggregateKind": _require_string(value.get("aggregateKind"), "taskSessionRebind.aggregateKind", 24).lower(),
+                    "expectedRevision": value.get("expectedRevision"),
+                    "expectedStateHash": _optional_string(value.get("expectedStateHash"), "taskSessionRebind.expectedStateHash", 128).lower(),
+                    "contractRevision": value.get("contractRevision"),
+                    "contractHash": _require_sha256(value.get("contractHash"), "taskSessionRebind.contractHash"),
+                    "planFingerprint": _require_string(value.get("planFingerprint"), "taskSessionRebind.planFingerprint", 128),
+                }
+            )
+            if normalized["status"] != "finalized":
+                raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_INVALID", "local recovery must be finalized before task mutation")
+            if normalized["aggregateKind"] not in LOCAL_REBIND_KINDS:
+                raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_INVALID", "local recovery aggregate kind is invalid")
+            if not isinstance(normalized["expectedRevision"], int) or normalized["expectedRevision"] < 0:
+                raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_INVALID", "local recovery expectedRevision is invalid")
+            if not isinstance(normalized["contractRevision"], int) or normalized["contractRevision"] < 1:
+                raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_INVALID", "local recovery contractRevision is invalid")
+        elif normalized["schema"] == "super-brain.intent-session-rebind-result.v1":
             normalized.update(
                 {
                     "intentRevision": value.get("intentRevision"),
@@ -6855,6 +8470,46 @@ class BrainControl:
         previous_owner_session_key: str,
         evidence: Mapping[str, Any] | None,
     ) -> dict[str, Any] | None:
+        # A local recovery finalizes an immutable successor authorization
+        # before the following projection mutation.  The aggregate owner may
+        # still be the previous owner here; apply_task performs the owner +
+        # next-state CAS together.  Accept both pre-commit and replay paths
+        # while rejecting mismatched transaction or foreign scope.
+        if evidence is not None and str(evidence.get("schema", "")) == LOCAL_REBIND_RESULT_SCHEMA:
+            row = connection.execute(
+                """
+                SELECT t.*,e.status,e.sequence,e.details_json
+                FROM local_rebind_transactions t
+                JOIN local_rebind_events e ON e.rebind_id=t.rebind_id
+                WHERE t.rebind_id=? AND e.sequence=(SELECT MAX(e2.sequence) FROM local_rebind_events e2 WHERE e2.rebind_id=t.rebind_id)
+                """,
+                (str(evidence.get("rebindId", "")),),
+            ).fetchone()
+            if row is None or str(row["status"]) != "finalized":
+                raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_UNVERIFIED", "referenced local recovery is not finalized")
+            effective_new_owner = BrainControl._local_rebind_effective_new_owner(row, row)
+            expected = {
+                "aggregate_id": str(evidence.get("aggregateId", "")),
+                "aggregate_kind": "task",
+                "task_id": str(scope["taskId"]),
+                "task_instance_id": str(scope["taskInstanceId"]),
+                "workspace_key": str(scope["workspaceKey"]),
+                "new_owner_session_key": str(scope["ownerSessionKey"]),
+                "package_version": str(scope["packageVersion"]),
+                "expected_revision": int(evidence.get("expectedRevision", -1)),
+                "expected_state_hash": str(evidence.get("expectedStateHash", "")),
+                "contract_revision": int(evidence.get("contractRevision", -1)),
+                "contract_hash": str(evidence.get("contractHash", "")),
+                "plan_fingerprint": str(evidence.get("planFingerprint", "")),
+                "ref_hash": str(evidence.get("refHash", "")),
+            }
+            for column, value in expected.items():
+                actual = effective_new_owner if column == "new_owner_session_key" else row[column]
+                if str(actual) != str(value):
+                    raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_UNVERIFIED", f"local recovery {column} does not match")
+            if previous_owner_session_key not in {str(row["previous_owner_session_key"]), str(effective_new_owner)}:
+                raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_SCOPE_MISMATCH", "local recovery owner lineage does not match task aggregate")
+            return dict(evidence)
         if previous_owner_session_key == str(scope["ownerSessionKey"]):
             if evidence is not None:
                 raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_UNEXPECTED", "taskSessionRebind was supplied without an owner change")
@@ -6863,7 +8518,40 @@ class BrainControl:
             raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_REQUIRED", "task ownership changed without a verified session rebind")
         if str(evidence["previousOwnerSessionKey"]) != previous_owner_session_key:
             raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_SCOPE_MISMATCH", "taskSessionRebind previous owner does not match task aggregate")
-        if str(evidence["schema"]) == "super-brain.intent-session-rebind-result.v1":
+        if str(evidence["schema"]) == LOCAL_REBIND_RESULT_SCHEMA:
+            row = connection.execute(
+                """
+                SELECT t.*,e.status,e.sequence,e.details_json
+                FROM local_rebind_transactions t
+                JOIN local_rebind_events e ON e.rebind_id=t.rebind_id
+                WHERE t.rebind_id=? AND e.sequence=(SELECT MAX(e2.sequence) FROM local_rebind_events e2 WHERE e2.rebind_id=t.rebind_id)
+                """,
+                (str(evidence["rebindId"]),),
+            ).fetchone()
+            if row is None or str(row["status"]) != "finalized":
+                raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_UNVERIFIED", "referenced local recovery is not finalized")
+            effective_new_owner = BrainControl._local_rebind_effective_new_owner(row, row)
+            expected = {
+                "aggregate_id": str(evidence["aggregateId"]),
+                "aggregate_kind": "task",
+                "task_id": str(scope["taskId"]),
+                "task_instance_id": str(scope["taskInstanceId"]),
+                "workspace_key": str(scope["workspaceKey"]),
+                "previous_owner_session_key": previous_owner_session_key,
+                "new_owner_session_key": str(scope["ownerSessionKey"]),
+                "package_version": str(scope["packageVersion"]),
+                "expected_revision": int(evidence["expectedRevision"]),
+                "expected_state_hash": str(evidence.get("expectedStateHash", "")),
+                "contract_revision": int(evidence["contractRevision"]),
+                "contract_hash": str(evidence["contractHash"]),
+                "plan_fingerprint": str(evidence["planFingerprint"]),
+                "ref_hash": str(evidence["refHash"]),
+            }
+            for column, value in expected.items():
+                actual = effective_new_owner if column == "new_owner_session_key" else row[column]
+                if str(actual) != str(value):
+                    raise BrainControlError("BRAIN_CONTROL_TASK_SESSION_REBIND_UNVERIFIED", f"local recovery {column} does not match")
+        elif str(evidence["schema"]) == "super-brain.intent-session-rebind-result.v1":
             row = connection.execute(
                 """
                 SELECT rebind_id,aggregate_id,task_id,task_instance_id,workspace_key,
@@ -11144,6 +12832,10 @@ def main() -> int:
     rebind_task_session = sub.add_parser("rebind-task-session")
     rebind_task_session.add_argument("--request-json", default="")
     rebind_task_session.add_argument("--request-base64", default="")
+    for local_rebind_action in ("issue-local-rebind", "consume-local-rebind", "finalize-local-rebind", "query-local-rebind", "revoke-local-rebind"):
+        local_rebind_parser = sub.add_parser(local_rebind_action)
+        local_rebind_parser.add_argument("--request-json", default="")
+        local_rebind_parser.add_argument("--request-base64", default="")
     check_intent = sub.add_parser("check-intent")
     check_intent.add_argument("--request-json", default="")
     check_intent.add_argument("--request-base64", default="")
@@ -11237,6 +12929,16 @@ def main() -> int:
             result = control.rebind_intent_session(_read_encoded_command(args.request_base64) if args.request_base64 else _read_command(args.request_json))
         elif args.action == "rebind-task-session":
             result = control.issue_task_session_rebind(_read_encoded_command(args.request_base64) if args.request_base64 else _read_command(args.request_json))
+        elif args.action == "issue-local-rebind":
+            result = control.issue_local_rebind(_read_encoded_command(args.request_base64) if args.request_base64 else _read_command(args.request_json))
+        elif args.action == "consume-local-rebind":
+            result = control.consume_local_rebind(_read_encoded_command(args.request_base64) if args.request_base64 else _read_command(args.request_json))
+        elif args.action == "finalize-local-rebind":
+            result = control.finalize_local_rebind(_read_encoded_command(args.request_base64) if args.request_base64 else _read_command(args.request_json))
+        elif args.action == "query-local-rebind":
+            result = control.query_local_rebind(_read_encoded_command(args.request_base64) if args.request_base64 else _read_command(args.request_json))
+        elif args.action == "revoke-local-rebind":
+            result = control.revoke_local_rebind(_read_encoded_command(args.request_base64) if args.request_base64 else _read_command(args.request_json))
         elif args.action == "check-intent":
             result = control.check_intent(_read_encoded_command(args.request_base64) if args.request_base64 else _read_command(args.request_json))
         elif args.action == "resolve-decisions":

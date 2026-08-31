@@ -1,86 +1,58 @@
-"""Regression checks for the bounded Codex Stop-hook continuation decision."""
+"""Regression checks for the retired Stop-hook compatibility shim.
+
+H7 ``brain_turn`` owns lifecycle continuation now.  The old Stop hook remains
+only as a fail-open, no-op compatibility entry so an installed legacy hook
+cannot resume work or read host state.
+"""
 
 from __future__ import annotations
 
-import importlib.util
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "runtime" / "codex_stop_hook.py"
-SPEC = importlib.util.spec_from_file_location("codex_stop_hook", MODULE_PATH)
-assert SPEC and SPEC.loader
-HOOK = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(HOOK)
+STOP_HOOK = ROOT / "runtime" / "codex_stop_hook.py"
+DISPATCHER = ROOT / "runtime" / "codex_stop_hook_dispatcher.py"
 
 
-def resolution(**overrides: object) -> dict[str, object]:
-    value: dict[str, object] = {
-        "ok": True,
-        "actionAuthorization": "allowed",
-        "claimAllowed": True,
-        "needsConfirmation": False,
-        "blockers": [],
-        "taskId": "task-main",
-        "focusId": "approved-main",
-        "focusLabel": "Approved main line",
-        "nextAction": "run the next local verification",
-        "latestUserInstruction": "what is the current progress?",
-    }
-    value.update(overrides)
+def _run(path: Path, *arguments: str, stdin: str = "") -> dict[str, object]:
+    completed = subprocess.run(
+        [sys.executable, str(path), *arguments],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    value = json.loads(completed.stdout)
+    assert isinstance(value, dict)
     return value
 
 
-def test_blocks_a_status_only_stop_when_local_work_remains() -> None:
-    result = HOOK.decide_stop({"stop_hook_active": False}, resolution())
-    assert result["decision"] == "block"
-    assert "run the next local verification" in result["reason"]
-    assert "status-only" in result["reason"]
+def test_retired_stop_hook_is_fail_open_noop() -> None:
+    assert _run(STOP_HOOK, stdin=json.dumps({"legacy_host_payload": "must not be read"})) == {}
 
 
-def test_never_reblocks_an_already_continued_stop_turn() -> None:
-    assert HOOK.decide_stop({"stop_hook_active": True}, resolution()) == {}
+def test_retired_dispatcher_declares_h7_replacement() -> None:
+    assert _run(DISPATCHER, "--describe") == {
+        "ok": True,
+        "state": "retired",
+        "replacement": "H7 brain_turn",
+    }
 
 
-def test_withheld_or_user_blocked_work_never_continues() -> None:
-    assert HOOK.decide_stop({}, resolution(actionAuthorization="withheld")) == {}
-    assert HOOK.decide_stop({}, resolution(needsConfirmation=True)) == {}
-    assert HOOK.decide_stop({}, resolution(blockers=["waiting for the user to choose"])) == {}
-    assert HOOK.decide_stop({}, resolution(nextAction="No automatic action: waiting for the user's choice.")) == {}
-    assert HOOK.decide_stop({}, resolution(nextAction="等待用户确认后再继续。")) == {}
-
-
-def test_explicitly_nonblocking_evidence_does_not_hold_the_current_workline() -> None:
-    result = HOOK.decide_stop(
-        {},
-        resolution(blockers=["P7 is awaiting a real host receipt; it does not block core continuity."]),
-    )
-    assert result["decision"] == "block"
-    assert HOOK.decide_stop({}, resolution(blockers=["P7 仍等待真实 Host 证据；它不阻断核心主线。"]))["decision"] == "block"
-
-
-def test_explicit_stop_or_replace_wins_over_old_mainline() -> None:
-    assert HOOK.decide_stop({}, resolution(latestUserInstruction="stop")) == {}
-    assert HOOK.decide_stop({}, resolution(latestUserInstruction="暂停")) == {}
-    assert HOOK.decide_stop({}, resolution(latestUserInstruction="停止当前主线")) == {}
-    assert HOOK.decide_stop({}, resolution(latestUserInstruction="do not continue the task")) == {}
-
-
-def test_reason_never_echoes_secret_shaped_action_content() -> None:
-    result = HOOK.decide_stop({}, resolution(nextAction="verify token=abc123secret then continue"))
-    assert result["decision"] == "block"
-    assert "token=[REDACTED]" in result["reason"]
-    assert "abc123secret" not in result["reason"]
+def test_retired_dispatcher_is_fail_open_noop() -> None:
+    assert _run(DISPATCHER, stdin=json.dumps({"legacy_host_payload": "must not be read"})) == {}
 
 
 def main() -> None:
     tests = [
-        test_blocks_a_status_only_stop_when_local_work_remains,
-        test_never_reblocks_an_already_continued_stop_turn,
-        test_withheld_or_user_blocked_work_never_continues,
-        test_explicitly_nonblocking_evidence_does_not_hold_the_current_workline,
-        test_explicit_stop_or_replace_wins_over_old_mainline,
-        test_reason_never_echoes_secret_shaped_action_content,
+        test_retired_stop_hook_is_fail_open_noop,
+        test_retired_dispatcher_declares_h7_replacement,
+        test_retired_dispatcher_is_fail_open_noop,
     ]
     for test in tests:
         test()

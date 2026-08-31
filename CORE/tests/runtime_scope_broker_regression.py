@@ -112,6 +112,58 @@ def test_expired_grants_and_leases_fail_closed() -> None:
         assert broker.status(leased_channel, now=NOW + timedelta(seconds=16)).code == "H7_SCOPE_CHANNEL_UNBOUND"
 
 
+def test_pairing_request_ref_is_scoped_short_lived_and_one_shot() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-scope-broker-ref-") as directory:
+        broker = ScopeBroker(Path(directory) / "state")
+        workline_id = register(broker, contract())
+        channel, pairing_ref = broker.open_channel_with_ref(now=NOW)
+        assert pairing_ref.startswith("sbpr-") and len(pairing_ref) == 37
+        first = broker.status(channel, now=NOW)
+        assert first.ok and first["pairingRequestRef"] == pairing_ref
+        assert broker.pairing_request_ref(channel, now=NOW) == pairing_ref
+
+        bound = broker.pair_request(pairing_ref, workline_id, access_mode="read", now=NOW)
+        assert bound.ok and bound.code == "H7_SCOPE_CHANNEL_BOUND"
+        assert broker.pairing_request_ref(channel, now=NOW) == ""
+        assert "pairingRequestRef" not in broker.status(channel, now=NOW).public_projection()
+        replay = broker.pair_request(pairing_ref, workline_id, access_mode="read", now=NOW)
+        assert not replay.ok and replay.code in {
+            "H7_SCOPE_PAIRING_REQUEST_REF_EXPIRED",
+            "H7_SCOPE_PAIRING_REQUEST_REF_INVALID",
+        }
+
+
+def test_pairing_request_ref_expires_and_refreshes_without_rebinding_scope() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-scope-broker-ref-expiry-") as directory:
+        broker = ScopeBroker(Path(directory) / "state")
+        workline_id = register(broker, contract())
+        channel, old_ref = broker.open_channel_with_ref(now=NOW)
+        expired = broker.status(channel, now=NOW + timedelta(seconds=301))
+        assert expired.ok and expired.state == "unbound"
+        new_ref = str(expired["pairingRequestRef"])
+        assert new_ref.startswith("sbpr-") and new_ref != old_ref
+        stale = broker.pair_request(old_ref, workline_id, access_mode="read", now=NOW + timedelta(seconds=301))
+        assert not stale.ok and stale.code == "H7_SCOPE_PAIRING_REQUEST_REF_EXPIRED"
+        assert broker.pair_request(new_ref, workline_id, access_mode="read", now=NOW + timedelta(seconds=301)).ok
+
+
+def test_pairing_request_ref_concurrent_consumption_binds_once() -> None:
+    with tempfile.TemporaryDirectory(prefix="super-brain-scope-broker-ref-concurrent-") as directory:
+        broker = ScopeBroker(Path(directory) / "state")
+        workline_id = register(broker, contract())
+        channel, pairing_ref = broker.open_channel_with_ref(now=NOW)
+        import concurrent.futures
+
+        def consume() -> str:
+            return broker.pair_request(pairing_ref, workline_id, access_mode="read", now=NOW).code
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            codes = list(executor.map(lambda _: consume(), range(8)))
+        assert codes.count("H7_SCOPE_CHANNEL_BOUND") == 1, codes
+        assert all(code in {"H7_SCOPE_CHANNEL_BOUND", "H7_SCOPE_PAIRING_REQUEST_REF_EXPIRED", "H7_SCOPE_PAIRING_REQUEST_REF_INVALID", "H7_SCOPE_CHANNEL_ALREADY_BOUND"} for code in codes), codes
+        assert broker.authorize(channel, write=False, now=NOW).ok
+
+
 def test_registry_survives_restart_but_channels_and_grants_do_not() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-scope-broker-") as directory:
         state_root = Path(directory) / "state"
@@ -194,10 +246,13 @@ def test_registry_tampering_fails_closed() -> None:
 def main() -> None:
     test_unbound_pair_foreign_replay_and_write_lease()
     test_expired_grants_and_leases_fail_closed()
+    test_pairing_request_ref_is_scoped_short_lived_and_one_shot()
+    test_pairing_request_ref_expires_and_refreshes_without_rebinding_scope()
+    test_pairing_request_ref_concurrent_consumption_binds_once()
     test_registry_survives_restart_but_channels_and_grants_do_not()
     test_contract_hash_conflicts_and_host_identity_dependencies_are_rejected()
     test_registry_tampering_fails_closed()
-    print("runtime_scope_broker_regression: 5 passed")
+    print("runtime_scope_broker_regression: 8 passed")
 
 
 if __name__ == "__main__":

@@ -295,6 +295,7 @@ class BrokerChannelHandle:
     def __init__(self, client: Any, channel_id: str) -> None:
         self.client = client
         self._channel_id = str(channel_id or "").strip()
+        self._pairing_request_ref = str(getattr(client, "last_pairing_request_ref", "") or "").strip()
         self._closed = False
         self._lock = threading.RLock()
         # Reopening is safe only when the endpoint proves that the Broker
@@ -307,6 +308,11 @@ class BrokerChannelHandle:
     def channel_id(self) -> str:
         with self._lock:
             return self._channel_id
+
+    @property
+    def pairing_request_ref(self) -> str:
+        with self._lock:
+            return self._pairing_request_ref
 
     def _current_instance_id(self, *, force_probe: bool = False) -> str:
         getter = getattr(self.client, "current_instance_id", None)
@@ -345,6 +351,7 @@ class BrokerChannelHandle:
         if not _CHANNEL_RE.fullmatch(replacement):
             return False
         self._channel_id = replacement
+        self._pairing_request_ref = str(getattr(self.client, "last_pairing_request_ref", "") or "").strip()
         self._broker_instance_id = self._current_instance_id()
         return True
 
@@ -377,6 +384,7 @@ class BrokerChannelHandle:
             if not self._broker_instance_id or not current_instance_id or current_instance_id == self._broker_instance_id:
                 return False
             self._channel_id = ""
+            self._pairing_request_ref = ""
             return self._open_unbound_locked(replace=True)
 
     def close_channel(self) -> None:
@@ -388,6 +396,7 @@ class BrokerChannelHandle:
             self._closed = True
             channel_id = self._channel_id
             self._channel_id = ""
+            self._pairing_request_ref = ""
         close = getattr(self.client, "close_channel", None)
         if callable(close) and channel_id:
             try:
@@ -424,6 +433,10 @@ class BrokerScopeProvider:
     @property
     def channel_id(self) -> str:
         return self.channel_handle.channel_id
+
+    @property
+    def pairing_request_ref(self) -> str:
+        return self.channel_handle.pairing_request_ref
 
     def _clear_private_lease(self) -> None:
         with self._lock:
@@ -557,6 +570,26 @@ class BrokerScopeProvider:
 
     def authorize(self, *, write: bool = False) -> Mapping[str, Any]:
         return self._call(write=write, force=True)
+
+    def refresh_contract(self, contract: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Refresh the Broker projection after the H7 contract is committed."""
+
+        if not isinstance(contract, Mapping):
+            return {"ok": False, "code": "H7_SCOPE_CONTRACT_INVALID", "state": "withheld"}
+        with self._lock:
+            channel_id = self.channel_id
+            lease_id = self._lease_id
+        if not channel_id or not lease_id:
+            return {"ok": False, "code": "H7_SCOPE_CONTRACT_REFRESH_AUTH_INVALID", "state": "withheld"}
+        try:
+            result = self.client.refresh_bound_contract(channel_id, lease_id, contract, allow_auto_start=False)
+        except Exception:
+            result = {"ok": False, "code": "H7_SCOPE_BROKER_UNAVAILABLE", "state": "withheld"}
+        value = dict(result) if isinstance(result, Mapping) else {"ok": False, "code": "H7_SCOPE_BROKER_INVALID", "state": "withheld"}
+        self._remember_private_lease(result, value)
+        if value.get("ok") is True and isinstance(value.get("scope"), Mapping):
+            self.last_context = _context_from_projection(value.get("scope"))
+        return value
 
     def project_root(self) -> Path | None:
         # The project root is a material proof input and always comes from the

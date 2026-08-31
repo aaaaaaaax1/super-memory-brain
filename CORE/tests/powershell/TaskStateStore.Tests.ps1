@@ -202,6 +202,67 @@ Describe 'TaskStateStore' {
     (Get-Content -Raw -Encoding UTF8 -LiteralPath (Get-SuperBrainCanonicalTaskPath (Join-Path $workspace 'task-state-store\projections') 'task-reconcile-materialized' '.json') | ConvertFrom-Json).revision | Should Be 1
   }
 
+  It 'does not delete a foreign entity after target drift during a direct clear' {
+    $workspace = Join-Path $TestDrive 'direct-clear-drift\workspace'
+    $shared = Join-Path $TestDrive 'direct-clear-drift\shared'
+    $taskId = 'task-direct-clear-drift'
+    $payload = Join-Path $TestDrive 'direct-clear-drift\payload.json'
+    $target = Get-TestTaskStateTarget $workspace $shared $taskId 'context'
+    Write-TestJson $payload ([pscustomobject]@{
+      taskId = $taskId
+      workspaceKey = 'ws-direct-clear-drift'
+      status = 'active'
+      acceptedGoal = 'retain foreign target on identity drift'
+      agentId = $script:DefaultTaskStateOwner.agentId
+      sessionId = $script:DefaultTaskStateOwner.sessionId
+      platform = $script:DefaultTaskStateOwner.platform
+      workspace = $script:DefaultTaskStateOwner.workspace
+    })
+    $seed = Invoke-NormalTaskStateCommit -TaskId $taskId -EntityKind context -PayloadPath $payload -EntityPath $target -ExpectedRevision 0 -Workspace $workspace -Shared $shared
+    $seed.exitCode | Should Be 0
+    $foreign = [pscustomobject]@{ taskId = 'task-foreign'; workspaceKey = 'ws-foreign'; status = 'active'; body = 'must survive' }
+    Write-TestJson $target $foreign
+    $foreignHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+
+    $cleared = Invoke-NormalTaskStateCommit -TaskId $taskId -EntityKind context -EntityPath $target -Operation clear -ExpectedRevision 1 -Workspace $workspace -Shared $shared
+    $cleared.exitCode | Should Be 1
+    $cleared.value.error | Should Match 'TASK_STATE_COMPLETION_DELETE_IDENTITY_MISMATCH'
+    (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash | Should Be $foreignHash
+    $projectionPath = Get-SuperBrainCanonicalTaskPath (Join-Path $workspace 'task-state-store\projections') $taskId '.json'
+    (Get-Content -LiteralPath $projectionPath -Raw -Encoding UTF8 | ConvertFrom-Json).revision | Should Be 1
+  }
+
+  It 'withholds prepared direct replay when an external writer changes the materialized target' {
+    $workspace = Join-Path $TestDrive 'direct-replay-drift\workspace'
+    $shared = Join-Path $TestDrive 'direct-replay-drift\shared'
+    $taskId = 'task-direct-replay-drift'
+    $payload = Join-Path $workspace 'task-state-store\staging\task-direct-replay-drift\payload.json'
+    $target = Get-TestTaskStateTarget $workspace $shared $taskId 'context'
+    Write-TestJson $payload ([pscustomobject]@{
+      taskId = $taskId
+      workspaceKey = 'ws-direct-replay-drift'
+      status = 'active'
+      acceptedGoal = 'prepared replay must not overwrite an external writer'
+      agentId = $script:DefaultTaskStateOwner.agentId
+      sessionId = $script:DefaultTaskStateOwner.sessionId
+      platform = $script:DefaultTaskStateOwner.platform
+      workspace = $script:DefaultTaskStateOwner.workspace
+    })
+    $failed = Invoke-NormalTaskStateCommit -TaskId $taskId -EntityKind context -PayloadPath $payload -EntityPath $target -ExpectedRevision 0 -Workspace $workspace -Shared $shared -FaultPoint after_materialize
+    $failed.exitCode | Should Be 1
+    Test-Path -LiteralPath $target | Should Be $true
+    Write-TestJson $target ([pscustomobject]@{ taskId = 'task-external'; workspaceKey = 'ws-external'; status = 'active'; body = 'external writer wins' })
+    $externalHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+
+    $reconciled = Invoke-TaskStateStore @('-Action','Reconcile','-WorkspaceRoot',$workspace,'-SharedRoot',$shared,'-Apply','-Json')
+    $reconciled.exitCode | Should Be 1
+    $reconciled.value.blockedCount | Should BeGreaterThan 0
+    @($reconciled.value.blocked | Where-Object { [string]$_.reason -eq 'target_changed_after_prepare' }).Count | Should BeGreaterThan 0
+    (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash | Should Be $externalHash
+    $events = @(Get-Content -LiteralPath (Get-SuperBrainCanonicalTaskPath (Join-Path $workspace 'task-state-store\events') $taskId '.jsonl') -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json })
+    @($events | Where-Object { [string]$_.phase -eq 'committed' }).Count | Should Be 0
+  }
+
   It 'rejects cross-task targets and payload identities before materializing' {
     $workspace = Join-Path $TestDrive 'identity\workspace'
     $shared = Join-Path $TestDrive 'identity\shared'
@@ -909,7 +970,10 @@ Describe 'TaskStateStore' {
     Copy-Item -LiteralPath (Join-Path $root 'scripts\internal\phase-closeout-core.ps1') -Destination (Join-Path $scripts 'internal\phase-closeout-core.ps1')
     Copy-Item -LiteralPath (Join-Path $root 'manifest.json') -Destination (Join-Path $package 'manifest.json')
     Copy-Item -LiteralPath (Join-Path $root 'memory-policy.json') -Destination (Join-Path $package 'memory-policy.json')
-    foreach ($name in @('brain_control.py','migration_control.py','memory_consolidation.py')) {
+    # brain_control imports the package-owned context helper directly; keep
+    # the isolated integration fixture representative of the supported runtime
+    # bundle instead of accidentally testing a missing dependency.
+    foreach ($name in @('brain_control.py','brain_context.py','migration_control.py','memory_consolidation.py')) {
       Copy-Item -LiteralPath (Join-Path $root "runtime\$name") -Destination (Join-Path $runtime $name)
     }
 

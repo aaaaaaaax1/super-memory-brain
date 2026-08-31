@@ -146,6 +146,11 @@ class LocalBrokerStdioTransportHealth:
         channel = self._channel_status() if not closed else {"ok": False, "code": "H7_SCOPE_CHANNEL_CLOSED", "state": "withheld"}
         channel_code = str(channel.get("code", "H7_SCOPE_BROKER_UNAVAILABLE"))
         channel_state = str(channel.get("state", "withheld"))
+        pairing_ref = str(
+            channel.get("pairingRequestRef", "")
+            or getattr(self._channel_handle, "pairing_request_ref", "")
+            or ""
+        )
         channel_ok = bool(
             channel.get("ok") is True
             and channel_code in {"H7_SCOPE_CHANNEL_UNBOUND", "H7_SCOPE_CHANNEL_BOUND"}
@@ -177,6 +182,7 @@ class LocalBrokerStdioTransportHealth:
                 "state": channel_state,
                 "code": channel_code,
                 "accessMode": str(channel.get("accessMode", "")),
+                "pairingRequestRef": pairing_ref if channel_state == "unbound" else "",
             },
             "packageVersion": _package_version(runtime),
             "registryVersion": int((runtime.get("servedCoreRules") or {}).get("registryVersion", 0) or 0),

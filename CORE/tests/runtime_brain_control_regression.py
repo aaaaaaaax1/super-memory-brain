@@ -1370,7 +1370,7 @@ def test_offline_mcp_recall_rejects_explicit_task_scope(root: Path) -> None:
 
 def test_card_schema_migration_recovery(root: Path) -> None:
     control = BrainControl(root / "card-migration-recovery")
-    assert control.status()["schemaVersion"] == 17
+    assert control.status()["schemaVersion"] == 18
     connection = sqlite3.connect(control.db_path)
     try:
         connection.execute("DROP TRIGGER card_revisions_no_update")
@@ -1396,7 +1396,7 @@ def test_card_schema_migration_recovery(root: Path) -> None:
     finally:
         connection.close()
     recovered = BrainControl(control.state_root)
-    assert recovered.status()["schemaVersion"] == 17
+    assert recovered.status()["schemaVersion"] == 18
     connection = sqlite3.connect(recovered.db_path)
     try:
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=4").fetchone()[0] == 1
@@ -2191,6 +2191,19 @@ def test_intent_authority(root: Path) -> None:
 
     replay = control.resolve_intent(request)
     assert replay["idempotent"] and replay["intentResolutionReceipt"]["receiptId"] == resolved["intentResolutionReceipt"]["receiptId"]
+    # An unknown pending marker is intentionally retained: a successful
+    # replay may clear only its own marker or one proven by the immutable
+    # command journal.  Explicitly remove this synthetic fixture before
+    # continuing, matching the real repair path for an orphaned marker.
+    pending_root = intent_context_pending_root(
+        control.state_root,
+        task_id=str(request["taskId"]),
+        task_instance_id=str(request["taskInstanceId"]),
+        workspace_key=str(request["workspaceKey"]),
+    )
+    assert read_intent_context_projection(control.state_root, current_request)["code"] == "BRAIN_CONTEXT_INTENT_PROJECTION_PENDING"
+    for marker in pending_root.glob("*.json"):
+        control._remove_intent_context_marker(marker)
     assert read_intent_context_projection(control.state_root, current_request)["current"]
     try:
         reused = dict(request)
@@ -2311,6 +2324,14 @@ def test_intent_session_rebind_preserves_original_task_intent(root: Path) -> Non
         intent_check_request(resumed, continued),
     )["current"] is True
 
+    # Replaying the legacy compatibility command after the successor has
+    # already published its fresh receipt is strictly idempotent.  In
+    # particular, replay must not recreate the pending context marker or
+    # re-block an otherwise current projection.
+    replay_after_resolve = control.rebind_intent_session(rebind_request)
+    assert replay_after_resolve["idempotent"] is True
+    assert not any(pending_root.glob("*.json"))
+
     connection = sqlite3.connect(control.db_path)
     try:
         aggregate = connection.execute(
@@ -2344,6 +2365,511 @@ def test_intent_session_rebind_preserves_original_task_intent(root: Path) -> Non
         raise AssertionError("a stale previous owner must not reclaim the intent aggregate")
     except BrainControlError as exc:
         assert exc.code == "BRAIN_CONTROL_INTENT_REBIND_OWNER_MISMATCH"
+
+    unchanged = dict(rebind_request)
+    unchanged["commandId"] = "intent-rebind-transfer-unchanged"
+    unchanged["newOwnerSessionKey"] = unchanged["previousOwnerSessionKey"]
+    try:
+        control.rebind_intent_session(unchanged)
+        raise AssertionError("intent session rebind must reject an unchanged owner")
+    except BrainControlError as exc:
+        assert exc.code == "BRAIN_CONTROL_INTENT_REBIND_OWNER_UNCHANGED"
+
+
+def test_v18_intent_rebind_consumption_allows_legacy_rebind(root: Path) -> None:
+    """A finalized v18 transfer is consumed by a same-revision receipt.
+
+    The successor's resolve may keep the intent revision unchanged.  Once
+    that receipt is published, the finalized transaction must no longer block
+    the legacy compatibility seam, including when an older finalized
+    transaction remains in the append-only history.
+    """
+
+    control = BrainControl(root / "intent-v18-rebind-consumption")
+    original = intent_request("intent-v18-original", 0)
+    resolved = control.resolve_intent(original)
+    old_receipt = resolved["intentResolutionReceipt"]
+    assert isinstance(old_receipt, dict)
+    contract_hash = "a" * 64
+
+    def issue_consume_finalize(
+        prefix: str,
+        owner: str,
+        successor: str,
+        receipt: dict[str, object],
+    ) -> dict[str, object]:
+        issued = control.issue_local_rebind(
+            {
+                "action": "issue",
+                "commandId": f"{prefix}-issue",
+                "requestingSessionKey": owner,
+                "aggregateKind": "intent",
+                "taskId": original["taskId"],
+                "taskInstanceId": original["taskInstanceId"],
+                "workspaceKey": original["workspaceKey"],
+                "packageVersion": PACKAGE_VERSION,
+                "expectedRevision": resolved["intentRevision"],
+                "contractRevision": original["contractRevision"],
+                "contractHash": contract_hash,
+                "planFingerprint": original["planFingerprint"],
+                "previousReceiptId": receipt["receiptId"],
+                "previousReceiptHash": receipt["payloadHash"],
+                "source": "runtime_brain_control_regression.v18",
+            }
+        )
+        assert issued["status"] == "issued" and issued["recoveryRefAvailable"]
+        recovery_ref = issued.get("recoveryRef")
+        assert isinstance(recovery_ref, str) and recovery_ref
+
+        consumed = control.consume_local_rebind(
+            {
+                "action": "consume",
+                "commandId": f"{prefix}-consume",
+                "requestingSessionKey": successor,
+                "recoveryRef": recovery_ref,
+                "source": "runtime_brain_control_regression.v18",
+            }
+        )
+        assert consumed["status"] == "consumed"
+
+        finalized = control.finalize_local_rebind(
+            {
+                "action": "finalize",
+                "commandId": f"{prefix}-finalize",
+                "requestingSessionKey": successor,
+                "recoveryRef": recovery_ref,
+                "contractRevision": original["contractRevision"],
+                "contractHash": contract_hash,
+                "planFingerprint": original["planFingerprint"],
+                "previousReceiptId": receipt["receiptId"],
+                "previousReceiptHash": receipt["payloadHash"],
+                "source": "runtime_brain_control_regression.v18",
+            }
+        )
+        assert finalized["status"] == "finalized"
+        assert finalized["newOwnerSessionKey"] == successor
+        return finalized
+
+    first_finalized = issue_consume_finalize(
+        "intent-v18-first",
+        str(original["ownerSessionKey"]),
+        "sid-" + "b" * 24,
+        old_receipt,
+    )
+
+    # Finalization alone is not enough: before the successor resolves, the
+    # legacy compatibility route must still be blocked.
+    pending_legacy = {
+        "commandId": "intent-v18-pending-legacy",
+        "taskId": original["taskId"],
+        "taskInstanceId": original["taskInstanceId"],
+        "workspaceKey": original["workspaceKey"],
+        "previousOwnerSessionKey": original["ownerSessionKey"],
+        "newOwnerSessionKey": "sid-" + "c" * 24,
+        "expectedIntentRevision": resolved["intentRevision"],
+        "latestReceiptId": old_receipt["receiptId"],
+        "latestReceiptPayloadHash": old_receipt["payloadHash"],
+        "source": "runtime_brain_control_regression.v18",
+    }
+    try:
+        control.rebind_intent_session(pending_legacy)
+        raise AssertionError("unresolved finalized v18 transfer must block legacy rebind")
+    except BrainControlError as exc:
+        assert exc.code == "BRAIN_CONTROL_LOCAL_REBIND_ACTIVE_EXISTS"
+
+    first_request = intent_request(
+        "intent-v18-first-resolve",
+        resolved["intentRevision"],
+        instruction="continue after the first local-session recovery",
+    )
+    first_request["ownerSessionKey"] = first_finalized["newOwnerSessionKey"]
+    first_request["sessionRebind"] = first_finalized
+    first_resumed = control.resolve_intent(first_request)
+    assert first_resumed["intentRevision"] == resolved["intentRevision"]
+    first_receipt = first_resumed["intentResolutionReceipt"]
+    assert isinstance(first_receipt, dict)
+    assert first_receipt["receiptId"] != old_receipt["receiptId"]
+
+    # A second v18 hand-off leaves the first finalized transaction in history.
+    # The old record must be recognized as consumed by its successor receipt,
+    # even though the aggregate owner is now the second successor.
+    second_finalized = issue_consume_finalize(
+        "intent-v18-second",
+        str(first_finalized["newOwnerSessionKey"]),
+        "sid-" + "c" * 24,
+        first_receipt,
+    )
+    second_request = intent_request(
+        "intent-v18-second-resolve",
+        resolved["intentRevision"],
+        instruction="continue after the second local-session recovery",
+    )
+    second_request["ownerSessionKey"] = second_finalized["newOwnerSessionKey"]
+    second_request["sessionRebind"] = second_finalized
+    second_resumed = control.resolve_intent(second_request)
+    assert second_resumed["intentRevision"] == resolved["intentRevision"]
+    second_receipt = second_resumed["intentResolutionReceipt"]
+    assert isinstance(second_receipt, dict)
+    assert second_receipt["receiptId"] != first_receipt["receiptId"]
+
+    legacy = dict(pending_legacy)
+    legacy.update(
+        {
+            "commandId": "intent-v18-legacy-after-two",
+            "previousOwnerSessionKey": second_finalized["newOwnerSessionKey"],
+            "newOwnerSessionKey": "sid-" + "d" * 24,
+            "latestReceiptId": second_receipt["receiptId"],
+            "latestReceiptPayloadHash": second_receipt["payloadHash"],
+        }
+    )
+    transferred = control.rebind_intent_session(legacy)
+    assert transferred["ok"] and transferred["newOwnerSessionKey"] == legacy["newOwnerSessionKey"]
+
+
+def test_v18_local_rebind_minimal_successor_and_kind_guard(root: Path) -> None:
+    """A successor may recover without the retiring contract file.
+
+    The one-time recovery reference plus the claimed local session are the
+    authorization boundary after consume.  Aggregate kind remains an
+    optional assertion, but a supplied value must never redirect a lookup to
+    a different transaction kind.
+    """
+
+    control = BrainControl(root / "local-rebind-minimal-successor")
+    original = intent_request("intent-minimal-original", 0)
+    resolved = control.resolve_intent(original)
+    receipt = resolved["intentResolutionReceipt"]
+    assert isinstance(receipt, dict)
+    issued = control.issue_local_rebind(
+        {
+            "action": "issue",
+            "commandId": "minimal-issue",
+            "requestingSessionKey": original["ownerSessionKey"],
+            "aggregateKind": "intent",
+            "taskId": original["taskId"],
+            "taskInstanceId": original["taskInstanceId"],
+            "workspaceKey": original["workspaceKey"],
+            "packageVersion": original["packageVersion"],
+            "expectedRevision": resolved["intentRevision"],
+            "contractRevision": original["contractRevision"],
+            "contractHash": "c" * 64,
+            "planFingerprint": original["planFingerprint"],
+            "previousReceiptId": receipt["receiptId"],
+            "previousReceiptHash": receipt["payloadHash"],
+            "source": "runtime_brain_control_regression.minimal",
+        }
+    )
+    recovery_ref = issued.get("recoveryRef")
+    assert isinstance(recovery_ref, str) and recovery_ref
+    successor = "sid-" + "9" * 24
+
+    # A caller-supplied kind is an assertion, not a selector.  It must match
+    # the transaction reached through either lookup seam.
+    for request in (
+        {
+            "action": "query",
+            "commandId": "minimal-query-wrong-kind",
+            "requestingSessionKey": original["ownerSessionKey"],
+            "recoveryRef": recovery_ref,
+            "aggregateKind": "task",
+        },
+        {
+            "action": "revoke",
+            "commandId": "minimal-revoke-wrong-kind",
+            "requestingSessionKey": original["ownerSessionKey"],
+            "targetCommandId": "minimal-issue",
+            "aggregateKind": "task",
+        },
+    ):
+        try:
+            control.local_rebind(request)
+            raise AssertionError("wrong aggregate kind must fail closed")
+        except BrainControlError as exc:
+            assert exc.code == "BRAIN_CONTROL_LOCAL_REBIND_KIND_MISMATCH"
+
+    consumed = control.consume_local_rebind(
+        {
+            "action": "consume",
+            "commandId": "minimal-consume",
+            "requestingSessionKey": successor,
+            "recoveryRef": recovery_ref,
+            "source": "runtime_brain_control_regression.minimal",
+        }
+    )
+    assert consumed["status"] == "consumed"
+
+    # No task/contract/receipt fields are needed on the successor side.  The
+    # immutable issue transaction and live aggregate provide the proofs.
+    finalized = control.finalize_local_rebind(
+        {
+            "action": "finalize",
+            "commandId": "minimal-finalize",
+            "requestingSessionKey": successor,
+            "recoveryRef": recovery_ref,
+            "source": "runtime_brain_control_regression.minimal",
+        }
+    )
+    assert finalized["status"] == "finalized"
+    assert finalized["newOwnerSessionKey"] == successor
+    metadata = control.query_local_rebind(
+        {
+            "action": "query",
+            "commandId": "minimal-query-target",
+            "requestingSessionKey": successor,
+            "targetCommandId": "minimal-issue",
+            "aggregateKind": "intent",
+        }
+    )
+    assert metadata["aggregateKind"] == "intent"
+    assert metadata["recoveryRefAvailable"] is False
+    assert metadata.get("recoveryRef", "") == ""
+
+
+def test_v18_task_rebind_blocks_duplicate_until_task_apply(root: Path) -> None:
+    """A finalized task hand-off stays single-use until the task CAS consumes it."""
+
+    control = BrainControl(root / "task-rebind-pending-finalize")
+    initial = task_request("task-v18-pending-finalize", initial_revision=7)
+    imported = control.import_task(initial)
+    assert imported["ok"] is True
+    old_owner = str(initial["ownerSessionKey"])
+    successor = "sid-" + "a" * 24
+    issued = control.issue_local_rebind(
+        {
+            "action": "issue",
+            "commandId": "task-v18-first-issue",
+            "requestingSessionKey": old_owner,
+            "aggregateKind": "task",
+            "taskId": initial["taskId"],
+            "taskInstanceId": initial["taskInstanceId"],
+            "workspaceKey": initial["workspaceKey"],
+            "packageVersion": initial["packageVersion"],
+            "expectedRevision": 7,
+            "expectedStateHash": imported["stateHash"],
+            "contractRevision": 11,
+            "contractHash": "d" * 64,
+            "planFingerprint": "plan-task-authority-11",
+            "source": "runtime_brain_control_regression.task-v18",
+        }
+    )
+    recovery_ref = issued["recoveryRef"]
+    consumed = control.consume_local_rebind(
+        {
+            "action": "consume",
+            "commandId": "task-v18-first-consume",
+            "requestingSessionKey": successor,
+            "recoveryRef": recovery_ref,
+            "source": "runtime_brain_control_regression.task-v18",
+        }
+    )
+    finalized = control.finalize_local_rebind(
+        {
+            "action": "finalize",
+            "commandId": "task-v18-first-finalize",
+            "requestingSessionKey": successor,
+            "recoveryRef": recovery_ref,
+            "source": "runtime_brain_control_regression.task-v18",
+        }
+    )
+    assert consumed["status"] == "consumed"
+    assert finalized["status"] == "finalized"
+
+    try:
+        control.issue_local_rebind(
+            {
+                "action": "issue",
+                "commandId": "task-v18-duplicate-before-apply",
+                "requestingSessionKey": old_owner,
+                "aggregateKind": "task",
+                "taskId": initial["taskId"],
+                "taskInstanceId": initial["taskInstanceId"],
+                "workspaceKey": initial["workspaceKey"],
+                "packageVersion": initial["packageVersion"],
+                "expectedRevision": 7,
+                "expectedStateHash": imported["stateHash"],
+                "contractRevision": 11,
+                "contractHash": "e" * 64,
+                "planFingerprint": "plan-task-authority-11",
+                "source": "runtime_brain_control_regression.task-v18",
+            }
+        )
+        raise AssertionError("a finalized task recovery must remain pending until apply_task consumes it")
+    except BrainControlError as exc:
+        assert exc.code == "BRAIN_CONTROL_LOCAL_REBIND_ACTIVE_EXISTS"
+
+    continued = task_request(
+        "task-v18-apply-successor",
+        expected_revision=7,
+        next_action="continue under the successor task session",
+    )
+    continued["ownerSessionKey"] = successor
+    continued["taskSessionRebind"] = finalized
+    applied = control.apply_task(continued)
+    assert applied["ok"] is True and applied["taskSessionRebind"] is True
+
+    next_issue = control.issue_local_rebind(
+        {
+            "action": "issue",
+            "commandId": "task-v18-second-issue",
+            "requestingSessionKey": successor,
+            "aggregateKind": "task",
+            "taskId": initial["taskId"],
+            "taskInstanceId": initial["taskInstanceId"],
+            "workspaceKey": initial["workspaceKey"],
+            "packageVersion": initial["packageVersion"],
+            "expectedRevision": 8,
+            "contractRevision": 11,
+            "contractHash": "f" * 64,
+            "planFingerprint": "plan-task-authority-11",
+            "source": "runtime_brain_control_regression.task-v18",
+        }
+    )
+    assert next_issue["status"] == "issued"
+
+
+def test_v18_local_rebind_issue_replay_survives_aggregate_advance(root: Path) -> None:
+    """Retrying an issue command remains idempotent after the live head moves."""
+
+    control = BrainControl(root / "local-rebind-issue-replay")
+    original = intent_request("intent-issue-replay", 0)
+    first = control.resolve_intent(original)
+    receipt = first["intentResolutionReceipt"]
+    assert isinstance(receipt, dict)
+    request = {
+        "action": "issue",
+        "commandId": "issue-replay-after-advance",
+        "requestingSessionKey": original["ownerSessionKey"],
+        "aggregateKind": "intent",
+        "taskId": original["taskId"],
+        "taskInstanceId": original["taskInstanceId"],
+        "workspaceKey": original["workspaceKey"],
+        "packageVersion": original["packageVersion"],
+        "expectedRevision": first["intentRevision"],
+        "contractRevision": original["contractRevision"],
+        "contractHash": "a" * 64,
+        "planFingerprint": original["planFingerprint"],
+        "previousReceiptId": receipt["receiptId"],
+        "previousReceiptHash": receipt["payloadHash"],
+        "source": "runtime_brain_control_regression.issue-replay",
+    }
+    issued = control.issue_local_rebind(request)
+    assert issued["status"] == "issued" and issued["recoveryRefAvailable"] is True
+
+    advanced = intent_request(
+        "intent-issue-replay-advance",
+        first["intentRevision"],
+        instruction="advance the intent head after the issue transaction",
+    )
+    control.resolve_intent(advanced)
+    replayed = control.issue_local_rebind(request)
+    assert replayed["idempotent"] is True
+    assert replayed["recoveryRefAvailable"] is False
+    assert replayed.get("recoveryRef", "") == ""
+
+    conflicting = dict(request)
+    conflicting["contractHash"] = "b" * 64
+    try:
+        control.issue_local_rebind(conflicting)
+        raise AssertionError("a reused issue command must reject changed immutable input")
+    except BrainControlError as exc:
+        assert exc.code == "BRAIN_CONTROL_COMMAND_ID_REUSED"
+
+
+def test_cli_successor_rebind_requires_no_retiring_contract(root: Path) -> None:
+    """The standalone CLI fallback reaches the same successor state machine."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-cli-local-rebind-") as directory:
+        base = Path(directory)
+        state = base / "state"
+        project = base / "project"
+        project.mkdir(parents=True)
+        old_owner = "sid-" + "1" * 24
+        successor = "sid-" + "2" * 24
+        task_id = "cli-local-rebind-successor"
+        task_instance_id = "ti-" + "2" * 32
+        workspace_key = "ws-" + hashlib.sha256(str(project.resolve()).rstrip("/\\").lower().encode("utf-8")).hexdigest()[:24]
+        control = BrainControl(state)
+        instruction = "continue the governed CLI local rebind"
+        resolved = control.resolve_intent(
+            {
+                "commandId": "cli-local-rebind-seed",
+                "expectedIntentRevision": 0,
+                "taskId": task_id,
+                "taskInstanceId": task_instance_id,
+                "workspaceKey": workspace_key,
+                "ownerSessionKey": old_owner,
+                "packageVersion": PACKAGE_VERSION,
+                "contractRevision": 1,
+                "planFingerprint": "cli-local-rebind-plan",
+                "latestInstructionHash": instruction_hash(instruction),
+                "intentContract": intent_contract(),
+                "source": "runtime_brain_control_regression.cli",
+            }
+        )
+        receipt = resolved["intentResolutionReceipt"]
+        assert isinstance(receipt, dict)
+        issued = control.issue_local_rebind(
+            {
+                "action": "issue",
+                "commandId": "cli-local-rebind-issue",
+                "requestingSessionKey": old_owner,
+                "aggregateKind": "intent",
+                "taskId": task_id,
+                "taskInstanceId": task_instance_id,
+                "workspaceKey": workspace_key,
+                "packageVersion": PACKAGE_VERSION,
+                "expectedRevision": resolved["intentRevision"],
+                "contractRevision": 1,
+                "contractHash": "a" * 64,
+                "planFingerprint": "cli-local-rebind-plan",
+                "previousReceiptId": receipt["receiptId"],
+                "previousReceiptHash": receipt["payloadHash"],
+                "source": "runtime_brain_control_regression.cli",
+            }
+        )
+        recovery_ref = str(issued["recoveryRef"])
+        environment = dict(os.environ)
+        environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = successor
+        environment.pop("SUPER_BRAIN_STATE_ROOT", None)
+
+        def invoke(action: str, command_id: str, **options: object) -> dict[str, object]:
+            command = [
+                sys.executable,
+                str(ROOT / "runtime" / "brain_cli.py"),
+                "--package-root",
+                str(ROOT),
+                "--memory-root",
+                str(state / "shared"),
+                "--workspace-root",
+                str(project),
+                "rebind-local",
+                "--action",
+                action,
+                "--command-id",
+                command_id,
+            ]
+            for name, value in options.items():
+                command.extend([f"--{name.replace('_', '-')}", str(value)])
+            completed = subprocess.run(
+                command,
+                cwd=project,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+            )
+            value = json.loads(completed.stdout)
+            assert isinstance(value, dict)
+            return value
+
+        consumed = invoke("consume", "cli-local-rebind-consume", recovery_ref=recovery_ref)
+        assert consumed["ok"] is True and consumed["status"] == "consumed"
+        finalized = invoke("finalize", "cli-local-rebind-finalize", recovery_ref=recovery_ref)
+        assert finalized["ok"] is True and finalized["status"] == "finalized"
+        metadata = invoke("query", "cli-local-rebind-query", target_command_id="cli-local-rebind-issue")
+        assert metadata["status"] == "finalized"
+        assert metadata.get("recoveryRef", "") == "" and metadata["recoveryRefAvailable"] is False
 
 
 def decision_graph_record(subject: str, relation: str, object_value: str) -> dict[str, str]:
@@ -3533,7 +4059,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-control-") as directory:
         root = Path(directory)
         control = BrainControl(root)
-        assert control.status()["schemaVersion"] == 17
+        # Schema 18 adds the local-session recovery transaction ledger.  Keep
+        # this regression tied to the current authority version so a freshly
+        # created control plane cannot silently run an older migration set.
+        assert control.status()["schemaVersion"] == 18
 
         first = control.apply(command("cmd-1", 0))
         assert first["revision"] == 1 and not first["idempotent"]
@@ -3584,6 +4113,11 @@ def main() -> None:
         test_decision_graph_shadow(root)
         test_intent_authority(root)
         test_intent_session_rebind_preserves_original_task_intent(root)
+        test_v18_intent_rebind_consumption_allows_legacy_rebind(root)
+        test_v18_local_rebind_minimal_successor_and_kind_guard(root)
+        test_v18_task_rebind_blocks_duplicate_until_task_apply(root)
+        test_v18_local_rebind_issue_replay_survives_aggregate_advance(root)
+        test_cli_successor_rebind_requires_no_retiring_contract(root)
         test_task_authority(root)
         test_task_session_rebind_receipt_authorizes_owner_transfer(root)
         test_control_center_overview_isolates_current_execution_scope(root)

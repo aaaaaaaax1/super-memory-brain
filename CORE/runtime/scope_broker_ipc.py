@@ -936,7 +936,15 @@ class ScopeBrokerServer:
                 oldest = min(self._seen_nonces, key=self._seen_nonces.get)
                 self._seen_nonces.pop(oldest, None)
             self._seen_nonces[nonce] = now
-        self._touch(str(params.get("channelId", "")) if isinstance(params.get("channelId", ""), str) else "")
+        touched_channel = str(params.get("channelId", "")) if isinstance(params.get("channelId", ""), str) else ""
+        # ``pair_request`` intentionally carries no channel selector.  Touch
+        # the referenced channel only after authentication so a control-plane
+        # retry near the unbound grace boundary cannot be reaped mid-bind.
+        if method == "pair_request" and not touched_channel:
+            touched_channel = self.broker.pairing_request_channel(
+                str(params.get("pairingRequestRef", "")),
+            )
+        self._touch(touched_channel)
         return self._method(method, params)
 
     @staticmethod
@@ -959,9 +967,9 @@ class ScopeBrokerServer:
             with self._lifecycle_lock:
                 if self._shutdown_requested:
                     return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
-                channel_id = b.open_channel()
+                channel_id, pairing_ref = b.open_channel_with_ref()
                 self._touch(channel_id)
-                return {"ok": True, "channelId": channel_id}
+                return {"ok": True, "channelId": channel_id, "pairingRequestRef": pairing_ref}
         if method == "list_channels":
             channels = []
             with self._binding_guard:
@@ -974,7 +982,12 @@ class ScopeBrokerServer:
                     # Listing is only a control-plane discovery operation.  Do
                     # not project another connection's task/workspace context;
                     # the caller must target one channel and then authorize it.
+                    # A pairing request ref is a connection-owned, short-lived
+                    # capability: only the connection's own initialize/status
+                    # response may carry it.  Never turn ``list_channels``
+                    # into a cross-connection pairing-ref discovery surface.
                     item.pop("scope", None)
+                    item.pop("pairingRequestRef", None)
                     channels.append(item)
             return {"ok": True, "channels": channels}
         if method == "status":
@@ -1092,6 +1105,51 @@ class ScopeBrokerServer:
                                     "rawTranscriptStored": False,
                                 }
                     return self._result(result)
+        if method == "refresh_bound_contract":
+            # This method is reachable only over authenticated local IPC from
+            # the injected runtime provider; it is not part of the MCP or CLI
+            # public tool surface.  The channel's existing write lease is the
+            # sole authority for which workline may be refreshed.
+            with self._lifecycle_lock:
+                if self._shutdown_requested:
+                    return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
+                contract = p.get("contract")
+                if not isinstance(contract, Mapping):
+                    return {"ok": False, "code": "H7_SCOPE_CONTRACT_INVALID", "state": "withheld"}
+                with self._binding_guard:
+                    current = b.authorize(str(p.get("channelId", "")), write=True)
+                    if not current.ok or current.context is None:
+                        return self._result(current)
+                    root = self._project_root_for_context(current.context)
+                    if not root:
+                        return {
+                            "ok": False,
+                            "code": self._project_root_failure_code(current.context),
+                            "state": "withheld",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+                    refreshed = b.refresh_bound_contract(
+                        str(p.get("channelId", "")),
+                        str(p.get("leaseId", "")),
+                        contract,
+                    )
+                    if refreshed.ok and refreshed.context is not None:
+                        with self._project_root_lock:
+                            prior_roots = {key: dict(value) for key, value in self._project_roots.items()}
+                            prior_invalid = self._project_root_registry_invalid
+                            self._project_roots[refreshed.context.workline_id] = self._project_root_record(refreshed.context, Path(root))
+                            if not self._persist_project_roots():
+                                self._project_roots = prior_roots
+                                self._project_root_registry_invalid = prior_invalid
+                                return {
+                                    "ok": False,
+                                    "code": "H7_SCOPE_PROJECT_ROOT_WRITE_FAILED",
+                                    "state": "withheld",
+                                    "rawPromptStored": False,
+                                    "rawTranscriptStored": False,
+                                }
+                    return self._result(refreshed)
         if method == "get_workline":
             return self._result(b.get_workline(str(p.get("worklineId", ""))))
         if method == "pair_channel":
@@ -1124,6 +1182,30 @@ class ScopeBrokerServer:
                     # Lease renewal capability is minted internally and first carried
                     # only by the private authorize response consumed by the provider.
                     return self._result(result)
+        if method == "pair_request":
+            with self._lifecycle_lock:
+                if self._shutdown_requested:
+                    return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
+                with self._binding_guard:
+                    workline = b.get_workline(str(p.get("worklineId", "")))
+                    if workline.ok and workline.context is not None:
+                        root = self._project_root_for_context(workline.context)
+                        if not root:
+                            return {
+                                "ok": False,
+                                "code": self._project_root_failure_code(workline.context),
+                                "state": "withheld",
+                                "rawPromptStored": False,
+                                "rawTranscriptStored": False,
+                            }
+                    result = b.pair_request(
+                        str(p.get("pairingRequestRef", "")),
+                        str(p.get("worklineId", "")),
+                        access_mode=p.get("accessMode", "write"),
+                        ttl_seconds=p.get("ttlSeconds", 60),
+                        lease_seconds=p.get("leaseSeconds", 300),
+                    )
+                    return self._result(result)
         if method == "issue_pairing_grant":
             # Bearer pairing tokens never cross the IPC boundary.  The
             # historical two-step methods remain available only on the
@@ -1152,6 +1234,7 @@ class ScopeBrokerClient:
         self._start_lock = threading.Lock()
         self._process: subprocess.Popen[Any] | None = None
         self.last_context: Any = None
+        self.last_pairing_request_ref = ""
         self._endpoint_checked_at = 0.0
         self._endpoint_fingerprint = ""
         self._endpoint_probe_interval = 1.0
@@ -1319,10 +1402,32 @@ class ScopeBrokerClient:
         # broker.  Recovery opens are explicitly no-auto-start and remain
         # unbound until the trusted control surface pairs them.
         value = self._call("open_channel", allow_auto_start=allow_auto_start)
-        return str(value.get("channelId", "")) if value.get("ok") is True else ""
+        if value.get("ok") is not True:
+            self.last_pairing_request_ref = ""
+            return ""
+        self.last_pairing_request_ref = str(value.get("pairingRequestRef", ""))
+        return str(value.get("channelId", ""))
+
+    def open_channel_details(self, *, allow_auto_start: bool = True) -> dict[str, Any]:
+        """Open one channel and retain its public pairing reference."""
+
+        value = self._call("open_channel", allow_auto_start=allow_auto_start)
+        self.last_pairing_request_ref = str(value.get("pairingRequestRef", "")) if value.get("ok") is True else ""
+        return value
 
     def status(self, channel_id: str, *, allow_auto_start: bool = False) -> dict[str, Any]:
-        return self._call("status", {"channelId": channel_id}, allow_auto_start=allow_auto_start)
+        value = self._call("status", {"channelId": channel_id}, allow_auto_start=allow_auto_start)
+        self.last_pairing_request_ref = (
+            str(value.get("pairingRequestRef", ""))
+            if value.get("state") == "unbound" and value.get("ok") is True
+            else ""
+        )
+        return value
+
+    def pairing_request_ref(self, channel_id: str, *, allow_auto_start: bool = False) -> str:
+        """Read the current control-plane pairing ref without exposing channel state."""
+
+        return str(self.status(channel_id, allow_auto_start=allow_auto_start).get("pairingRequestRef", ""))
 
     def authorize(self, channel_id: str, *, write: bool = False, allow_auto_start: bool = False) -> dict[str, Any]:
         value = self._call(
@@ -1331,6 +1436,17 @@ class ScopeBrokerClient:
             allow_auto_start=allow_auto_start,
         )
         self.last_context = value.get("scope") if isinstance(value.get("scope"), dict) else None
+        # ``authorize`` is the provider's hot-path read and is also the first
+        # response after a lease expiry/detach.  Keep the connection-owned
+        # pairing reference in sync here; otherwise a channel that becomes
+        # unbound would continue advertising the old (already consumed or
+        # expired) ref and the trusted control surface could not pair it
+        # without restarting the MCP process.
+        self.last_pairing_request_ref = (
+            str(value.get("pairingRequestRef", ""))
+            if value.get("state") == "unbound" and value.get("ok") is True
+            else ""
+        )
         return value
 
     def renew_lease(
@@ -1352,6 +1468,20 @@ class ScopeBrokerClient:
 
     def close_channel(self, channel_id: str, *, allow_auto_start: bool = False) -> dict[str, Any]:
         return self._call("close_channel", {"channelId": channel_id}, allow_auto_start=allow_auto_start)
+
+    def refresh_bound_contract(
+        self,
+        channel_id: str,
+        lease_id: str,
+        contract: Mapping[str, Any],
+        *,
+        allow_auto_start: bool = False,
+    ) -> dict[str, Any]:
+        return self._call(
+            "refresh_bound_contract",
+            {"channelId": channel_id, "leaseId": lease_id, "contract": dict(contract)},
+            allow_auto_start=allow_auto_start,
+        )
 
     def shutdown_if_idle(self) -> dict[str, Any]:
         """Ask a broker child to exit when no channels remain."""
@@ -1431,6 +1561,28 @@ class ScopeBrokerControlClient(ScopeBrokerClient):
             "pair_channel",
             {
                 "channelId": channel_id,
+                "worklineId": workline_id,
+                "accessMode": access_mode,
+                "ttlSeconds": ttl_seconds,
+                "leaseSeconds": lease_seconds,
+            },
+        )
+
+    def pair_request(
+        self,
+        pairing_request_ref: str,
+        workline_id: str,
+        *,
+        access_mode: str = "write",
+        ttl_seconds: int = 60,
+        lease_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Pair exactly the MCP connection that issued this opaque ref."""
+
+        return self._call(
+            "pair_request",
+            {
+                "pairingRequestRef": pairing_request_ref,
                 "worklineId": workline_id,
                 "accessMode": access_mode,
                 "ttlSeconds": ttl_seconds,
