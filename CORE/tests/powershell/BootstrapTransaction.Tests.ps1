@@ -80,6 +80,40 @@ Describe 'Super Memory Brain bootstrap transaction' {
     ((Get-Content -LiteralPath (Join-Path $transaction.FullName 'transaction.json') -Raw -Encoding UTF8 | ConvertFrom-Json).status) | Should Be 'rolled_back'
   }
 
+  It 'keeps a published isolated MCP entry when a later bootstrap stage fails' {
+    $testRoot = Join-Path $TestDrive 'bootstrap-runtime-publish-boundary'
+    $stateRoot = Join-Path $testRoot 'state'
+    $zcodeSkills = Join-Path $testRoot 'zcode\skills'
+    $codexSkills = Join-Path $testRoot 'codex\skills'
+    $transactionRoot = Join-Path $testRoot 'transactions'
+    $codexHome = Split-Path -Parent $codexSkills
+    $startupPath = Join-Path $codexHome 'AGENTS.md'
+    $existingSkill = Join-Path $codexSkills 'super-memory-brain\SKILL.md'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $codexSkills),(Split-Path -Parent $existingSkill) | Out-Null
+    Set-Content -LiteralPath $startupPath -Value 'original-startup' -Encoding UTF8
+    Set-Content -LiteralPath $existingSkill -Value 'original-skill' -Encoding UTF8
+    $previousStateRoot = $env:SUPER_BRAIN_STATE_ROOT
+    $env:SUPER_BRAIN_STATE_ROOT = $stateRoot
+    try {
+      $bootstrap = Join-Path $root 'scripts\bootstrap.ps1'
+      $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bootstrap -ZCodeSkills $zcodeSkills -CodexSkills $codexSkills -TransactionRoot $transactionRoot -SkipVerify -TestFailAfter 'after-runtime' -Json 2>&1)
+      $exitCode = $LASTEXITCODE
+    } finally {
+      if ($null -eq $previousStateRoot) { Remove-Item Env:\SUPER_BRAIN_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_STATE_ROOT = $previousStateRoot }
+    }
+
+    $exitCode | Should Be 1
+    (Get-Content -LiteralPath $startupPath -Raw -Encoding UTF8).Trim() | Should Be 'original-startup'
+    (Get-Content -LiteralPath $existingSkill -Raw -Encoding UTF8).Trim() | Should Be 'original-skill'
+    $configPath = Join-Path $codexHome 'config.toml'
+    (Test-Path -LiteralPath $configPath) | Should Be $true
+    (Get-Content -LiteralPath $configPath -Raw -Encoding UTF8) | Should Match 'super-memory-brain'
+    $bindingPath = Join-Path $stateRoot 'workspace\runtime-state\mcp-runtime-binding.json'
+    (Test-Path -LiteralPath $bindingPath) | Should Be $true
+    $binding = Get-Content -LiteralPath $bindingPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    [string]$binding.registrationEpoch | Should Match '^[a-f0-9]{32}$'
+  }
+
   It 'completes the isolated one-click install pipeline with a committed transaction' {
     $testRoot = Join-Path $TestDrive 'bootstrap-success-e2e'
     $stateRoot = Join-Path $testRoot 'state'
@@ -181,6 +215,13 @@ Describe 'Super Memory Brain bootstrap transaction' {
     $install -match '\[string\]\$InstallBackupRoot' | Should Be $true
     $bootstrap -like '*$installArgs += ''-Isolated''*' | Should Be $true
     $install -like '*ZCode compatibility adapter was not installed*' | Should Be $true
+    $snapshot = [regex]::Match($bootstrap,'function Get-BootstrapSnapshotTargets \{.*?^\}',[Text.RegularExpressions.RegexOptions]'Singleline, Multiline').Value
+    $snapshot | Should Not Match '\$targets\s*\+=\s*Join-Path[^\r\n]*config\.toml'
+    $snapshot | Should Not Match '\$targets\s*\+=\s*Join-Path[^\r\n]*mcp-runtime-binding\.json'
+    $bootstrap | Should Not Match 'runtimeInstall\.configBackup'
+    $runtimeInstaller = Get-Content -LiteralPath (Join-Path $root 'scripts\install-runtime.ps1') -Raw -Encoding UTF8
+    $runtimeInstaller | Should Not Match 'Copy-Item -LiteralPath \$configBackup -Destination \$configPath'
+    $runtimeInstaller | Should Not Match 'Remove-Item -LiteralPath \$configPath'
   }
 }
 

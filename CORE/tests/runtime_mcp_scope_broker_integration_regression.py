@@ -818,6 +818,8 @@ def main() -> None:
                 assert initial_status.get("liveMcpHandshake", {}).get("state") == "current", initial_status
                 assert initial_status.get("liveMcpHandshake", {}).get("transport") == "local_scope_broker_stdio", initial_status
                 assert initial_status.get("liveMcpHandshake", {}).get("scope", {}).get("state") == "unbound", initial_status
+                assert initial_status.get("mcpRuntimeBinding", {}).get("state") == "current", initial_status
+                assert initial_status.get("mcpRuntimeBinding", {}).get("runtimeMode") == "local_stdio_scope_broker", initial_status
                 assert initial_status.get("scopeBinding", {}).get("pairingRequestRef") == initialize_pairing_ref, initial_status
                 assert initial_status.get("liveMcpHandshake", {}).get("scope", {}).get("pairingRequestRef") == initialize_pairing_ref, initial_status
                 assert initial_status.get("mcpRuntimeBinding", {}).get("deploymentAdapter", {}).get("state") == "not_applicable", initial_status

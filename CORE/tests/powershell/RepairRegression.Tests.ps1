@@ -76,7 +76,21 @@ Describe 'Super Brain repair regression guards' {
 
   It 'isolates Codex home during runtime registration and rejects mismatched roots' {
     $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'scripts\install-runtime.ps1')
-    foreach ($marker in @('$env:CODEX_HOME = $CodexHome','MCP_BINDING_MISMATCH','Assert-McpBinding','NEXSANDBASE_HOME')) { $runtime.Contains($marker) | Should Be $true }
+    foreach ($marker in @('$env:CODEX_HOME = $CodexHome','MCP_BINDING_MISMATCH','Assert-McpBinding','NEXSANDBASE_HOME','codex_native_effective_config','MCP_REGISTRATION_PARTIAL_REPAIR_REQUIRED_NO_WHOLE_FILE_ROLLBACK',"liveTransportState = 'runtime_probe_required'",'restartRequired = $false')) { $runtime.Contains($marker) | Should Be $true }
+    $runtime.Contains('Copy-Item -LiteralPath $configBackup -Destination $configPath') | Should Be $false
+    $runtime.Contains('Remove-Item -LiteralPath $configPath -Force') | Should Be $false
+  }
+
+  It 'requires a live Broker probe instead of prescribing a restart from static metadata' {
+    . (Join-Path $Root 'scripts\common.ps1')
+    $assessment = Get-SuperBrainMcpProbeAssessment -StaticBindingOk $true -LegacyBindingMatches $true
+    $assessment.liveHandshakeState | Should Be 'runtime_probe_required'
+    $assessment.executionReady | Should Be $false
+    $assessment.action | Should Be 'verify_live_mcp_in_codex'
+    $assessment.availability | Should Be 'h7_cli_ready_mcp_probe_required'
+    $missing = Get-SuperBrainMcpProbeAssessment -StaticBindingOk $false -LegacyBindingMatches $false
+    $missing.liveHandshakeState | Should Be 'configuration_missing_or_stale'
+    $missing.action | Should Be 'repair_mcp_registration'
   }
 
   It 'keeps H7 runtime status, health checks, and custom installs inside their target roots without Hook repair' {
@@ -390,7 +404,7 @@ Describe 'Super Brain repair regression guards' {
     foreach ($marker in @('[switch]$IncludeWorkspace','generatedWorkspaceExcluded','workspace_critical','backup-manifest.json')) { $backup.Contains($marker) | Should Be $true }
     $lifecycle.Contains('oversized_workspace_json') | Should Be $true
     foreach ($marker in @('Invoke-SuperBrainTaskStateStore','Reconcile','Compact','blocked_pending_transaction','archiveTaskStateJournalsBehindSnapshots')) { $lifecycle.Contains($marker) | Should Be $true }
-    $gitIgnore = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root '.gitignore')
+    $gitIgnore = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path (Split-Path -Parent $Root) '.gitignore')
     foreach ($marker in @('private-state/**','private-archive/**','memory/**','!memory/','*.lnk')) { $gitIgnore.Contains($marker) | Should Be $true }
     $gitIgnore.Contains('!memory/scripts/**') | Should Be $false
     foreach ($scriptName in @('install.ps1','install-agent.ps1','hot-refresh-skills.ps1','cleanup-install-backups.ps1','install-ui.ps1')) {

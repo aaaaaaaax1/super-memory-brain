@@ -88,7 +88,7 @@ if ($ApplyConfirmed) {
 
 $safeActions = @('encoding-check.ps1 -Fix','graph-normalize.ps1 -Fix','workspace-lifecycle-manager.ps1 -ApplySafe','auto-hygiene-runner.ps1 -ApplySafe','post-task-maintenance.ps1 -ApplySafe','update-state.ps1','compact-apply.ps1 -WhatIfOnly')
 $confirmedActions = @('compact-apply.ps1 -Force','backup-retention.ps1 -Apply','verify-package.ps1 -Integration')
-$separatelyAuthorizedH7Actions = @('first-load-bootstrap.ps1 -McpOnly -RepairMcp')
+$separatelyAuthorizedH7Actions = @('first-load-bootstrap.ps1 -RepairMcp')
 $result = [pscustomobject]@{
   ok = $ok
   mode = $mode

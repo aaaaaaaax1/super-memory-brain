@@ -194,12 +194,9 @@ function Get-BootstrapSnapshotTargets {
   foreach ($memoryRoot in @($memoryRoots)) {
     $targets += Join-Path $memoryRoot '.memory-scope.json'
   }
-  # MCP config and its H7 epoch binding are one transaction.  A bootstrap
-  # failure after install-runtime must restore both, otherwise the next
-  # startup sees a new binding against an old config and reports a false
-  # stale/rebind loop.
-  $targets += Join-Path (Split-Path -Parent $CodexSkills) 'config.toml'
-  $targets += Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace\runtime-state\mcp-runtime-binding.json'
+  # MCP deployment is an independent Codex-owned publish boundary.  A later
+  # skill/bootstrap failure must never restore a whole config.toml snapshot or
+  # split a freshly published registration from its runtime metadata.
   $targets += Get-SuperBrainSharingPolicyPath $Root
   $coldRoot = Join-Path $env:USERPROFILE '.codex-cold-skills'
   if (Test-Path -LiteralPath $coldRoot) {
@@ -283,7 +280,7 @@ try {
     hooklessRetirementAudit = $hooklessAudit
     nextAction = 'Open a new Codex task to discover the registered Super Brain MCP tools.'
     transactionRoot = [string]$transaction.root
-    rollback = 'The committed transaction is retained under the selected writable package transaction root. Failed transactions restore skills, startup files, and MCP config automatically.'
+    rollback = 'The committed transaction is retained under the selected writable package transaction root. Failed transactions restore package-owned skills, startup files, and memory markers; Codex MCP configuration is never whole-file restored.'
   }
   New-Item -ItemType Directory -Force -Path $workspace | Out-Null
   Write-JsonUtf8NoBom $statusPath $result 14
@@ -292,9 +289,6 @@ try {
 } catch {
   $rollbackErrors = @()
   if ($startupPlans -and $transactionStarted) { Capture-FileRollbackBackups $startupPlans '.bak-super-brain-bootstrap-*' $transactionStarted }
-  if ($runtimeInstall -and -not [string]::IsNullOrWhiteSpace([string]$runtimeInstall.configBackup) -and (Test-Path -LiteralPath ([string]$runtimeInstall.configBackup))) {
-    try { Copy-Item -LiteralPath ([string]$runtimeInstall.configBackup) -Destination (Join-Path (Split-Path -Parent $CodexSkills) 'config.toml') -Force } catch { $rollbackErrors += "runtimeConfig=$($_.Exception.Message)" }
-  }
   if ($startupPlans) { $rollbackErrors += @(Restore-FileRollbackPlans $startupPlans) }
   $transactionRollback = $null
   if ($transaction) {

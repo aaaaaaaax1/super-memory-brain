@@ -1747,6 +1747,46 @@ function Get-SuperBrainRuntimeReadiness {
   }
 }
 
+function Get-SuperBrainMcpProbeAssessment {
+  [CmdletBinding()]
+  param(
+    [bool]$StaticBindingOk,
+    [bool]$LegacyBindingMatches,
+    [object]$RecordedLegacyHandshake = $null
+  )
+
+  # The production MCP runs as a local Broker-backed stdio process.  Its
+  # initialize/status handshake is process-local and deliberately does not
+  # update the legacy deployment binding file.  A static bootstrap therefore
+  # cannot turn a v1 binding record into live proof, nor may it prescribe an
+  # app restart merely because that record has no old-style handshake.
+  $recordedLegacy = $null -ne $RecordedLegacyHandshake
+  if (-not $StaticBindingOk) {
+    return [pscustomobject]@{
+      configurationState = 'configuration_missing_or_stale'
+      liveHandshakeState = 'configuration_missing_or_stale'
+      executionReady = $false
+      executionState = 'configuration_missing_or_stale'
+      executionProbe = 'Repair the one registered Super Brain MCP entry, then call brain_status from Codex.'
+      action = 'repair_mcp_registration'
+      availability = 'withheld'
+      recordedLegacyHandshake = $recordedLegacy
+      legacyBindingMatches = $LegacyBindingMatches
+    }
+  }
+  return [pscustomobject]@{
+    configurationState = if ($LegacyBindingMatches) { 'configuration_current' } else { 'configuration_current_legacy_metadata_unobserved' }
+    liveHandshakeState = 'runtime_probe_required'
+    executionReady = $false
+    executionState = 'runtime_probe_required'
+    executionProbe = 'Call the registered MCP brain_status; require runtimeIdentity.state=current, liveMcpHandshake.state=current, mcpRuntimeBinding.state=current, and runtimeMode=local_stdio_scope_broker.'
+    action = 'verify_live_mcp_in_codex'
+    availability = 'h7_cli_ready_mcp_probe_required'
+    recordedLegacyHandshake = $recordedLegacy
+    legacyBindingMatches = $LegacyBindingMatches
+  }
+}
+
 function Get-SuperBrainGlobalStartupMaxChars() { return 0 }
 
 function Get-SuperBrainGlobalStartupBlock([string]$Root = $SuperBrainRoot) {

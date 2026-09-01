@@ -27,17 +27,17 @@ $result = [pscustomobject]@{
   rawPromptStored = $false
   rawTranscriptStored = $false
   h7Repair = [pscustomobject]@{
-    entrypoint = 'scripts\first-load-bootstrap.ps1 -McpOnly -RepairMcp'
+    entrypoint = 'scripts\first-load-bootstrap.ps1 -RepairMcp'
     authority = 'H7 MCP/runtime only'
     explicitApprovalRequired = $true
   }
-  nextAction = 'Do not repair or reinstall a Super Brain Hook. Diagnose H7 with host-cache-check.ps1; authorize first-load-bootstrap.ps1 -McpOnly -RepairMcp separately only when an H7 binding repair is required.'
+  nextAction = 'Do not repair or reinstall a Super Brain Hook. Diagnose H7 with host-cache-check.ps1; authorize first-load-bootstrap.ps1 -RepairMcp separately only when an H7 binding repair is required.'
 }
 
 if ($Json) {
   $result | ConvertTo-Json -Depth 8
 } else {
   Write-Host "SUPER_BRAIN_HOOK_REPAIR_RETIRED package=$PackageRoot"
-  Write-Host 'H7_REPAIR_REQUIRES_EXPLICIT_APPROVAL entrypoint=first-load-bootstrap.ps1 -McpOnly -RepairMcp'
+  Write-Host 'H7_REPAIR_REQUIRES_EXPLICIT_APPROVAL entrypoint=first-load-bootstrap.ps1 -RepairMcp'
 }
 exit 1

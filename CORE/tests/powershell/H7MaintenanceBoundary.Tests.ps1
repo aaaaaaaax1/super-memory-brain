@@ -9,7 +9,7 @@ Describe 'H7-only maintenance and UI boundary' {
     $end | Should BeGreaterThan $start
     $confirmedBlock = $maintain.Substring($start,$end-$start)
     $confirmedBlock.Contains('repair-hook.ps1') | Should Be $false
-    $maintain.Contains('$separatelyAuthorizedH7Actions = @(''first-load-bootstrap.ps1 -McpOnly -RepairMcp'')') | Should Be $true
+    $maintain.Contains('$separatelyAuthorizedH7Actions = @(''first-load-bootstrap.ps1 -RepairMcp'')') | Should Be $true
     $maintain.Contains('SUPER_BRAIN_HOOK_REPAIR_RETIRED') | Should Be $true
   }
 
@@ -25,7 +25,7 @@ Describe 'H7-only maintenance and UI boundary' {
     $result.code | Should Be 'SUPER_BRAIN_HOOK_REPAIR_RETIRED'
     $result.hookWriteAttempted | Should Be $false
     $result.hookWriteAllowed | Should Be $false
-    $result.h7Repair.entrypoint | Should Be 'scripts\first-load-bootstrap.ps1 -McpOnly -RepairMcp'
+    $result.h7Repair.entrypoint | Should Be 'scripts\first-load-bootstrap.ps1 -RepairMcp'
     (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash | Should Be $before.Hash
   }
 

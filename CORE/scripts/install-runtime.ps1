@@ -11,9 +11,11 @@ param(
 . (Join-Path $PSScriptRoot 'common.ps1')
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
+$codexHomeWasExplicit = $PSBoundParameters.ContainsKey('CodexHome')
 $MemoryRoot = Resolve-SuperBrainActiveMemoryRoot -Root $Root -Candidate $MemoryRoot -Operation 'install-runtime'
 $CodexHome = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($CodexHome))
-$configPath = Join-Path $CodexHome 'config.toml'
+$defaultCodexHome = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.codex'))
+$useExplicitCodexHome = $codexHomeWasExplicit -and -not (Test-SuperBrainSamePath $CodexHome $defaultCodexHome)
 $runtimeCli = Join-Path $Root 'runtime\brain_cli.py'
 $mcpScript = Join-Path $Root 'runtime\brain_mcp.py'
 $runtimeIdentity = Get-SuperBrainMcpRuntimeIdentity $Root
@@ -42,7 +44,10 @@ function Invoke-Codex([string[]]$Arguments) {
   $previousCodexHome = $env:CODEX_HOME
   $ErrorActionPreference = 'Continue'
   try {
-    $env:CODEX_HOME = $CodexHome
+    # In Codex Desktop the default configuration can be mediated by the
+    # resident app. Preserve that effective channel unless a non-default
+    # isolated home was explicitly requested.
+    if ($useExplicitCodexHome) { $env:CODEX_HOME = $CodexHome }
     $output = @(& $codexPath @Arguments 2>&1)
     $code = $LASTEXITCODE
   } finally {
@@ -70,12 +75,53 @@ function Assert-McpBinding([object]$Registered,[string]$ExpectedEpoch) {
   $registeredEpoch = Get-McpTransportValue $Registered 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
   $packageArg = Get-McpTransportValue $Registered '--package-root'
   $memoryArg = Get-McpTransportValue $Registered '--memory-root'
-  $samePackage = (Get-NormalizedSuperBrainRoot $registeredPackage) -eq (Get-NormalizedSuperBrainRoot $Root) -and (Get-NormalizedSuperBrainRoot $packageArg) -eq (Get-NormalizedSuperBrainRoot $Root)
-  $sameMemory = (Get-NormalizedSuperBrainRoot $registeredMemory) -eq (Get-NormalizedSuperBrainRoot $MemoryRoot) -and (Get-NormalizedSuperBrainRoot $memoryArg) -eq (Get-NormalizedSuperBrainRoot $MemoryRoot)
-  $sameIdentity = ([string]$registeredIdentity -eq [string]$runtimeIdentity)
-  if (-not $samePackage -or -not $sameMemory -or -not $sameIdentity -or $registeredTransport -ne 'codex_registered_v1' -or $registeredEpoch -ne $ExpectedEpoch -or $Registered.enabled -ne $true) {
+  if (-not (Test-McpBinding $Registered $ExpectedEpoch)) {
     throw "MCP_BINDING_MISMATCH expectedPackage=$Root expectedMemory=$MemoryRoot expectedIdentity=$runtimeIdentity expectedEpoch=$ExpectedEpoch actualPackage=$registeredPackage actualMemory=$registeredMemory actualIdentity=$registeredIdentity actualEpoch=$registeredEpoch packageArg=$packageArg memoryArg=$memoryArg enabled=$($Registered.enabled)"
   }
+}
+
+function Test-McpBinding([object]$Registered,[string]$ExpectedEpoch = '') {
+  if (-not $Registered -or $Registered.enabled -ne $true -or -not $Registered.transport -or [string]$Registered.transport.type -ne 'stdio') { return $false }
+  $registeredPackage = Get-McpTransportValue $Registered 'SUPER_BRAIN_PACKAGE_ROOT'
+  $registeredMemory = Get-McpTransportValue $Registered 'NEXSANDBASE_HOME'
+  $registeredIdentity = Get-McpTransportValue $Registered 'SUPER_BRAIN_RUNTIME_IDENTITY'
+  $registeredTransport = Get-McpTransportValue $Registered 'SUPER_BRAIN_MCP_TRANSPORT'
+  $registeredEpoch = Get-McpTransportValue $Registered 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
+  $packageArg = Get-McpTransportValue $Registered '--package-root'
+  $memoryArg = Get-McpTransportValue $Registered '--memory-root'
+  $samePackage = (Get-NormalizedSuperBrainRoot $registeredPackage) -eq (Get-NormalizedSuperBrainRoot $Root) -and (Get-NormalizedSuperBrainRoot $packageArg) -eq (Get-NormalizedSuperBrainRoot $Root)
+  $sameMemory = (Get-NormalizedSuperBrainRoot $registeredMemory) -eq (Get-NormalizedSuperBrainRoot $MemoryRoot) -and (Get-NormalizedSuperBrainRoot $memoryArg) -eq (Get-NormalizedSuperBrainRoot $MemoryRoot)
+  $epochOk = ([string]$registeredEpoch -match '^[a-f0-9]{32}$')
+  $expectedEpochOk = [string]::IsNullOrWhiteSpace($ExpectedEpoch) -or [string]$registeredEpoch -eq [string]$ExpectedEpoch
+  return ($samePackage -and $sameMemory -and ([string]$registeredIdentity -eq [string]$runtimeIdentity) -and $registeredTransport -eq 'codex_registered_v1' -and $epochOk -and $expectedEpochOk)
+}
+
+function Test-SuperBrainMcpRegistration([object]$Registered) {
+  if (-not $Registered -or -not $Registered.transport -or [string]$Registered.transport.type -ne 'stdio') { return $false }
+  $registeredTransport = Get-McpTransportValue $Registered 'SUPER_BRAIN_MCP_TRANSPORT'
+  $registeredPackage = Get-McpTransportValue $Registered 'SUPER_BRAIN_PACKAGE_ROOT'
+  $registeredIdentity = Get-McpTransportValue $Registered 'SUPER_BRAIN_RUNTIME_IDENTITY'
+  return ($registeredTransport -eq 'codex_registered_v1' -or -not [string]::IsNullOrWhiteSpace($registeredPackage) -or -not [string]::IsNullOrWhiteSpace($registeredIdentity))
+}
+
+function Test-CurrentRuntimeBinding([object]$Binding,[string]$ExpectedEpoch) {
+  if (-not $Binding) { return $false }
+  $fields = @('schema','state','registrationEpoch','packageVersion','runtimeIdentity','packageRootHash','memoryRootHash','configuredAt','liveHandshake','rawPromptStored','rawTranscriptStored')
+  $payload = [ordered]@{}
+  foreach ($field in $fields) {
+    if (-not $Binding.PSObject.Properties[$field]) { return $false }
+    $payload[$field] = $Binding.$field
+  }
+  $expectedHash = Get-SuperBrainStableHash (($payload | ConvertTo-Json -Depth 8 -Compress)) 64
+  return (
+    [string]$Binding.schema -eq 'super-brain.mcp-runtime-binding.v1' -and
+    [string]$Binding.state -in @('restart_required','current') -and
+    [string]$Binding.registrationEpoch -eq [string]$ExpectedEpoch -and
+    [string]$Binding.runtimeIdentity -eq [string]$runtimeIdentity -and
+    [string]$Binding.packageRootHash -eq (Get-SuperBrainMcpPathHash $Root) -and
+    [string]$Binding.memoryRootHash -eq (Get-SuperBrainMcpPathHash (Get-SuperBrainMemoryBaseRoot $Root)) -and
+    [string]$Binding.payloadHash -eq $expectedHash
+  )
 }
 
 $codexPath = Resolve-CodexCli
@@ -111,13 +157,6 @@ if ($LASTEXITCODE -ne 0) { throw "RUNTIME_EVAL_FAILED $($evalRaw -join ' ')" }
 $eval = (($evalRaw -join "`n") | ConvertFrom-Json)
 if ($eval.ok -ne $true) { throw 'RUNTIME_EVAL_NOT_OK' }
 
-$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$backupRoot = Join-Path $CodexHome 'backups_state\super-brain-runtime'
-New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
-$configBackup = Join-Path $backupRoot "config-$timestamp.toml"
-$configExisted = Test-Path -LiteralPath $configPath
-if ($configExisted) { Copy-Item -LiteralPath $configPath -Destination $configBackup -Force }
-
 function Write-RuntimeBinding([string]$State) {
   $binding = [ordered]@{
     schema = 'super-brain.mcp-runtime-binding.v1'
@@ -145,9 +184,10 @@ function Write-RuntimeBinding([string]$State) {
   Move-Item -LiteralPath $temporary -Destination $bindingPath -Force
 }
 
-$installLockPath = Join-Path $CodexHome ('.super-memory-brain-' + (Get-SuperBrainStableHash $McpName 16) + '-registration')
+$installLockPath = Join-Path $workspace ('.super-memory-brain-' + (Get-SuperBrainStableHash $McpName 16) + '-registration')
 $result = $null
 $installError = $null
+$mcpConfigurationMutationAttempted = $false
 
 try {
   # A registration is a single read/remove/write/verify transaction.  The
@@ -160,10 +200,49 @@ try {
     $previousBindingText = if (Test-Path -LiteralPath $bindingPath -PathType Leaf) { Get-Content -LiteralPath $bindingPath -Raw -Encoding UTF8 } else { '' }
 
     try {
+      # A current static entry is already the desired deployment. Reusing its
+      # epoch avoids a remove/add window and does not churn a running Desktop
+      # configuration. The local binding is merely rebuilt if absent/stale.
+      if (Test-McpBinding $previous) {
+        $script:registrationEpoch = Get-McpTransportValue $previous 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
+        $previousBinding = $null
+        if ($previousBindingText) { try { $previousBinding = $previousBindingText | ConvertFrom-Json } catch {} }
+        if (-not (Test-CurrentRuntimeBinding $previousBinding $registrationEpoch)) { Write-RuntimeBinding 'restart_required' }
+        $script:result = [pscustomobject]@{
+          ok = $true
+          action = 'already_configured'
+          checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+          version = (Get-SuperBrainManifest $Root).version
+          mcpName = $McpName
+          codexCli = $codexPath
+          packageRoot = $Root
+          memoryRoot = $MemoryRoot
+          runtimeIdentity = $runtimeIdentity
+          registrationEpochHash = Get-SuperBrainStableHash $registrationEpoch 64
+          configurationState = 'configuration_current'
+          configurationAuthority = if ($useExplicitCodexHome) { 'explicit_codex_home' } else { 'codex_native_effective_config' }
+          liveTransportState = 'runtime_probe_required'
+          restartRequired = $false
+          fullRuntimeReady = $false
+          runtime = $mcpScript
+          tools = @('brain_recall','brain_status','brain_turn','brain_recent')
+          evaluationMode = 'offline_replay_only'
+          offlineReplay = [pscustomobject]@{ mode=$evalMode; total=$eval.total; passed=$eval.passed; p50Ms=$eval.latency.p50Ms; p95Ms=$eval.latency.p95Ms }
+          contract = [pscustomobject]@{ total=$eval.total; passed=$eval.passed; p50Ms=$eval.latency.p50Ms; p95Ms=$eval.latency.p95Ms }
+          configBackup = ''
+          previousMcpReplaced = $false
+          registered = $previous
+          rollback = 'No configuration write was required. Verify the live MCP with brain_status in Codex.'
+        }
+        return
+      }
+      if ($previous -and -not (Test-SuperBrainMcpRegistration $previous)) { throw 'MCP_NAME_CONFLICT_FOREIGN_ENTRY' }
       # Publish the new desired epoch before touching static config. A failed
-      # config mutation restores both config and the binding under this lock.
+      # config mutation restores only the package-owned binding under this
+      # lock. Codex owns config.toml, so it is never whole-file restored here.
       Write-RuntimeBinding 'restart_required'
       if ($previous) {
+        $script:mcpConfigurationMutationAttempted = $true
         $removeCall = Invoke-Codex @('mcp','remove',$McpName)
         if ($removeCall.code -ne 0) { throw "EXISTING_MCP_REMOVE_FAILED: $($removeCall.text)" }
       }
@@ -176,6 +255,7 @@ try {
         '--env',"SUPER_BRAIN_MCP_REGISTRATION_EPOCH=$registrationEpoch",
         '--','python',$mcpScript,'--package-root',$Root,'--memory-root',$MemoryRoot
       )
+      $script:mcpConfigurationMutationAttempted = $true
       $addCall = Invoke-Codex $addArgs
       if ($addCall.code -ne 0) { throw "MCP_ADD_FAILED: $($addCall.text)" }
       $verifyCall = Invoke-Codex @('mcp','get',$McpName,'--json')
@@ -192,33 +272,30 @@ try {
         packageRoot = $Root
         memoryRoot = $MemoryRoot
         runtimeIdentity = $runtimeIdentity
-        registrationEpochHash = Get-SuperBrainStableHash $registrationEpoch 64
-        configurationState = 'configuration_applied'
-        liveTransportState = 'restart_required'
-        restartRequired = $true
+          registrationEpochHash = Get-SuperBrainStableHash $registrationEpoch 64
+          configurationState = 'configuration_applied'
+          configurationAuthority = if ($useExplicitCodexHome) { 'explicit_codex_home' } else { 'codex_native_effective_config' }
+          liveTransportState = 'runtime_probe_required'
+        restartRequired = $false
         fullRuntimeReady = $false
         runtime = $mcpScript
         tools = @('brain_recall','brain_status','brain_turn','brain_recent')
         evaluationMode = 'offline_replay_only'
         offlineReplay = [pscustomobject]@{ mode=$evalMode; total=$eval.total; passed=$eval.passed; p50Ms=$eval.latency.p50Ms; p95Ms=$eval.latency.p95Ms }
         contract = [pscustomobject]@{ total=$eval.total; passed=$eval.passed; p50Ms=$eval.latency.p50Ms; p95Ms=$eval.latency.p95Ms }
-        configBackup = if ($configExisted) { $configBackup } else { '' }
+          configBackup = ''
         previousMcpReplaced = ($null -ne $previous)
         registered = $registered
         rollback = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'install-runtime.ps1')`" -Remove"
       }
     } catch {
-      if ($configExisted -and (Test-Path -LiteralPath $configBackup)) {
-        Copy-Item -LiteralPath $configBackup -Destination $configPath -Force
-      } elseif (-not $configExisted -and (Test-Path -LiteralPath $configPath)) {
-        Remove-Item -LiteralPath $configPath -Force
-      }
       if ($previousBindingText) {
         Write-Utf8NoBom $bindingPath $previousBindingText
       } elseif (Test-Path -LiteralPath $bindingPath) {
         Remove-Item -LiteralPath $bindingPath -Force
       }
-      throw
+      $failureCode = if ($script:mcpConfigurationMutationAttempted) { 'MCP_REGISTRATION_PARTIAL_REPAIR_REQUIRED_NO_WHOLE_FILE_ROLLBACK' } else { 'MCP_REGISTRATION_FAILED_BEFORE_CONFIG_MUTATION' }
+      throw "${failureCode}: $($_.Exception.Message)"
     }
   } -TimeoutMs 60000
 } catch {
@@ -229,7 +306,7 @@ if ($installError) { throw $installError }
 if (-not $result) { throw 'MCP_INSTALL_RESULT_MISSING' }
 Write-JsonUtf8NoBom $resultPath $result 12
 if ($Json) { $result | ConvertTo-Json -Depth 12 } else {
-  Write-Host "RUNTIME_INSTALL_CONFIGURED_RESTART_REQUIRED mcp=$McpName tools=4 p50Ms=$($eval.latency.p50Ms) p95Ms=$($eval.latency.p95Ms)"
-  Write-Host 'Restart Codex, then call the registered Super Brain brain_status to complete the live MCP handshake.'
+  Write-Host "RUNTIME_INSTALL_CONFIGURED_RUNTIME_PROBE_REQUIRED mcp=$McpName tools=4 p50Ms=$($eval.latency.p50Ms) p95Ms=$($eval.latency.p95Ms)"
+  Write-Host 'Call the registered Super Brain brain_status in Codex to complete the live MCP verification; restart only if that live probe reports a stale or unavailable runtime.'
 }
 exit 0
