@@ -302,6 +302,89 @@ def test_retired_host_inputs_are_rejected_before_any_bridge() -> None:
             assert body["code"] == "H7_HOST_TRANSPORT_RETIRED", body
 
 
+def test_brain_status_reuses_transport_only_within_one_request() -> None:
+    """Status projections share one fresh transport health snapshot."""
+
+    class CountingScopeProvider:
+        provider_kind = "scope_broker_channel"
+
+        def __init__(self) -> None:
+            self.status_calls = 0
+            self.snapshot_calls = 0
+
+        def snapshot(self, *, force: bool = False) -> dict[str, object]:
+            self.snapshot_calls += 1
+            return {}
+
+        def authorize(self, *, write: bool = False) -> dict[str, object]:
+            return {"ok": False, "state": "withheld", "code": "unused"}
+
+        def project_root(self) -> None:
+            return None
+
+        def status(self) -> dict[str, object]:
+            self.status_calls += 1
+            raise AssertionError("brain_status must use the transport snapshot")
+
+    class CountingTransportHealth:
+        def __init__(self) -> None:
+            self.status_calls = 0
+
+        def mark_initialized(self, runtime_identity: dict[str, object]) -> dict[str, object]:
+            return self.status(runtime_identity)
+
+        def status(self, runtime_identity: dict[str, object]) -> dict[str, object]:
+            self.status_calls += 1
+            return {
+                "schema": "super-brain.mcp-live-handshake.v2",
+                "state": "current",
+                "code": "H7_MCP_LOCAL_STDIO_CURRENT",
+                "transport": "local_scope_broker_stdio",
+                "runtimeIdentity": "runtime-current",
+                "broker": {
+                    "state": "current",
+                    "code": "H7_SCOPE_CHANNEL_BOUND",
+                    "available": True,
+                },
+                "scope": {
+                    "provider": "scope_broker_channel",
+                    "state": "bound",
+                    "code": "H7_SCOPE_CHANNEL_BOUND",
+                    "accessMode": "write",
+                    "scopeReady": True,
+                },
+                "packageVersion": "test",
+                "registryVersion": 1,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+
+        def close(self) -> None:
+            return None
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-status-snapshot-") as directory:
+        memory = Path(directory) / "state" / "shared"
+        memory.mkdir(parents=True)
+        provider = CountingScopeProvider()
+        transport = CountingTransportHealth()
+        core = BrainCore(ROOT, memory)
+        core.inject_runtime_transport(
+            runtime_mode="local_stdio_scope_broker",
+            scope_provider=provider,
+            transport_health=transport,
+        )
+
+        first = payload(handle_tool(core, "brain_status", {}))
+        assert first["scopeBinding"]["scopeAuthorized"] is True, first
+        assert transport.status_calls == 1, transport.status_calls
+        assert provider.status_calls == 0, provider.status_calls
+
+        second = payload(handle_tool(core, "brain_status", {}))
+        assert second["scopeBinding"]["scopeAuthorized"] is True, second
+        assert transport.status_calls == 2, transport.status_calls
+        assert provider.status_calls == 0, provider.status_calls
+
+
 def test_non_object_jsonrpc_input_does_not_crash_the_worker() -> None:
     """Malformed scalar/array frames yield JSON-RPC invalid-request errors."""
 
@@ -338,6 +421,7 @@ def main() -> None:
     test_installer_path_hash_contract_matches_python_runtime()
     test_registration_epoch_blocks_old_worker_until_real_initialize()
     test_retired_host_inputs_are_rejected_before_any_bridge()
+    test_brain_status_reuses_transport_only_within_one_request()
     test_non_object_jsonrpc_input_does_not_crash_the_worker()
     print("runtime_mcp_live_handshake_regression: PASS")
 

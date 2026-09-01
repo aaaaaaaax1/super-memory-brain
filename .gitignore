@@ -27,6 +27,7 @@ CORE/runtime-layout.json
 # Generated caches
 __pycache__/
 *.pyc
+/.tmp6/
 CORE/state/**
 CORE/ui/node_modules/
 CORE/ui/.vite/

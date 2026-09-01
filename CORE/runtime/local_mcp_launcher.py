@@ -121,7 +121,7 @@ def main() -> int:
     # bootstrap. It never appears in argv; brain_mcp consumes and removes it
     # before it serves MCP. The worker derives workspace only from this
     # inherited process's real cwd.
-    session = str(os.environ.get(LOCAL_SESSION_ENV, "")).strip()
+    session = str(os.environ.pop(LOCAL_SESSION_ENV, "")).strip()
     child_environment = _worker_environment(session)
     # Run the worker in this same process. This preserves the caller's stdio,
     # avoids a child that could outlive a terminated launcher on Windows, and

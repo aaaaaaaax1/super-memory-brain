@@ -256,6 +256,88 @@ def test_owner_close_preserves_a_shared_bound_channel() -> None:
             control.close()
 
 
+def test_shutdown_if_idle_requires_the_expected_broker_instance() -> None:
+    """A stale client must not stop a replacement Broker instance."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-shutdown-cas-") as directory:
+        state = Path(directory) / "state"
+        runtime = ROOT / "runtime" / "scope_broker_ipc.py"
+        server = ScopeBrokerServer(state, idle_seconds=None)
+        server.start()
+        control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=runtime)
+        try:
+            current_instance = str(server.endpoint().get("instanceId", ""))
+            bundle = _read_endpoint_bundle(server.endpoint_path, server.secret_path)
+            assert bundle is not None
+            missing = server._dispatch(_signed(bundle[1], "shutdown_if_idle", {}, "shutdown-missing-instance"))
+            assert missing.get("ok") is False, missing
+            assert missing.get("code") == "H7_SCOPE_BROKER_INSTANCE_REQUIRED", missing
+            assert server.is_running
+
+            rejected = control.shutdown_if_idle(expected_instance_id="sbi-" + "f" * 32)
+            assert rejected.get("ok") is False, rejected
+            assert rejected.get("code") == "H7_SCOPE_BROKER_INSTANCE_CHANGED", rejected
+            assert server.is_running
+
+            accepted = control.shutdown_if_idle(expected_instance_id=current_instance)
+            assert accepted.get("ok") is True, accepted
+            assert accepted.get("code") == "H7_SCOPE_BROKER_SHUTDOWN_ACCEPTED", accepted
+            deadline = time.monotonic() + 2.0
+            while server.is_running and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert not server.is_running
+
+            # The deferred stop releases the process-local lease from its
+            # worker thread.  A different thread must be able to start the
+            # next Broker on the same state root immediately; this catches a
+            # cross-thread RLock leak that can be invisible in one-thread
+            # tests.
+            replacement_result: list[dict[str, object]] = []
+
+            def start_and_stop_replacement() -> None:
+                replacement = ScopeBrokerServer(state, idle_seconds=None)
+                try:
+                    replacement_result.append(replacement.start())
+                finally:
+                    replacement.stop()
+
+            replacement_thread = threading.Thread(target=start_and_stop_replacement)
+            replacement_thread.start()
+            replacement_thread.join(timeout=2.0)
+            assert not replacement_thread.is_alive()
+            assert replacement_result and replacement_result[0].get("instanceId"), replacement_result
+        finally:
+            server.stop()
+            control.close()
+
+
+def test_read_only_control_close_preserves_a_warm_idle_broker() -> None:
+    """A status-only control client must not gain teardown authority."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-control-close-") as directory:
+        state = Path(directory) / "state"
+        runtime = ROOT / "runtime" / "scope_broker_ipc.py"
+        server = ScopeBrokerServer(state, idle_seconds=None)
+        server.start()
+        owner = ScopeBrokerClient(state, auto_start=False, runtime_path=runtime)
+        control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=runtime)
+        channel = ""
+        try:
+            channel = owner.open_channel()
+            assert channel
+            inspected = control.status(channel)
+            assert inspected.get("ok") is True, inspected
+            assert owner.close_channel(channel).get("ok") is True
+            channel = ""
+            control.close()
+            assert server.is_running
+        finally:
+            if channel:
+                owner.close_channel(channel)
+            owner.close()
+            server.stop()
+
+
 def test_stale_endpoint_is_replaced() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-stale-") as directory:
         state = Path(directory) / "state"
@@ -1278,6 +1360,8 @@ def main() -> None:
     test_pairing_tokens_cannot_cross_ipc()
     test_concurrent_clients_spawn_one_child()
     test_owner_close_preserves_a_shared_bound_channel()
+    test_shutdown_if_idle_requires_the_expected_broker_instance()
+    test_read_only_control_close_preserves_a_warm_idle_broker()
     test_stale_endpoint_is_replaced()
     test_repeated_stop_cannot_remove_a_new_broker_endpoint()
     test_project_root_survives_broker_restart_and_pair_stays_public()

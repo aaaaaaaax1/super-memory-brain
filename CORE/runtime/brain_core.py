@@ -559,8 +559,41 @@ class BrainCore:
         self.runtime_mode = mode
         self._transport_health = transport_health
 
-    def scope_status(self) -> dict[str, Any]:
-        """Return the current provider binding without selecting a scope."""
+    def scope_status(
+        self,
+        *,
+        transport_snapshot: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return the current provider binding without selecting a scope.
+
+        transport_snapshot is a single-request optimization for injected MCP
+        status responses. It is never retained on BrainCore and must only be
+        supplied from a fresh mcp_transport_status result from the same
+        request; ordinary operations continue to query the provider directly
+        so a rebind cannot be hidden by a cross-request cache.
+        """
+
+        if isinstance(transport_snapshot, Mapping) and self.is_local_mcp_runtime:
+            scope_snapshot = transport_snapshot.get("scope")
+            broker_snapshot = transport_snapshot.get("broker")
+            if isinstance(scope_snapshot, Mapping):
+                state = str(scope_snapshot.get("state", "withheld")).strip() or "withheld"
+                code = str(scope_snapshot.get("code", "H7_SCOPE_PROVIDER_UNAVAILABLE")).strip() or "H7_SCOPE_PROVIDER_UNAVAILABLE"
+                if code == "H7_SCOPE_LAUNCH_RESTART_REQUIRED":
+                    state = "withheld"
+                broker_available = bool(isinstance(broker_snapshot, Mapping) and broker_snapshot.get("available") is True)
+                channel_available = bool(broker_available and state in {"unbound", "bound"})
+                return {
+                    "ok": channel_available,
+                    "state": state,
+                    "code": code,
+                    "provider": str(scope_snapshot.get("provider", "") or type(self._scope_provider).__name__),
+                    "accessMode": str(scope_snapshot.get("accessMode", "") or ""),
+                    "channelAvailable": channel_available,
+                    "scopeAuthorized": bool(channel_available and state == "bound" and scope_snapshot.get("scopeReady") is True),
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                }
 
         try:
             value = self._scope_provider.status()
@@ -895,10 +928,17 @@ class BrainCore:
     def mcp_transport_status(
         self,
         runtime_identity: Mapping[str, Any] | None = None,
+        *,
+        transport_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return platform-neutral health of this process's MCP transport."""
 
         runtime = runtime_identity if isinstance(runtime_identity, Mapping) else self.runtime_identity_status()
+        # Reuse only a fresh snapshot explicitly supplied by the current
+        # request. Never persist it on the core or use it as a lease/binding
+        # cache across requests.
+        if isinstance(transport_snapshot, Mapping):
+            return dict(transport_snapshot)
         # An explicit injected transport owns its lifecycle.  Only the
         # legacy, un-injected compatibility core may opt into the historical
         # environment-driven offline replay switch.
@@ -961,11 +1001,13 @@ class BrainCore:
     def mcp_runtime_binding_status(
         self,
         runtime_identity: dict[str, Any] | None = None,
+        *,
+        transport_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Combine core-local transport state with optional adapter diagnostics."""
 
         runtime = runtime_identity if isinstance(runtime_identity, Mapping) else self.runtime_identity_status()
-        transport = self.mcp_transport_status(runtime)
+        transport = self.mcp_transport_status(runtime, transport_snapshot=transport_snapshot)
         adapter = (
             {
                 "schema": "super-brain.mcp-deployment-adapter-status.v1",
@@ -4489,7 +4531,14 @@ class BrainCore:
             "rawTranscriptStored": False,
         }
 
-    def status(self) -> dict[str, Any]:
+    def status(
+        self,
+        *,
+        runtime_identity: Mapping[str, Any] | None = None,
+        transport_snapshot: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return the core status using optional same-request health inputs."""
+
         state = _read_json(self.workspace / "super-brain-state.json") or {}
         status_card = _read_json(self.workspace / "status-card.json") or {}
         version = str(self.manifest.get("version", "unknown"))
@@ -4499,11 +4548,18 @@ class BrainCore:
             str((active_contract or {}).get("taskInstanceId", "")),
         )
         core_rules = self.core_rules()
-        runtime_identity = self.runtime_identity_status(served_core_rules=core_rules)
+        runtime_identity = (
+            dict(runtime_identity)
+            if isinstance(runtime_identity, Mapping)
+            else self.runtime_identity_status(served_core_rules=core_rules)
+        )
         # One fresh identity proof per status request is enough.  The binding
         # check consumes that exact proof instead of stat/hash-scanning the
         # 31-file MCP identity closure a second time.
-        mcp_runtime_binding = self.mcp_runtime_binding_status(runtime_identity=runtime_identity)
+        mcp_runtime_binding = self.mcp_runtime_binding_status(
+            runtime_identity=runtime_identity,
+            transport_snapshot=transport_snapshot,
+        )
         retired_transport_guard = self.retired_transport_guard()
         hook_registration = retired_transport_guard.get("superBrainHookRegistration", {})
         turn_runtime = {

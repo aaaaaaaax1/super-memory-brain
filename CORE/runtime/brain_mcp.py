@@ -155,6 +155,7 @@ def _startup_scope_injection(
     injected_local_session: str,
     injected_workspace_root: str,
     injection_required: bool = False,
+    broker_client: ScopeBrokerClient | None = None,
  ) -> tuple[dict[str, Any], str]:
     """Bind one channel only from a launcher-provided local process scope.
 
@@ -212,6 +213,7 @@ def _startup_scope_injection(
         local_session=session,
         lifecycle="continue",
         access_mode="write",
+        broker_client=broker_client,
     )
     return {
         "state": str(result.get("state", "withheld")),
@@ -747,6 +749,7 @@ def _live_mcp_handshake(
     core: BrainCore,
     *,
     runtime_identity: dict[str, Any] | None = None,
+    transport_snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return this process's injected local MCP transport health.
 
@@ -757,7 +760,7 @@ def _live_mcp_handshake(
     """
 
     runtime = runtime_identity if isinstance(runtime_identity, dict) else core.runtime_identity_status()
-    return dict(core.mcp_transport_status(runtime))
+    return dict(core.mcp_transport_status(runtime, transport_snapshot=transport_snapshot))
 
 
 def _bound_scope_failure_code(core: BrainCore, scope: Mapping[str, Any]) -> str:
@@ -1298,12 +1301,24 @@ def handle_tool(
             )
         )
     if name == "brain_status":
-        status = _public_mcp_status(core.status())
-        status["scopeBinding"] = core.scope_status()
+        # One fresh transport snapshot is enough for all three status
+        # projections below. It remains request-local: the next MCP request
+        # rechecks the live Broker channel and current runtime identity.
+        core_rules = core.core_rules()
+        runtime_identity = core.runtime_identity_status(served_core_rules=core_rules)
+        transport_snapshot = core.mcp_transport_status(runtime_identity)
+        status = _public_mcp_status(
+            core.status(
+                runtime_identity=runtime_identity,
+                transport_snapshot=transport_snapshot,
+            )
+        )
+        status["scopeBinding"] = core.scope_status(transport_snapshot=transport_snapshot)
         status["controlPlaneSnapshot"] = control_plane_status(snapshot_path)
         status["liveMcpHandshake"] = _live_mcp_handshake(
             core,
-            runtime_identity=(status.get("runtimeIdentity") if isinstance(status.get("runtimeIdentity"), dict) else None),
+            runtime_identity=runtime_identity,
+            transport_snapshot=transport_snapshot,
         )
         return tool_result(status)
     if name == "brain_recent":
@@ -1460,6 +1475,7 @@ def main() -> int:
             injected_local_session=injected_local_session,
             injected_workspace_root=injected_workspace_root,
             injection_required=args.local_launcher,
+            broker_client=broker_client,
         )
         # A package-owned local launcher has one chance to prove its private
         # cwd/session/contract scope at startup.  If that proof fails, do not

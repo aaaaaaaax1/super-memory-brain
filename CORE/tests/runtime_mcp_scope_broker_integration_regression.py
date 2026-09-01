@@ -22,6 +22,7 @@ from brain_control import BrainControl
 from brain_context import canonical_hash, project_progress_root_hash, scope_ref, visible_progress_scope_binding_hash
 from brain_core import BrainCore
 from local_mcp_launcher import _worker_environment
+from local_scope_bootstrap import bootstrap_local_scope
 from mcp_transport_health import LocalBrokerStdioTransportHealth
 from scope_broker import ScopeBroker
 from scope_broker_ipc import ScopeBrokerControlClient, ScopeBrokerServer
@@ -895,7 +896,7 @@ def test_first_local_launcher_starts_and_binds_its_own_broker() -> None:
         _write_native_memory_snapshot(state / "workspace")
         _write_live_contract(state, project, session_key, "mcp-local-first-launch")
         process: subprocess.Popen[str] | None = None
-        control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
+        broker_root = state / "workspace" / "runtime-state" / "scope-broker"
         try:
             # No ``ScopeBrokerServer`` is started here.  The launcher must
             # establish the resident local endpoint before its atomic bind.
@@ -916,11 +917,37 @@ def test_first_local_launcher_starts_and_binds_its_own_broker() -> None:
                 assert private_marker not in serialized, serialized
         finally:
             _stop(process)
-            try:
-                control.shutdown_if_idle()
-            except Exception:
-                pass
-            control.close()
+            # The MCP process owns the broker it auto-started.  Do not use an
+            # external control client here: the test must prove that the
+            # production teardown itself releases the endpoint before the
+            # temporary state root is removed on Windows.
+            assert not (broker_root / "endpoint.json").exists()
+            assert not (broker_root / "secret.bin").exists()
+
+
+def test_standalone_scope_bootstrap_closes_its_private_channel() -> None:
+    """The public bootstrap helper must not leak a bound Broker channel."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-local-standalone-bootstrap-") as directory:
+        root = Path(directory)
+        state = root / "state"
+        memory = state / "shared"
+        project = root / "project"
+        memory.mkdir(parents=True)
+        project.mkdir()
+        session_key = "sid-" + "e" * 24
+        _write_native_memory_snapshot(state / "workspace")
+        _write_live_contract(state, project, session_key, "mcp-local-standalone-bootstrap")
+        result = bootstrap_local_scope(
+            package_root=ROOT,
+            memory_root=memory,
+            workspace_root=project,
+            local_session=session_key,
+        )
+        assert result.get("ok") is True, result
+        broker_root = state / "workspace" / "runtime-state" / "scope-broker"
+        assert not (broker_root / "endpoint.json").exists()
+        assert not (broker_root / "secret.bin").exists()
 
 
 def test_injected_launcher_requires_process_restart_after_broker_restart() -> None:
@@ -1052,11 +1079,13 @@ def test_registered_launcher_without_local_injection_is_inert_discovery_only() -
 
 
 def main() -> None:
+    test_local_launcher_relays_only_runtime_environment_and_explicit_sid()
     test_bound_task_layer_uses_the_channel_projection()
     test_live_write_checkpoint_refreshes_projection_before_reopen()
     test_live_mcp_rebind_allows_successor_without_retiring_contract()
     test_injected_mcp_scope_bootstrap_pairs_the_current_local_contract_without_host_identity()
     test_first_local_launcher_starts_and_binds_its_own_broker()
+    test_standalone_scope_bootstrap_closes_its_private_channel()
     test_injected_launcher_requires_process_restart_after_broker_restart()
     test_registered_launcher_without_local_injection_is_inert_discovery_only()
     test_static_mcp_remains_unbound_and_pairing_controls_are_retired()

@@ -90,6 +90,7 @@ def bootstrap_local_mcp_channel(
     local_session: str,
     lifecycle: str = "continue",
     access_mode: str = "write",
+    broker_client: ScopeBrokerClient | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Bind a new private MCP channel from one exact local H7 contract.
 
@@ -135,15 +136,18 @@ def bootstrap_local_mcp_channel(
     if contract is None:
         return _withheld(contract_code, lifecycle=normalized_lifecycle), ""
 
-    control = ScopeBrokerClient(
+    # The MCP entrypoint may already own a broker client whose auto-started
+    # child must be shut down with the served channel. Reuse that client when
+    # supplied so broker process ownership cannot be lost between bootstrap
+    # and MCP teardown. Standalone callers retain the self-contained client
+    # lifecycle below.
+    control = broker_client if broker_client is not None else ScopeBrokerClient(
         core.memory_base,
-        # The first launcher for a local user scope owns broker startup.  It
-        # starts only the authenticated local broker endpoint; it never opens
-        # an intermediate unbound channel or accepts a scope selector.  A
-        # later broker restart remains fail-closed in the bound provider.
         auto_start=True,
         runtime_path=Path(__file__).with_name("scope_broker_ipc.py"),
     )
+    owns_control = broker_client is None
+    channel_id = ""
     try:
         bound = control.bootstrap_bound_channel(
             contract,
@@ -174,10 +178,20 @@ def bootstrap_local_mcp_channel(
     except (OSError, RuntimeError, TypeError, ValueError):
         return _withheld("H7_SCOPE_BOOTSTRAP_CONTROL_UNAVAILABLE", lifecycle=normalized_lifecycle), ""
     finally:
-        try:
-            control.close()
-        except Exception:
-            pass
+        if owns_control:
+            # Standalone callers receive only the public projection; the
+            # private channel is not transferable across this function's
+            # lifetime. Close it before releasing the client so a failed or
+            # successful bootstrap cannot leave a bound lease in the Broker.
+            if channel_id:
+                try:
+                    control.close_channel(channel_id, allow_auto_start=False)
+                except Exception:
+                    pass
+            try:
+                control.close()
+            except Exception:
+                pass
 
 
 def bootstrap_local_scope(
