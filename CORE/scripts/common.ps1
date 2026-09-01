@@ -576,6 +576,199 @@ function Get-SuperBrainMcpPathHash([string]$Root = $SuperBrainRoot) {
   return Get-SuperBrainStableHash $normalized 64
 }
 
+function Get-SuperBrainMcpTransportValue([object]$Registered,[string]$Name) {
+  if (-not $Registered -or -not $Registered.transport) { return '' }
+  if ($Registered.transport.env -and $Registered.transport.env.PSObject.Properties[$Name]) {
+    return [string]$Registered.transport.env.$Name
+  }
+  $arguments = @($Registered.transport.args)
+  for ($index = 0; $index -lt ($arguments.Count - 1); $index++) {
+    if ([string]$arguments[$index] -eq $Name) { return [string]$arguments[$index + 1] }
+  }
+  return ''
+}
+
+function Test-SuperBrainMcpSamePath([string]$Left,[string]$Right) {
+  if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+  try {
+    return [string]::Equals(
+      (Get-NormalizedSuperBrainRoot $Left),
+      (Get-NormalizedSuperBrainRoot $Right),
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  } catch {
+    return $false
+  }
+}
+
+function Test-SuperBrainMcpRegistrationContract {
+  <#
+    Validates both the current desired registration and a self-consistent
+    legacy registration that is safe for this package to migrate/remove.
+    Never treat one matching environment value as ownership: a named external
+    MCP can legitimately carry a similarly named variable.
+  #>
+  [CmdletBinding()]
+  param(
+    [object]$Registered,
+    [string]$PackageRoot,
+    [string]$MemoryRoot,
+    [string]$RuntimeIdentity = '',
+    [string]$ExpectedEpoch = '',
+    [switch]$RequireEnabled
+  )
+
+  $result = [ordered]@{
+    current = $false
+    owned = $false
+    code = 'MCP_REGISTRATION_MISSING'
+    registrationEpoch = ''
+    packageRoot = ''
+    memoryRoot = ''
+    commandMatches = $false
+    argumentsMatch = $false
+    environmentConsistent = $false
+    identityMatches = $false
+    epochMatches = $false
+    enabled = $false
+  }
+  if (-not $Registered -or -not $Registered.transport) { return [pscustomobject]$result }
+
+  $transport = $Registered.transport
+  $result.enabled = ($Registered.enabled -eq $true)
+  if ([string]$transport.type -ne 'stdio') {
+    $result.code = 'MCP_REGISTRATION_TRANSPORT_INVALID'
+    return [pscustomobject]$result
+  }
+
+  $command = [string]$transport.command
+  $commandLeaf = ''
+  try { $commandLeaf = [IO.Path]::GetFileName($command).ToLowerInvariant() } catch {}
+  $result.commandMatches = $commandLeaf -in @('python','python.exe')
+
+  $registeredPackage = Get-SuperBrainMcpTransportValue $Registered 'SUPER_BRAIN_PACKAGE_ROOT'
+  $registeredMemory = Get-SuperBrainMcpTransportValue $Registered 'NEXSANDBASE_HOME'
+  $registeredIdentity = Get-SuperBrainMcpTransportValue $Registered 'SUPER_BRAIN_RUNTIME_IDENTITY'
+  $registeredTransport = Get-SuperBrainMcpTransportValue $Registered 'SUPER_BRAIN_MCP_TRANSPORT'
+  $registeredEpoch = Get-SuperBrainMcpTransportValue $Registered 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
+  $registrationSchema = Get-SuperBrainMcpTransportValue $Registered 'SUPER_BRAIN_MCP_REGISTRATION_SCHEMA'
+  $result.registrationEpoch = [string]$registeredEpoch
+  $result.packageRoot = [string]$registeredPackage
+  $result.memoryRoot = [string]$registeredMemory
+
+  $arguments = @($transport.args | ForEach-Object { [string]$_ })
+  $launcherScript = if ([string]::IsNullOrWhiteSpace($registeredPackage)) { '' } else { Join-Path $registeredPackage 'runtime\local_mcp_launcher.py' }
+  $legacyScript = if ([string]::IsNullOrWhiteSpace($registeredPackage)) { '' } else { Join-Path $registeredPackage 'runtime\brain_mcp.py' }
+  $launcherArgumentsMatch = (
+    $arguments.Count -eq 5 -and
+    (Test-SuperBrainMcpSamePath $arguments[0] $launcherScript) -and
+    $arguments[1] -eq '--package-root' -and
+    (Test-SuperBrainMcpSamePath $arguments[2] $registeredPackage) -and
+    $arguments[3] -eq '--memory-root' -and
+    (Test-SuperBrainMcpSamePath $arguments[4] $registeredMemory)
+  )
+  $legacyArgumentsMatch = (
+    $arguments.Count -eq 5 -and
+    (Test-SuperBrainMcpSamePath $arguments[0] $legacyScript) -and
+    $arguments[1] -eq '--package-root' -and
+    (Test-SuperBrainMcpSamePath $arguments[2] $registeredPackage) -and
+    $arguments[3] -eq '--memory-root' -and
+    (Test-SuperBrainMcpSamePath $arguments[4] $registeredMemory)
+  )
+  $baseEnvironmentConsistent = (
+    -not [string]::IsNullOrWhiteSpace($registeredPackage) -and
+    -not [string]::IsNullOrWhiteSpace($registeredMemory) -and
+    $registeredTransport -eq 'codex_registered_v1' -and
+    $registeredIdentity -match '^[a-f0-9]{64}$' -and
+    $registeredEpoch -match '^[a-f0-9]{32}$'
+  )
+  $launcherEnvironmentConsistent = $baseEnvironmentConsistent -and $registrationSchema -eq 'super-brain.codex-mcp.v2'
+  $legacyEnvironmentConsistent = $baseEnvironmentConsistent -and ([string]::IsNullOrWhiteSpace($registrationSchema) -or $registrationSchema -eq 'super-brain.codex-mcp.v1')
+  $result.argumentsMatch = [bool]$launcherArgumentsMatch
+  $result.environmentConsistent = [bool]$launcherEnvironmentConsistent
+  $launcherOwned = [bool]($result.commandMatches -and $launcherArgumentsMatch -and $launcherEnvironmentConsistent)
+  # The direct brain_mcp entry is a complete historical package signature,
+  # not an arbitrary similarly named external server. Retain this one narrow
+  # migration/removal path, but never call it the current configuration.
+  $legacyOwned = [bool]($result.commandMatches -and $legacyArgumentsMatch -and $legacyEnvironmentConsistent)
+  $result.owned = [bool]($launcherOwned -or $legacyOwned)
+  if (-not $result.owned) {
+    $result.code = 'MCP_REGISTRATION_FOREIGN_OR_INCOMPLETE'
+    return [pscustomobject]$result
+  }
+
+  $result.identityMatches = ([string]::IsNullOrWhiteSpace($RuntimeIdentity) -or $registeredIdentity -eq $RuntimeIdentity)
+  $result.epochMatches = ([string]::IsNullOrWhiteSpace($ExpectedEpoch) -or $registeredEpoch -eq $ExpectedEpoch)
+  $targetRootsMatch = (Test-SuperBrainMcpSamePath $registeredPackage $PackageRoot) -and (Test-SuperBrainMcpSamePath $registeredMemory $MemoryRoot)
+  $enabledMatches = (-not $RequireEnabled -or $result.enabled)
+  $result.current = [bool]($launcherOwned -and $targetRootsMatch -and $result.identityMatches -and $result.epochMatches -and $enabledMatches)
+  $result.code = if ($result.current) { 'MCP_REGISTRATION_CURRENT' } elseif ($legacyOwned) { 'MCP_REGISTRATION_OWNED_LEGACY_LAUNCHER_REQUIRED' } elseif (-not $targetRootsMatch) { 'MCP_REGISTRATION_OWNED_STALE_ROOTS' } elseif (-not $result.identityMatches) { 'MCP_REGISTRATION_OWNED_STALE_IDENTITY' } elseif (-not $result.epochMatches) { 'MCP_REGISTRATION_OWNED_EPOCH_MISMATCH' } elseif (-not $enabledMatches) { 'MCP_REGISTRATION_DISABLED' } else { 'MCP_REGISTRATION_OWNED_STALE' }
+  return [pscustomobject]$result
+}
+
+function Test-SuperBrainMcpRuntimeBinding {
+  [CmdletBinding()]
+  param(
+    [object]$Binding,
+    [string]$PackageRoot,
+    [string]$MemoryBaseRoot,
+    [string]$RuntimeIdentity,
+    [string]$RegistrationEpoch
+  )
+  if (-not $Binding) { return $false }
+  $fields = @('schema','state','registrationEpoch','packageVersion','runtimeIdentity','packageRootHash','memoryRootHash','configuredAt','liveHandshake','rawPromptStored','rawTranscriptStored')
+  $payload = [ordered]@{}
+  foreach ($field in $fields) {
+    if (-not $Binding.PSObject.Properties[$field]) { return $false }
+    $payload[$field] = $Binding.$field
+  }
+  $expectedHash = Get-SuperBrainStableHash (($payload | ConvertTo-Json -Depth 8 -Compress)) 64
+  return (
+    [string]$Binding.schema -eq 'super-brain.mcp-runtime-binding.v1' -and
+    [string]$Binding.state -in @('restart_required','current') -and
+    [string]$Binding.registrationEpoch -eq [string]$RegistrationEpoch -and
+    [string]$Binding.runtimeIdentity -eq [string]$RuntimeIdentity -and
+    [string]$Binding.packageRootHash -eq (Get-SuperBrainMcpPathHash $PackageRoot) -and
+    [string]$Binding.memoryRootHash -eq (Get-SuperBrainMcpPathHash $MemoryBaseRoot) -and
+    [string]$Binding.payloadHash -eq $expectedHash
+  )
+}
+
+function Get-SuperBrainMcpConfigurationScopeKey {
+  [CmdletBinding()]
+  param(
+    [string]$CodexHome = '',
+    [switch]$ExplicitCodexHome,
+    [string]$AmbientCodexHome = $env:CODEX_HOME
+  )
+  if ($ExplicitCodexHome) {
+    try { return 'codex-home:' + (Get-NormalizedSuperBrainRoot $CodexHome).ToLowerInvariant() } catch { return 'codex-home:invalid' }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($AmbientCodexHome)) {
+    try { return 'codex-home:' + (Get-NormalizedSuperBrainRoot $AmbientCodexHome).ToLowerInvariant() } catch { return 'codex-home:invalid' }
+  }
+  # The desktop-native effective channel is intentionally one stable scope:
+  # two package copies targeting it must serialize even if they have separate
+  # private state roots.
+  return 'codex-native-default'
+}
+
+function Get-SuperBrainMcpRegistrationLockPath {
+  [CmdletBinding()]
+  param(
+    [string]$McpName,
+    [string]$ConfigurationScope,
+    [string]$LockRoot = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($McpName) -or [string]::IsNullOrWhiteSpace($ConfigurationScope)) { throw 'MCP_REGISTRATION_LOCK_SCOPE_REQUIRED' }
+  if ([string]::IsNullOrWhiteSpace($LockRoot)) {
+    $base = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { Join-Path $env:LOCALAPPDATA 'OpenAI\Codex' } else { Join-Path $env:TEMP 'OpenAI\Codex' }
+    $LockRoot = Join-Path $base 'super-memory-brain-locks'
+  }
+  $key = (([string]$ConfigurationScope).Trim().ToLowerInvariant() + '|' + ([string]$McpName).Trim().ToLowerInvariant())
+  return Join-Path $LockRoot ('registration-' + (Get-SuperBrainStableHash $key 64))
+}
+
 function Get-SuperBrainWorkspaceKey([string]$Workspace = '') {
   $value = $Workspace
   if ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($env:SUPER_BRAIN_WORKSPACE_KEY)) {

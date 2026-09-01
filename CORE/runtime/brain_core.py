@@ -567,6 +567,24 @@ class BrainCore:
         except Exception:
             value = {"state": "withheld", "code": "H7_SCOPE_PROVIDER_UNAVAILABLE"}
         result = dict(value) if isinstance(value, Mapping) else {}
+        # A pairing ref is a connection-owned, one-shot control capability.
+        # Status is language-model-visible in the MCP route, so it must never
+        # disclose a value that could bind an unbound channel.  Lease/channel
+        # internals are likewise process-private; normal callers need only
+        # the bounded binding state below.
+        for private_key in ("pairingRequestRef", "channelId", "leaseId", "leaseExpiresAt"):
+            result.pop(private_key, None)
+        nested_scope = result.get("scope")
+        scope_authorized = bool(
+            isinstance(nested_scope, Mapping)
+            and str(nested_scope.get("workspaceKey", "")).strip()
+            and str(nested_scope.get("ownerSessionKey", "")).strip()
+        )
+        # A live channel's scope projection contains stable workspace/session/
+        # workline identifiers. Status is model-visible and needs only the
+        # binding boolean below, never any identity that could be reused as a
+        # cross-scope selector or correlation handle.
+        result.pop("scope", None)
         result.setdefault("state", "unbound")
         result.setdefault("code", "H7_SCOPE_PROVIDER_UNBOUND")
         result["provider"] = str(result.get("provider") or type(self._scope_provider).__name__)
@@ -576,12 +594,7 @@ class BrainCore:
         # than relying on every caller to infer it from code/state.
         state = str(result.get("state", "")).strip()
         result["channelAvailable"] = bool(result.get("ok") is True and state in {"unbound", "bound"})
-        result["scopeAuthorized"] = bool(
-            state == "bound"
-            and isinstance(result.get("scope"), Mapping)
-            and str((result.get("scope") or {}).get("workspaceKey", "")).strip()
-            and str((result.get("scope") or {}).get("ownerSessionKey", "")).strip()
-        )
+        result["scopeAuthorized"] = bool(state == "bound" and scope_authorized)
         result["rawPromptStored"] = False
         result["rawTranscriptStored"] = False
         return result

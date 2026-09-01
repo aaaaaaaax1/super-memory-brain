@@ -21,6 +21,7 @@ import brain_mcp
 from brain_control import BrainControl
 from brain_context import canonical_hash, project_progress_root_hash, scope_ref, visible_progress_scope_binding_hash
 from brain_core import BrainCore
+from local_mcp_launcher import _worker_environment
 from mcp_transport_health import LocalBrokerStdioTransportHealth
 from scope_broker import ScopeBroker
 from scope_broker_ipc import ScopeBrokerControlClient, ScopeBrokerServer
@@ -166,7 +167,15 @@ def _write_native_memory_snapshot(workspace: Path) -> None:
     _write_json(workspace / "native-memory-influence-snapshot.json", {**body, "payloadHash": canonical_hash(body)})
 
 
-def _write_live_contract(state_root: Path, project: Path, session_key: str, task_id: str) -> tuple[dict[str, object], Path]:
+def _write_live_contract(
+    state_root: Path,
+    project: Path,
+    session_key: str,
+    task_id: str,
+    *,
+    revision: int = 7,
+    plan_fingerprint: str = "",
+) -> tuple[dict[str, object], Path]:
     """Create one complete current H7 contract without any host input."""
 
     workspace = state_root / "workspace"
@@ -213,6 +222,7 @@ def _write_live_contract(state_root: Path, project: Path, session_key: str, task
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
+    effective_plan_fingerprint = plan_fingerprint or f"mcp-live-plan-{revision}"
     contract = {
         "ok": True,
         "schema": "super-brain.execution-contract.v1",
@@ -222,7 +232,7 @@ def _write_live_contract(state_root: Path, project: Path, session_key: str, task
         "ownerSessionKey": session_key,
         "packageVersion": package_version,
         "status": "active",
-        "revision": 7,
+        "revision": revision,
         "focusId": "mcp-live-continuation",
         "focusLabel": "Live MCP continuation fixture",
         "lastConfirmedSentence": sentence,
@@ -236,8 +246,8 @@ def _write_live_contract(state_root: Path, project: Path, session_key: str, task
         "planReceiptRequired": True,
         "planReceipt": {
             "focusId": "mcp-live-continuation",
-            "contractRevision": 7,
-            "planFingerprint": "mcp-live-plan-7",
+            "contractRevision": revision,
+            "planFingerprint": effective_plan_fingerprint,
         },
         "instructionAnchor": {"contentHash": "a" * 64},
         "recoveryCheckpoint": {"checkpointId": "mcp-live-checkpoint", "stateHash": "b" * 64},
@@ -262,7 +272,7 @@ def _write_live_contract(state_root: Path, project: Path, session_key: str, task
                     "workspaceKey": workspace_key,
                     "ownerSessionKey": session_key,
                     "packageVersion": package_version,
-                    "revision": 7,
+                    "revision": revision,
                     "status": "active",
                     "updatedAt": str(contract["updatedAt"]),
                     "contractFileName": contract_path.name,
@@ -299,6 +309,79 @@ def _live_mcp_environment() -> dict[str, str]:
     environment["SUPER_BRAIN_MCP_TRANSPORT"] = "codex_registered_v1"
     environment["SUPER_BRAIN_MCP_REGISTRATION_EPOCH"] = "stale-deployment-epoch"
     return environment
+
+
+def test_local_launcher_relays_only_runtime_environment_and_explicit_sid() -> None:
+    """A local embedding adapter cannot smuggle Host metadata into H7."""
+
+    environment = _worker_environment(
+        "sid-" + "a" * 24,
+        source={
+            "PATH": "runtime-path",
+            "SystemRoot": "runtime-root",
+            "CODEX_THREAD_ID": "host-thread-must-not-cross",
+            "HOST_VISIBLE_CONTEXT": "host-context-must-not-cross",
+            "SUPER_BRAIN_WORKSPACE_KEY": "ambient-selector-must-not-cross",
+            "SUPER_BRAIN_LOCAL_SESSION_ID": "sid-" + "b" * 24,
+        },
+    )
+    assert environment["SUPER_BRAIN_LOCAL_SESSION_ID"] == "sid-" + "a" * 24, environment
+    assert environment["PATH"] == "runtime-path" and environment["SystemRoot"] == "runtime-root", environment
+    for forbidden in ("CODEX_THREAD_ID", "HOST_VISIBLE_CONTEXT", "SUPER_BRAIN_WORKSPACE_KEY"):
+        assert forbidden not in environment, environment
+
+
+def _start_local_launcher(
+    memory: Path,
+    project: Path,
+    *,
+    session_key: str = "",
+) -> subprocess.Popen[str]:
+    """Start the package-owned stdio launcher as a local user adapter would."""
+
+    environment = _live_mcp_environment()
+    if session_key:
+        environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = session_key
+    else:
+        environment.pop("SUPER_BRAIN_LOCAL_SESSION_ID", None)
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-B",
+            str(ROOT / "runtime" / "local_mcp_launcher.py"),
+            "--package-root",
+            str(ROOT),
+            "--memory-root",
+            str(memory),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        cwd=str(project),
+    )
+
+
+def _stop(process: subprocess.Popen[str] | None) -> None:
+    if process is None:
+        return
+    try:
+        if process.stdin:
+            process.stdin.close()
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+            except OSError:
+                pass
+        except OSError:
+            pass
 
 
 def _send(process: subprocess.Popen[str], value: dict[str, object]) -> dict[str, object]:
@@ -409,37 +492,12 @@ def test_live_write_checkpoint_refreshes_projection_before_reopen() -> None:
         control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
         process: subprocess.Popen[str] | None = None
         try:
-            registration = control.register_workline(
-                original_contract,
-                expected_contract_hash=_hash(original_contract),
-                project_root=project,
-            )
-            assert registration.get("ok") is True, registration
-            workline_id = str(registration["scope"]["worklineId"])
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-B",
-                    str(ROOT / "runtime" / "brain_mcp.py"),
-                    "--package-root",
-                    str(ROOT),
-                    "--memory-root",
-                    str(memory),
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                env=_live_mcp_environment(),
-            )
+            process = _start_local_launcher(memory, project, session_key=session_key)
             initialized = _send(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-            pairing_ref = str(
-                ((initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {}).get("scope", {}).get("pairingRequestRef", "")
-            )
-            assert pairing_ref.startswith("sbpr-"), initialized
-            paired = control.pair_request(pairing_ref, workline_id, access_mode="write")
-            assert paired.get("ok") is True, paired
+            handshake = ((initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {})
+            assert handshake.get("scope", {}).get("state") == "bound", initialized
+            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_BOOTSTRAP_BOUND", initialized
+            assert "sbpr-" not in json.dumps(initialized, ensure_ascii=False), initialized
 
             opened = _status_payload(
                 _send(
@@ -494,10 +552,14 @@ def test_live_write_checkpoint_refreshes_projection_before_reopen() -> None:
 
             persisted = json.loads(contract_path.read_text(encoding="utf-8"))
             assert int(persisted["revision"]) > int(original_contract["revision"]), persisted
-            workline = control.get_workline(workline_id)
-            assert workline.get("ok") is True, workline
-            assert int(workline.get("scope", {}).get("contractRevision", -1)) == int(persisted["revision"]), workline
-            assert workline.get("scope", {}).get("contractHash") == _hash(persisted), workline
+            refreshed = control.register_workline(
+                persisted,
+                expected_contract_hash=_hash(persisted),
+                project_root=project,
+            )
+            assert refreshed.get("ok") is True, refreshed
+            assert int(refreshed.get("scope", {}).get("contractRevision", -1)) == int(persisted["revision"]), refreshed
+            assert refreshed.get("scope", {}).get("contractHash") == _hash(persisted), refreshed
 
             reopened = _status_payload(
                 _send(
@@ -536,14 +598,7 @@ def test_live_write_checkpoint_refreshes_projection_before_reopen() -> None:
             for private_marker in (str(project.resolve()), str(state.resolve()), "leaseId", "pairingToken", "sbpg-v1.", "sbl-"):
                 assert private_marker not in serialized, serialized
         finally:
-            if process is not None:
-                try:
-                    if process.stdin:
-                        process.stdin.close()
-                    process.terminate()
-                    process.wait(timeout=5)
-                except (OSError, subprocess.TimeoutExpired):
-                    process.kill()
+            _stop(process)
             server.stop()
             control.close()
 
@@ -564,8 +619,15 @@ def test_live_mcp_rebind_allows_successor_without_retiring_contract() -> None:
         workspace_key = _workspace_key(project)
         old_session = "sid-" + "a" * 24
         successor_session = "sid-" + "b" * 24
-        old_contract = _rebind_contract(project, task_id, task_instance_id, old_session, 1)
-        successor_contract = _rebind_contract(project, task_id, task_instance_id, successor_session, 2)
+        _write_native_memory_snapshot(state / "workspace")
+        old_contract, _ = _write_live_contract(
+            state,
+            project,
+            old_session,
+            task_id,
+            revision=7,
+            plan_fingerprint="mcp-local-rebind-plan",
+        )
 
         # Seed the authoritative intent head directly through BrainControl;
         # neither MCP process receives or reads an old execution-contract file.
@@ -580,8 +642,8 @@ def test_live_mcp_rebind_allows_successor_without_retiring_contract() -> None:
                 "workspaceKey": workspace_key,
                 "ownerSessionKey": old_session,
                 "packageVersion": _package_version(),
-                "contractRevision": 1,
-                "planFingerprint": "mcp-local-rebind-plan",
+                "contractRevision": int(old_contract["revision"]),
+                "planFingerprint": str(old_contract["planReceipt"]["planFingerprint"]),
                 "latestInstructionHash": hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
                 "intentContract": _valid_intent_contract(),
                 "source": "runtime_mcp_scope_broker_integration_regression",
@@ -593,7 +655,6 @@ def test_live_mcp_rebind_allows_successor_without_retiring_contract() -> None:
 
         server = ScopeBrokerServer(state)
         server.start()
-        broker = ScopeBrokerControlClient(state, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
         processes: list[subprocess.Popen[str]] = []
 
         def stop(process: subprocess.Popen[str]) -> None:
@@ -609,28 +670,12 @@ def test_live_mcp_rebind_allows_successor_without_retiring_contract() -> None:
                     pass
 
         def start_bound(contract: dict[str, object]) -> subprocess.Popen[str]:
-            registration = broker.register_workline(
-                contract,
-                expected_contract_hash=_hash(contract),
-                project_root=project,
-            )
-            assert registration.get("ok") is True, registration
-            process = subprocess.Popen(
-                [sys.executable, "-B", str(ROOT / "runtime" / "brain_mcp.py"), "--package-root", str(ROOT), "--memory-root", str(memory)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                env=_live_mcp_environment(),
-            )
+            process = _start_local_launcher(memory, project, session_key=str(contract["ownerSessionKey"]))
             processes.append(process)
             initialized = _send(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
             handshake = initialized.get("result", {}).get("liveMcpHandshake", {})
-            pairing_ref = str(handshake.get("scope", {}).get("pairingRequestRef", ""))
-            assert pairing_ref.startswith("sbpr-"), initialized
-            paired = broker.pair_request(pairing_ref, str(registration["scope"]["worklineId"]), access_mode="write")
-            assert paired.get("ok") is True, paired
+            assert handshake.get("scope", {}).get("state") == "bound", initialized
+            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_BOOTSTRAP_BOUND", initialized
             return process
 
         try:
@@ -660,6 +705,14 @@ def test_live_mcp_rebind_allows_successor_without_retiring_contract() -> None:
             assert recovery_ref.startswith("rr-"), issued
             stop(issuer)
 
+            successor_contract, _ = _write_live_contract(
+                state,
+                project,
+                successor_session,
+                task_id,
+                revision=8,
+                plan_fingerprint="mcp-local-rebind-plan",
+            )
             successor = start_bound(successor_contract)
             wrong_kind = _status_payload(
                 _send(
@@ -721,7 +774,10 @@ def test_live_mcp_rebind_allows_successor_without_retiring_contract() -> None:
                 )
             )
             assert finalized.get("ok") is True and finalized.get("status") == "finalized", finalized
-            assert finalized.get("newOwnerSessionKey") == successor_session
+            # The successor binding is owned by the private Broker channel;
+            # MCP egress must not return the new owner's session identity.
+            assert "newOwnerSessionKey" not in finalized, finalized
+            assert "ownerSessionKey" not in json.dumps(finalized, ensure_ascii=False), finalized
 
             queried = _status_payload(
                 _send(
@@ -747,203 +803,308 @@ def test_live_mcp_rebind_allows_successor_without_retiring_contract() -> None:
             for process in processes:
                 stop(process)
             server.stop()
-            broker.close()
+
+
+def test_injected_mcp_scope_bootstrap_pairs_the_current_local_contract_without_host_identity() -> None:
+    """The local launcher injection binds before the model sees MCP output."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-local-scope-bootstrap-") as directory:
+        root = Path(directory)
+        state = root / "state"
+        memory = state / "shared"
+        project = root / "project"
+        memory.mkdir(parents=True)
+        project.mkdir()
+        session_key = "sid-" + "f" * 24
+        _write_native_memory_snapshot(state / "workspace")
+        contract, _ = _write_live_contract(state, project, session_key, "mcp-local-bootstrap")
+        server = ScopeBrokerServer(state)
+        server.start()
+        process: subprocess.Popen[str] | None = None
+        foreign: subprocess.Popen[str] | None = None
+        try:
+            process = _start_local_launcher(memory, project, session_key=session_key)
+            initialized = _send(process, {"jsonrpc": "2.0", "id": 101, "method": "initialize", "params": {}})
+            handshake = ((initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {})
+            assert handshake.get("scope", {}).get("state") == "bound", initialized
+            assert handshake.get("scope", {}).get("scopeReady") is True, initialized
+            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_BOOTSTRAP_BOUND", initialized
+            serialized_initialize = json.dumps(initialized, ensure_ascii=False)
+            for private_marker in ("sbpr-", "sid-", "sbs-", "sbw-", str(project.resolve())):
+                assert private_marker not in serialized_initialize, initialized
+
+            bound_status = _status_payload(
+                _send(
+                    process,
+                    {"jsonrpc": "2.0", "id": 102, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}},
+                )
+            )
+            assert bound_status.get("scopeBinding", {}).get("state") == "bound", bound_status
+            assert bound_status.get("scopeBinding", {}).get("scopeAuthorized") is True, bound_status
+            assert "pairingRequestRef" not in bound_status.get("scopeBinding", {}), bound_status
+            assert "scope" not in bound_status.get("scopeBinding", {}), bound_status
+            opened = _status_payload(
+                _send(
+                    process,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 103,
+                        "method": "tools/call",
+                        "params": {"name": "brain_turn", "arguments": {"phase": "open", "turn_intent": "continuity"}},
+                    },
+                )
+            )
+            assert opened.get("available") is True and opened.get("code") == "TURN_RUNTIME_OPEN_READY", opened
+            opened_serialized = json.dumps(opened, ensure_ascii=False)
+            for private_marker in ("sbpr-", "sid-", "sbs-", "sbw-", str(project.resolve())):
+                assert private_marker not in opened_serialized, opened
+
+            # A different locally injected sid has no current contract. It
+            # cannot seize an already-bound connection, and its failed
+            # bootstrap must stay inert rather than opening an unbound
+            # pairing channel.
+            foreign = _start_local_launcher(memory, project, session_key="sid-" + "e" * 24)
+            foreign_initialized = _send(foreign, {"jsonrpc": "2.0", "id": 104, "method": "initialize", "params": {}})
+            foreign_handshake = ((foreign_initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {})
+            assert foreign_handshake.get("scope", {}).get("state") == "withheld", foreign_initialized
+            assert foreign_handshake.get("scopeInjection", {}).get("state") == "withheld", foreign_initialized
+            assert foreign_handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_BOOTSTRAP_CURRENT_CONTRACT_REQUIRED", foreign_initialized
+            assert "sbpr-" not in json.dumps(foreign_initialized, ensure_ascii=False), foreign_initialized
+            after_foreign = _status_payload(
+                _send(process, {"jsonrpc": "2.0", "id": 105, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}})
+            )
+            assert after_foreign.get("scopeBinding", {}).get("state") == "bound", after_foreign
+            assert after_foreign.get("scopeBinding", {}).get("scopeAuthorized") is True, after_foreign
+        finally:
+            for item in (foreign, process):
+                _stop(item)
+            server.stop()
+
+
+def test_first_local_launcher_starts_and_binds_its_own_broker() -> None:
+    """A real local adapter must not depend on a pre-started Broker process."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-local-first-launch-") as directory:
+        root = Path(directory)
+        state = root / "state"
+        memory = state / "shared"
+        project = root / "project"
+        memory.mkdir(parents=True)
+        project.mkdir()
+        session_key = "sid-" + "d" * 24
+        _write_native_memory_snapshot(state / "workspace")
+        _write_live_contract(state, project, session_key, "mcp-local-first-launch")
+        process: subprocess.Popen[str] | None = None
+        control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
+        try:
+            # No ``ScopeBrokerServer`` is started here.  The launcher must
+            # establish the resident local endpoint before its atomic bind.
+            process = _start_local_launcher(memory, project, session_key=session_key)
+            initialized = _send(process, {"jsonrpc": "2.0", "id": 201, "method": "initialize", "params": {}})
+            handshake = ((initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {})
+            assert handshake.get("scope", {}).get("state") == "bound", initialized
+            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_BOOTSTRAP_BOUND", initialized
+            status = _status_payload(
+                _send(
+                    process,
+                    {"jsonrpc": "2.0", "id": 202, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}},
+                )
+            )
+            assert status.get("scopeBinding", {}).get("scopeAuthorized") is True, status
+            serialized = json.dumps({"initialize": initialized, "status": status}, ensure_ascii=False)
+            for private_marker in ("sbpr-", "sid-", "sbs-", "sbw-", str(project.resolve())):
+                assert private_marker not in serialized, serialized
+        finally:
+            _stop(process)
+            try:
+                control.shutdown_if_idle()
+            except Exception:
+                pass
+            control.close()
+
+
+def test_injected_launcher_requires_process_restart_after_broker_restart() -> None:
+    """A restarted Broker cannot silently regain an injected user scope."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-local-launcher-restart-") as directory:
+        root = Path(directory)
+        state = root / "state"
+        memory = state / "shared"
+        project = root / "project"
+        memory.mkdir(parents=True)
+        project.mkdir()
+        session_key = "sid-" + "9" * 24
+        _write_native_memory_snapshot(state / "workspace")
+        _write_live_contract(state, project, session_key, "mcp-local-launcher-restart")
+        server = ScopeBrokerServer(state)
+        replacement: ScopeBrokerServer | None = None
+        process: subprocess.Popen[str] | None = None
+        server.start()
+        try:
+            process = _start_local_launcher(memory, project, session_key=session_key)
+            initialized = _send(process, {"jsonrpc": "2.0", "id": 301, "method": "initialize", "params": {}})
+            assert ((initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {}).get("scope", {}).get("state") == "bound", initialized
+
+            server.stop()
+            replacement = ScopeBrokerServer(state)
+            replacement.start()
+
+            status = _status_payload(
+                _send(
+                    process,
+                    {"jsonrpc": "2.0", "id": 302, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}},
+                )
+            )
+            handshake = status.get("liveMcpHandshake", {})
+            assert handshake.get("code") == "H7_SCOPE_LAUNCH_RESTART_REQUIRED", status
+            assert handshake.get("scope", {}).get("scopeReady") is False, status
+            assert handshake.get("scopeInjection", {}).get("scopeAuthorized") is False, status
+
+            turn = _status_payload(
+                _send(
+                    process,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 303,
+                        "method": "tools/call",
+                        "params": {"name": "brain_turn", "arguments": {"phase": "open", "turn_intent": "continuity"}},
+                    },
+                )
+            )
+            assert turn.get("code") == "H7_SCOPE_LAUNCH_RESTART_REQUIRED", turn
+            assert turn.get("available") is False, turn
+            serialized = json.dumps({"status": status, "turn": turn}, ensure_ascii=False)
+            for private_marker in ("sbpr-", "sid-", "sbs-", "sbw-", str(project.resolve())):
+                assert private_marker not in serialized, serialized
+        finally:
+            _stop(process)
+            if replacement is not None:
+                replacement.stop()
+            else:
+                server.stop()
+
+
+def test_registered_launcher_without_local_injection_is_inert_discovery_only() -> None:
+    """The installed static launcher never leaves an unbound pairing channel.
+
+    A generic MCP registration cannot invent per-user scope facts.  It may
+    start the package launcher for discovery/status, but without the local
+    embedding adapter's actual cwd plus random session id it must remain
+    explicitly withheld and create no Broker channel at all.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-mcp-static-launcher-") as directory:
+        root = Path(directory)
+        state = root / "state"
+        memory = state / "shared"
+        project = root / "project"
+        memory.mkdir(parents=True)
+        project.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        process: subprocess.Popen[str] | None = None
+        control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
+        try:
+            # This is the exact installed launcher command, without an
+            # embedding adapter injecting the current session id.
+            process = _start_local_launcher(memory, project)
+            initialized = _send(process, {"jsonrpc": "2.0", "id": 401, "method": "initialize", "params": {}})
+            handshake = ((initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {})
+            assert handshake.get("state") == "withheld", initialized
+            assert handshake.get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", initialized
+            assert handshake.get("scope", {}).get("state") == "withheld", initialized
+            assert handshake.get("scope", {}).get("scopeReady") is False, initialized
+            assert handshake.get("scopeInjection", {}).get("requested") is True, initialized
+            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", initialized
+
+            status = _status_payload(
+                _send(
+                    process,
+                    {"jsonrpc": "2.0", "id": 402, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}},
+                )
+            )
+            assert status.get("scopeBinding", {}).get("state") == "withheld", status
+            assert status.get("scopeBinding", {}).get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", status
+            turn = _status_payload(
+                _send(
+                    process,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 403,
+                        "method": "tools/call",
+                        "params": {"name": "brain_turn", "arguments": {"phase": "open", "turn_intent": "continuity"}},
+                    },
+                )
+            )
+            assert turn.get("available") is False, turn
+            assert turn.get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", turn
+            # The static discovery worker must not have opened a channel or
+            # caused the Broker to issue a private pairing reference.
+            listed = control.list_channels()
+            assert listed.get("ok") is True and listed.get("channels") == [], listed
+            serialized = json.dumps({"initialize": initialized, "status": status, "turn": turn, "listed": listed}, ensure_ascii=False)
+            for private_marker in ("sbpr-", "sid-", "sbs-", "sbw-", str(project.resolve())):
+                assert private_marker not in serialized, serialized
+        finally:
+            _stop(process)
+            control.close()
+            server.stop()
 
 
 def main() -> None:
     test_bound_task_layer_uses_the_channel_projection()
     test_live_write_checkpoint_refreshes_projection_before_reopen()
     test_live_mcp_rebind_allows_successor_without_retiring_contract()
-    with tempfile.TemporaryDirectory(prefix="super-brain-mcp-broker-") as directory:
-        state = Path(directory) / "state"
-        state.mkdir()
-        project_a = Path(directory) / "project-a"
-        project_b = Path(directory) / "project-b"
-        project_a.mkdir()
-        project_b.mkdir()
+    test_injected_mcp_scope_bootstrap_pairs_the_current_local_contract_without_host_identity()
+    test_first_local_launcher_starts_and_binds_its_own_broker()
+    test_injected_launcher_requires_process_restart_after_broker_restart()
+    test_registered_launcher_without_local_injection_is_inert_discovery_only()
+    test_static_mcp_remains_unbound_and_pairing_controls_are_retired()
+    print("runtime_mcp_scope_broker_integration_regression: PASS")
+
+
+def test_static_mcp_remains_unbound_and_pairing_controls_are_retired() -> None:
+    """A static registration is healthy transport, but has no user scope."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-mcp-static-") as directory:
+        root = Path(directory)
+        state = root / "state"
+        memory = state / "shared"
+        project = root / "project"
+        memory.mkdir(parents=True)
+        project.mkdir()
         server = ScopeBrokerServer(state)
         server.start()
+        process: subprocess.Popen[str] | None = None
         control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
-        poisoned_binding = state / "workspace/runtime-state/mcp-runtime-binding.json"
-        poisoned_binding.parent.mkdir(parents=True, exist_ok=True)
-        poisoned_binding.write_text('{"poison":"deployment-adapter"}', encoding="utf-8")
-        poisoned_binding_before = poisoned_binding.read_bytes()
-        contracts = [_contract(project_a, "a"), _contract(project_b, "b")]
-        registrations = [
-            control.register_workline(contract, expected_contract_hash=_hash(contract), project_root=project)
-            for contract, project in zip(contracts, (project_a, project_b))
-        ]
-        assert all(item.get("ok") is True for item in registrations)
-        processes: list[subprocess.Popen[str]] = []
         try:
-            for index, registration in enumerate(registrations):
-                process = subprocess.Popen(
-                    [sys.executable, "-B", str(ROOT / "runtime" / "brain_mcp.py"), "--package-root", str(ROOT), "--memory-root", str(state / "shared")],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    env=_live_mcp_environment(),
-                )
-                processes.append(process)
-                # MCP requires a real initialize before tool discovery or
-                # calls.  This guards the process-local handshake state rather
-                # than a host/deployment registration marker.
-                pre_init = _send(process, {"jsonrpc": "2.0", "id": 900 + index, "method": "tools/list", "params": {}})
-                assert pre_init.get("error", {}).get("message") == "H7_MCP_INITIALIZE_REQUIRED", pre_init
-                initialize = _send(process, {"jsonrpc": "2.0", "id": index + 1, "method": "initialize", "params": {}})
-                assert initialize.get("result", {}).get("serverInfo", {}).get("name") == "super-memory-brain"
-                initialize_handshake = initialize.get("result", {}).get("liveMcpHandshake", {})
-                assert initialize_handshake.get("schema") == "super-brain.mcp-live-handshake.v2", initialize
-                assert initialize_handshake.get("state") == "current", initialize
-                assert initialize_handshake.get("code") == "H7_MCP_LOCAL_STDIO_CURRENT", initialize
-                assert initialize_handshake.get("transport") == "local_scope_broker_stdio", initialize
-                assert initialize_handshake.get("scope", {}).get("provider") == "scope_broker_channel", initialize
-                assert initialize_handshake.get("scope", {}).get("state") == "unbound", initialize
-                initialize_pairing_ref = str(initialize_handshake.get("scope", {}).get("pairingRequestRef", ""))
-                assert initialize_pairing_ref.startswith("sbpr-"), initialize
-                assert initialize_handshake.get("packageVersion"), initialize
-                initialize_serialized = json.dumps(initialize, ensure_ascii=False)
-                for secret_marker in ("leaseId", "pairingToken", "sbpg-v1.", "sbl-"):
-                    assert secret_marker not in initialize_serialized, initialize
-                initial_status = _status_payload(
-                    _send(
-                        process,
-                        {"jsonrpc": "2.0", "id": 25 + index, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}},
-                    )
-                )
-                assert initial_status.get("scopeBinding", {}).get("provider") == "scope_broker_channel", initial_status
-                assert initial_status.get("liveMcpHandshake", {}).get("schema") == "super-brain.mcp-live-handshake.v2", initial_status
-                assert initial_status.get("liveMcpHandshake", {}).get("state") == "current", initial_status
-                assert initial_status.get("liveMcpHandshake", {}).get("transport") == "local_scope_broker_stdio", initial_status
-                assert initial_status.get("liveMcpHandshake", {}).get("scope", {}).get("state") == "unbound", initial_status
-                assert initial_status.get("mcpRuntimeBinding", {}).get("state") == "current", initial_status
-                assert initial_status.get("mcpRuntimeBinding", {}).get("runtimeMode") == "local_stdio_scope_broker", initial_status
-                assert initial_status.get("scopeBinding", {}).get("pairingRequestRef") == initialize_pairing_ref, initial_status
-                assert initial_status.get("liveMcpHandshake", {}).get("scope", {}).get("pairingRequestRef") == initialize_pairing_ref, initial_status
-                assert initial_status.get("mcpRuntimeBinding", {}).get("deploymentAdapter", {}).get("state") == "not_applicable", initial_status
-                assert poisoned_binding.read_bytes() == poisoned_binding_before
-                assert initial_status.get("localPathsExposed") is False, initial_status
-                initial_serialized = json.dumps(initial_status, ensure_ascii=False)
-                assert str(ROOT.resolve()) not in initial_serialized, initial_status
-                assert str(state.resolve()) not in initial_serialized, initial_status
-                tools = _send(process, {"jsonrpc": "2.0", "id": 30 + index, "method": "tools/list", "params": {}})
-                declared = tools.get("result", {}).get("tools", [])
-                recall = next(item for item in declared if item.get("name") == "brain_recall")
-                assert "task_scope" not in recall.get("inputSchema", {}).get("properties", {})
-
-                # An unbound stdio connection cannot run even a checkpoint.
-                # This proves that no request argument, cwd, or environment
-                # value silently selects a workline before Broker binding.
-                unbound_turn = _status_payload(
-                    _send(
-                        process,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": 40 + index,
-                            "method": "tools/call",
-                            "params": {"name": "brain_turn", "arguments": {"phase": "checkpoint"}},
-                        },
-                    )
-                )
-                assert unbound_turn.get("code") == "H7_SCOPE_CHANNEL_UNBOUND", unbound_turn
-                # The MCP status projection identifies this exact connection
-                # with a short-lived opaque ref.  Pair by that ref instead
-                # of guessing among globally listed unbound channel IDs.
-                pairing_ref = str(initial_status.get("scopeBinding", {}).get("pairingRequestRef", ""))
-                assert pairing_ref.startswith("sbpr-"), initial_status
-                attached = control.pair_request(
-                    pairing_ref,
-                    str(registration["scope"]["worklineId"]),
-                    access_mode="read",
-                )
-                assert attached.get("ok") is True
-                for secret_marker in ("leaseId", "pairingToken", "sbpg-v1.", "sbl-", "h7Scope"):
-                    assert secret_marker not in json.dumps(attached, ensure_ascii=False), attached
-                status = _status_payload(_send(process, {"jsonrpc": "2.0", "id": 10 + index, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}}))
-                binding = status.get("scopeBinding")
-                assert isinstance(binding, dict)
-                assert binding.get("state") == "bound"
-                assert binding.get("scope", {}).get("taskId") == contracts[index]["taskId"]
-                assert binding.get("scope", {}).get("workspaceKey") == contracts[index]["workspaceKey"]
-                assert status.get("liveMcpHandshake", {}).get("state") == "current", status
-                assert status.get("liveMcpHandshake", {}).get("scope", {}).get("state") == "bound", status
-                status_serialized = json.dumps(status, ensure_ascii=False)
-                for secret_marker in ("leaseId", "pairingToken", "sbpg-v1.", "sbl-"):
-                    assert secret_marker not in status_serialized, status
-                assert str((project_a if index == 0 else project_b).resolve()) not in status_serialized, status
-
-                # Raw selectors are rejected for every production Broker tool,
-                # not merely ignored outside brain_recall.
-                selector = _status_payload(
-                    _send(
-                        process,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": 70 + index,
-                            "method": "tools/call",
-                            "params": {
-                                "name": "brain_status",
-                                "arguments": {
-                                    "task_scope": {
-                                        "workspace_key": contracts[index]["workspaceKey"],
-                                        "owner_session_key": contracts[index]["ownerSessionKey"],
-                                    }
-                                },
-                            },
-                        },
-                    )
-                )
-                assert selector.get("code") == "H7_SCOPE_SELECTOR_FORBIDDEN", selector
-
-                # A read attachment can inspect its own binding, but the
-                # write check inside turn_runtime still blocks checkpoint
-                # mutations.  This guards direct runtime callers as well as
-                # the MCP adapter's friendly early read check.
-                read_lease_turn = _status_payload(
-                    _send(
-                        process,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": 50 + index,
-                            "method": "tools/call",
-                            "params": {"name": "brain_turn", "arguments": {"phase": "checkpoint"}},
-                        },
-                    )
-                )
-                assert read_lease_turn.get("code") == "H7_SCOPE_WRITE_LEASE_REQUIRED", read_lease_turn
-
-            # A fresh connection is never implicitly attached, even though
-            # the durable workline registry already exists.
-            fresh = subprocess.Popen(
-                [sys.executable, "-B", str(ROOT / "runtime" / "brain_mcp.py"), "--package-root", str(ROOT), "--memory-root", str(state / "shared")],
+            process = subprocess.Popen(
+                [sys.executable, "-B", str(ROOT / "runtime" / "brain_mcp.py"), "--package-root", str(ROOT), "--memory-root", str(memory)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 env=_live_mcp_environment(),
+                cwd=str(project),
             )
-            processes.append(fresh)
-            _send(fresh, {"jsonrpc": "2.0", "id": 20, "method": "initialize", "params": {}})
-            unbound_status = _status_payload(_send(fresh, {"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}}))
-            assert unbound_status.get("scopeBinding", {}).get("state") == "unbound"
-            assert unbound_status.get("scopeBinding", {}).get("code") == "H7_SCOPE_CHANNEL_UNBOUND"
-            assert str(unbound_status.get("scopeBinding", {}).get("pairingRequestRef", "")).startswith("sbpr-")
-            assert unbound_status.get("liveMcpHandshake", {}).get("state") == "current", unbound_status
-            assert unbound_status.get("liveMcpHandshake", {}).get("scope", {}).get("state") == "unbound", unbound_status
+            initialized = _send(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            handshake = initialized["result"]["liveMcpHandshake"]
+            assert handshake["scope"]["state"] == "unbound", initialized
+            assert handshake["scopeInjection"]["requested"] is False, initialized
+            assert "pairingRequestRef" not in json.dumps(initialized, ensure_ascii=False), initialized
+            status = _status_payload(_send(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "brain_status", "arguments": {}}}))
+            assert status["scopeBinding"]["state"] == "unbound", status
+            assert status["scopeBinding"]["scopeAuthorized"] is False, status
+            assert "scope" not in status["scopeBinding"], status
+            turn = _status_payload(_send(process, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "brain_turn", "arguments": {"phase": "checkpoint"}}}))
+            assert turn["code"] == "H7_SCOPE_CHANNEL_UNBOUND", turn
+            retired = control.pair_channel("sbc-" + "a" * 32, "sbw-" + "b" * 32)
+            assert retired.get("code") == "H7_SCOPE_PAIRING_CONTROL_RETIRED", retired
         finally:
-            for process in processes:
-                try:
-                    if process.stdin:
-                        process.stdin.close()
-                    process.terminate()
-                    process.wait(timeout=5)
-                except (OSError, subprocess.TimeoutExpired):
-                    process.kill()
+            _stop(process)
+            control.close()
             server.stop()
-    print("runtime_mcp_scope_broker_integration_regression: PASS")
 
 
 if __name__ == "__main__":

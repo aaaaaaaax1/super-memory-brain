@@ -87,7 +87,14 @@ class OfflineReplayMcpTransportHealth:
 class LocalBrokerStdioTransportHealth:
     """Health of one initialized stdio MCP connection and its private channel."""
 
-    def __init__(self, client: Any, channel_id: Any, *, provider_kind: str = "scope_broker_channel") -> None:
+    def __init__(
+        self,
+        client: Any,
+        channel_id: Any,
+        *,
+        provider_kind: str = "scope_broker_channel",
+        scope_injection: Mapping[str, Any] | None = None,
+    ) -> None:
         self._client = client
         # ``BrokerChannelHandle`` is intentionally duck-typed here to avoid a
         # transport-health -> scope-provider import cycle.  A plain string
@@ -95,6 +102,14 @@ class LocalBrokerStdioTransportHealth:
         self._channel_handle = channel_id if hasattr(channel_id, "channel_id") and hasattr(channel_id, "reopen_after_restart") else None
         self._channel_id = "" if self._channel_handle is not None else str(channel_id or "")
         self._provider_kind = str(provider_kind or "scope_broker_channel")
+        injection = scope_injection if isinstance(scope_injection, Mapping) else {}
+        injection_state = str(injection.get("state", "not_requested")) if injection else "not_requested"
+        self._scope_injection = {
+            "requested": bool(injection) and injection_state != "not_requested",
+            "state": injection_state,
+            "code": str(injection.get("code", "H7_SCOPE_INJECTION_NOT_REQUESTED")) if injection else "H7_SCOPE_INJECTION_NOT_REQUESTED",
+            "scopeAuthorized": bool(injection.get("scopeAuthorized") is True) if injection else False,
+        }
         self._initialized = False
         self._closed = False
         self._lock = threading.RLock()
@@ -110,16 +125,30 @@ class LocalBrokerStdioTransportHealth:
             self._closed = True
 
     def _channel_status(self) -> dict[str, Any]:
+        ensured = True
         if self._channel_handle is not None:
             ensure = getattr(self._channel_handle, "ensure_channel", None)
             if callable(ensure):
                 try:
-                    ensure()
+                    ensured = bool(ensure())
                 except Exception:
-                    pass
+                    ensured = False
         channel_id = str(getattr(self._channel_handle, "channel_id", "") or self._channel_id)
         if not channel_id:
-            return {"ok": False, "code": "H7_SCOPE_CHANNEL_OPEN_FAILED", "state": "withheld"}
+            unavailable_code = str(
+                getattr(self._channel_handle, "unavailable_code", "H7_SCOPE_CHANNEL_OPEN_FAILED")
+                if self._channel_handle is not None
+                else "H7_SCOPE_CHANNEL_OPEN_FAILED"
+            )
+            # A failed launcher bootstrap deliberately has no channel to
+            # inspect.  Preserve its exact scope-injection diagnosis rather
+            # than performing a second open/status request that could create
+            # an unbound pairing capability.
+            return {
+                "ok": False,
+                "code": unavailable_code if not ensured else "H7_SCOPE_CHANNEL_OPEN_FAILED",
+                "state": "withheld",
+            }
         try:
             value = self._client.status(channel_id)
         except Exception:
@@ -146,10 +175,9 @@ class LocalBrokerStdioTransportHealth:
         channel = self._channel_status() if not closed else {"ok": False, "code": "H7_SCOPE_CHANNEL_CLOSED", "state": "withheld"}
         channel_code = str(channel.get("code", "H7_SCOPE_BROKER_UNAVAILABLE"))
         channel_state = str(channel.get("state", "withheld"))
-        pairing_ref = str(
-            channel.get("pairingRequestRef", "")
-            or getattr(self._channel_handle, "pairing_request_ref", "")
-            or ""
+        restart_requires_launcher = bool(
+            channel_code == "H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED"
+            and self._scope_injection.get("code") == "H7_SCOPE_BOOTSTRAP_BOUND"
         )
         channel_ok = bool(
             channel.get("ok") is True
@@ -160,6 +188,8 @@ class LocalBrokerStdioTransportHealth:
             state, code = "withheld", str(runtime.get("code", "H7_MCP_RUNTIME_IDENTITY_STALE"))
         elif closed:
             state, code = "withheld", "H7_MCP_LOCAL_STDIO_CLOSED"
+        elif restart_requires_launcher:
+            state, code = "withheld", "H7_SCOPE_LAUNCH_RESTART_REQUIRED"
         elif not channel_ok:
             state, code = "withheld", channel_code
         elif not initialized:
@@ -179,10 +209,19 @@ class LocalBrokerStdioTransportHealth:
             },
             "scope": {
                 "provider": self._provider_kind,
-                "state": channel_state,
-                "code": channel_code,
+                "state": "withheld" if restart_requires_launcher else channel_state,
+                "code": "H7_SCOPE_LAUNCH_RESTART_REQUIRED" if restart_requires_launcher else channel_code,
                 "accessMode": str(channel.get("accessMode", "")),
-                "pairingRequestRef": pairing_ref if channel_state == "unbound" else "",
+                # A pairing ref is a one-shot connection capability, not a
+                # diagnostic. It must remain within the local launcher/MCP
+                # process and never enter model-visible MCP output.
+                "scopeReady": channel_state == "bound" and not restart_requires_launcher,
+            },
+            "scopeInjection": {
+                **dict(self._scope_injection),
+                "state": "withheld" if restart_requires_launcher else str(self._scope_injection.get("state", "not_requested")),
+                "code": "H7_SCOPE_LAUNCH_RESTART_REQUIRED" if restart_requires_launcher else str(self._scope_injection.get("code", "H7_SCOPE_INJECTION_NOT_REQUESTED")),
+                "scopeAuthorized": False if restart_requires_launcher else bool(self._scope_injection.get("scopeAuthorized") is True),
             },
             "packageVersion": _package_version(runtime),
             "registryVersion": int((runtime.get("servedCoreRules") or {}).get("registryVersion", 0) or 0),

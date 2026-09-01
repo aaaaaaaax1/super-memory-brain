@@ -29,8 +29,7 @@ function Read-JsonFile([string]$Path) {
 }
 
 function Same-Path([string]$Left,[string]$Right) {
-  if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
-  try { return (Get-NormalizedSuperBrainRoot $Left) -eq (Get-NormalizedSuperBrainRoot $Right) } catch { return $false }
+  return Test-SuperBrainMcpSamePath $Left $Right
 }
 
 $defaultCodexHome = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.codex'))
@@ -70,28 +69,6 @@ function Invoke-CodexJson([string]$CodexPath,[string[]]$Arguments) {
   if ($code -ne 0) { return [pscustomobject]@{ code=$code; value=$null; text=$text } }
   try { return [pscustomobject]@{ code=$code; value=(ConvertFrom-SuperBrainJsonOutput $text 'Codex MCP response'); text='' } }
   catch { return [pscustomobject]@{ code=1; value=$null; text='CODEX_JSON_INVALID' } }
-}
-
-function Get-McpTransportValue([object]$Registered,[string]$Name) {
-  if (-not $Registered -or -not $Registered.transport) { return '' }
-  if ($Registered.transport.env -and $Registered.transport.env.PSObject.Properties[$Name]) { return [string]$Registered.transport.env.$Name }
-  $args = @($Registered.transport.args)
-  for ($index = 0; $index -lt ($args.Count - 1); $index++) {
-    if ([string]$args[$index] -eq $Name) { return [string]$args[$index + 1] }
-  }
-  return ''
-}
-
-function Test-McpBinding([object]$Registered) {
-  if (-not $Registered -or $Registered.enabled -ne $true -or -not $Registered.transport -or [string]$Registered.transport.type -ne 'stdio') { return $false }
-  $registeredPackage = Get-McpTransportValue $Registered 'SUPER_BRAIN_PACKAGE_ROOT'
-  $registeredMemory = Get-McpTransportValue $Registered 'NEXSANDBASE_HOME'
-  $registeredIdentity = Get-McpTransportValue $Registered 'SUPER_BRAIN_RUNTIME_IDENTITY'
-  $registeredTransport = Get-McpTransportValue $Registered 'SUPER_BRAIN_MCP_TRANSPORT'
-  $registeredEpoch = Get-McpTransportValue $Registered 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
-  $packageArg = Get-McpTransportValue $Registered '--package-root'
-  $memoryArg = Get-McpTransportValue $Registered '--memory-root'
-  return ((Same-Path $registeredPackage $Root) -and (Same-Path $packageArg $Root) -and (Same-Path $registeredMemory $MemoryRoot) -and (Same-Path $memoryArg $MemoryRoot) -and ([string]$registeredIdentity -eq [string]$mcpRuntimeIdentity) -and ([string]$registeredTransport -eq 'codex_registered_v1') -and ([string]$registeredEpoch -match '^[a-f0-9]{32}$'))
 }
 
 function Invoke-McpProtocolReplay {
@@ -145,11 +122,12 @@ $entrySkillState = if (-not (Test-Path -LiteralPath $entrySkillPath -PathType Le
 $codexPath = Resolve-CodexCli
 $mcpProbe = Invoke-CodexJson $codexPath @('mcp','get','super-memory-brain','--json')
 $registered = $mcpProbe.value
-$mcpConfigBindingOk = Test-McpBinding $registered
+$mcpConfigAssessment = Test-SuperBrainMcpRegistrationContract -Registered $registered -PackageRoot $Root -MemoryRoot $MemoryRoot -RuntimeIdentity $mcpRuntimeIdentity -RequireEnabled
+$mcpConfigBindingOk = [bool]$mcpConfigAssessment.current
 $runtimeBindingPath = Join-Path $workspace 'runtime-state\mcp-runtime-binding.json'
 $runtimeBinding = Read-JsonFile $runtimeBindingPath
-$registeredEpoch = Get-McpTransportValue $registered 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
-$mcpEpochMatches = ($runtimeBinding -and [string]$runtimeBinding.schema -eq 'super-brain.mcp-runtime-binding.v1' -and [string]$runtimeBinding.state -in @('restart_required','current') -and [string]$runtimeBinding.registrationEpoch -eq [string]$registeredEpoch -and [string]$runtimeBinding.runtimeIdentity -eq [string]$mcpRuntimeIdentity)
+$registeredEpoch = [string]$mcpConfigAssessment.registrationEpoch
+$mcpEpochMatches = [bool](Test-SuperBrainMcpRuntimeBinding -Binding $runtimeBinding -PackageRoot $Root -MemoryBaseRoot (Get-SuperBrainMemoryBaseRoot $Root) -RuntimeIdentity $mcpRuntimeIdentity -RegistrationEpoch $registeredEpoch)
 $mcpBindingOk = $mcpConfigBindingOk
 $liveHandshake = if ($runtimeBinding -and $runtimeBinding.liveHandshake) { $runtimeBinding.liveHandshake } else { $null }
 $mcpAssessment = Get-SuperBrainMcpProbeAssessment -StaticBindingOk $mcpBindingOk -LegacyBindingMatches $mcpEpochMatches -RecordedLegacyHandshake $liveHandshake
@@ -180,10 +158,11 @@ if (-not $mcpBindingOk -and $RepairMcp) {
   if (-not $repairResult) { $repairResult = [pscustomobject]@{ ok=($repairCode -eq 0); error='MCP_REPAIR_OUTPUT_INVALID' } }
   $mcpProbe = Invoke-CodexJson (Resolve-CodexCli) @('mcp','get','super-memory-brain','--json')
   $registered = $mcpProbe.value
-  $mcpConfigBindingOk = Test-McpBinding $registered
+  $mcpConfigAssessment = Test-SuperBrainMcpRegistrationContract -Registered $registered -PackageRoot $Root -MemoryRoot $MemoryRoot -RuntimeIdentity $mcpRuntimeIdentity -RequireEnabled
+  $mcpConfigBindingOk = [bool]$mcpConfigAssessment.current
   $runtimeBinding = Read-JsonFile $runtimeBindingPath
-  $registeredEpoch = Get-McpTransportValue $registered 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
-  $mcpEpochMatches = ($runtimeBinding -and [string]$runtimeBinding.schema -eq 'super-brain.mcp-runtime-binding.v1' -and [string]$runtimeBinding.state -in @('restart_required','current') -and [string]$runtimeBinding.registrationEpoch -eq [string]$registeredEpoch -and [string]$runtimeBinding.runtimeIdentity -eq [string]$mcpRuntimeIdentity)
+  $registeredEpoch = [string]$mcpConfigAssessment.registrationEpoch
+  $mcpEpochMatches = [bool](Test-SuperBrainMcpRuntimeBinding -Binding $runtimeBinding -PackageRoot $Root -MemoryBaseRoot (Get-SuperBrainMemoryBaseRoot $Root) -RuntimeIdentity $mcpRuntimeIdentity -RegistrationEpoch $registeredEpoch)
   $mcpBindingOk = $mcpConfigBindingOk
   $liveHandshake = if ($runtimeBinding -and $runtimeBinding.liveHandshake) { $runtimeBinding.liveHandshake } else { $null }
   $mcpAssessment = Get-SuperBrainMcpProbeAssessment -StaticBindingOk $mcpBindingOk -LegacyBindingMatches $mcpEpochMatches -RecordedLegacyHandshake $liveHandshake

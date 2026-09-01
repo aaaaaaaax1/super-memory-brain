@@ -283,20 +283,37 @@ class OfflineReplayScopeProvider:
 class BrokerChannelHandle:
     """One MCP process's replaceable private Broker channel.
 
-    A Broker restart invalidates all old channels by design.  This handle can
-    open a *new unbound* channel after that explicit broker response, so the
-    existing stdio process does not need to be restarted merely to let the
-    trusted control surface pair it again.  It never selects a workline,
-    pairs a channel, or retries a governed operation.
+    A Broker restart invalidates all old channels by design. Compatibility
+    callers may reopen an unbound channel after that explicit broker response,
+    but a launcher-injected production channel must fail closed and require a
+    fresh launcher process: it no longer retains a scope capability that could
+    safely recreate its binding. It never selects a workline, pairs a channel,
+    or retries a governed operation.
     """
 
     _RESTARTED_CODE = "H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED"
 
-    def __init__(self, client: Any, channel_id: str) -> None:
+    def __init__(
+        self,
+        client: Any,
+        channel_id: str,
+        *,
+        allow_reopen_after_restart: bool = True,
+        allow_initial_open: bool = True,
+        unavailable_code: str = "H7_SCOPE_CHANNEL_OPEN_FAILED",
+    ) -> None:
         self.client = client
         self._channel_id = str(channel_id or "").strip()
         self._pairing_request_ref = str(getattr(client, "last_pairing_request_ref", "") or "").strip()
         self._closed = False
+        self._allow_reopen_after_restart = bool(allow_reopen_after_restart)
+        # A launcher that failed its private scope bootstrap must remain
+        # inert.  Opening an unbound channel in that state would leave a
+        # pairing capability behind even though no injected scope was proven.
+        # Compatibility/static diagnostic workers retain the former lazy-open
+        # behavior through the default ``True`` value.
+        self._allow_initial_open = bool(allow_initial_open)
+        self._unavailable_code = str(unavailable_code or "H7_SCOPE_CHANNEL_OPEN_FAILED")
         self._lock = threading.RLock()
         # Reopening is safe only when the endpoint proves that the Broker
         # instance changed.  A missing/closed channel on the same Broker is an
@@ -313,6 +330,13 @@ class BrokerChannelHandle:
     def pairing_request_ref(self) -> str:
         with self._lock:
             return self._pairing_request_ref
+
+    @property
+    def unavailable_code(self) -> str:
+        """Return the fail-closed reason when this handle has no channel."""
+
+        with self._lock:
+            return self._unavailable_code
 
     def _current_instance_id(self, *, force_probe: bool = False) -> str:
         getter = getattr(self.client, "current_instance_id", None)
@@ -336,6 +360,8 @@ class BrokerChannelHandle:
             return False
         if self._channel_id and not replace:
             return True
+        if not replace and not self._allow_initial_open:
+            return False
         opener = getattr(self.client, "open_channel", None)
         if not callable(opener):
             return False
@@ -378,6 +404,8 @@ class BrokerChannelHandle:
             # Another component sharing this handle already recovered it.
             if observed_channel_id != self._channel_id:
                 return bool(self._channel_id)
+            if not self._allow_reopen_after_restart:
+                return False
             # The same Broker uses this code for an explicitly closed or
             # otherwise unknown channel.  Only a changed endpoint instance is
             # evidence of a restart and permits a fresh unbound channel.
@@ -497,7 +525,16 @@ class BrokerScopeProvider:
         # ``force`` remains part of the provider protocol.  Every broker call
         # is already fresh; callers use it to document a material boundary.
         del force
-        self.channel_handle.ensure_channel()
+        channel_ready = self.channel_handle.ensure_channel()
+        if not channel_ready and not self.channel_id:
+            return {
+                "ok": False,
+                "code": str(getattr(self.channel_handle, "unavailable_code", "H7_SCOPE_CHANNEL_OPEN_FAILED")),
+                "state": "withheld",
+                "provider": self.provider_kind,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
         self._renew_if_needed()
         channel_id = self.channel_id
         try:
@@ -605,7 +642,16 @@ class BrokerScopeProvider:
         return root if root.is_dir() else None
 
     def status(self) -> Mapping[str, Any]:
-        self.channel_handle.ensure_channel()
+        channel_ready = self.channel_handle.ensure_channel()
+        if not channel_ready and not self.channel_id:
+            return {
+                "ok": False,
+                "code": str(getattr(self.channel_handle, "unavailable_code", "H7_SCOPE_CHANNEL_OPEN_FAILED")),
+                "state": "withheld",
+                "provider": self.provider_kind,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
         channel_id = self.channel_id
         try:
             value = self.client.status(channel_id)
@@ -618,6 +664,11 @@ class BrokerScopeProvider:
             except Exception:
                 value = {"ok": False, "code": "H7_SCOPE_BROKER_UNAVAILABLE", "state": "withheld"}
         result = dict(value) if isinstance(value, Mapping) else {"ok": False, "code": "H7_SCOPE_BROKER_INVALID", "state": "withheld"}
+        # The Broker's raw status contains a short-lived pairing capability
+        # for its own launcher/control path. Provider status can reach MCP
+        # diagnostics, so never let that capability leave this process.
+        for private_key in ("pairingRequestRef", "channelId", "leaseId", "leaseExpiresAt"):
+            result.pop(private_key, None)
         result["provider"] = self.provider_kind
         return result
 

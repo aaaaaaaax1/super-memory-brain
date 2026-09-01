@@ -54,6 +54,27 @@ def _contract_hash(value: dict[str, object]) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _bootstrap_bound_channel(
+    client: ScopeBrokerClient,
+    contract: dict[str, object],
+    project: Path,
+    *,
+    access_mode: str = "read",
+) -> str:
+    """Use the package-owned atomic user bootstrap path in IPC regressions."""
+
+    result = client.bootstrap_bound_channel(
+        contract,
+        expected_contract_hash=_contract_hash(contract),
+        project_root=project,
+        access_mode=access_mode,
+    )
+    assert result.get("ok") is True, result
+    channel = str(result.get("channelId", ""))
+    assert channel.startswith("sbc-") and len(channel) == 36, result
+    return channel
+
+
 def test_server_singleton_and_secret_fingerprint() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-singleton-") as directory:
         state = Path(directory) / "state"
@@ -194,16 +215,8 @@ def test_owner_close_preserves_a_shared_bound_channel() -> None:
             assert owner_channel
             launched = owner._process
             assert launched is not None and launched.poll() is None
-            peer_channel = peer.open_channel()
-            assert peer_channel
-
             contract = _contract(project)
-            registration = control.register_workline(contract, expected_contract_hash=_contract_hash(contract), project_root=project)
-            assert registration.get("ok") is True, registration
-            workline = str(registration.get("scope", {}).get("worklineId", ""))
-            assert workline
-            attachment = control.pair_channel(peer_channel, workline, access_mode="read")
-            assert attachment.get("ok") is True, attachment
+            peer_channel = _bootstrap_bound_channel(peer, contract, project, access_mode="read")
 
             # This is the exact production teardown order: the owner closes
             # only its channel, then releases its client.  The still-bound
@@ -320,23 +333,26 @@ def test_project_root_survives_broker_restart_and_pair_stays_public() -> None:
         channel = ""
         try:
             contract = _contract(project)
-            registration = control.register_workline(
-                contract,
-                expected_contract_hash=_contract_hash(contract),
-                project_root=project,
-            )
-            assert registration.get("ok") is True, registration
-            workline = str(registration.get("scope", {}).get("worklineId", ""))
+            initial_channel = _bootstrap_bound_channel(client, contract, project, access_mode="read")
+            initial_status = client.status(initial_channel)
+            assert initial_status.get("ok") is True, initial_status
+            workline = str(initial_status.get("scope", {}).get("worklineId", ""))
             assert workline
+            client.close_channel(initial_channel)
             first.stop()
 
             second = ScopeBrokerServer(state)
             second.start()
             try:
-                channel = client.open_channel()
-                assert channel
-                attached = control.pair_channel(channel, workline, access_mode="read")
+                attached = client.bootstrap_bound_channel(
+                    contract,
+                    expected_contract_hash=_contract_hash(contract),
+                    project_root=project,
+                    access_mode="read",
+                )
                 assert attached.get("ok") is True, attached
+                channel = str(attached.get("channelId", ""))
+                assert channel
                 serialized = json.dumps(attached, ensure_ascii=False)
                 assert "leaseId" not in serialized
                 assert "h7Scope" not in serialized
@@ -359,7 +375,7 @@ def test_project_root_survives_broker_restart_and_pair_stays_public() -> None:
             client.close()
 
 
-def test_pair_requires_root_repair_when_private_root_state_is_tampered() -> None:
+def test_bootstrap_withholds_tampered_private_root_state() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-root-tamper-") as directory:
         state = Path(directory) / "state"
         project = Path(directory) / "project"
@@ -371,9 +387,17 @@ def test_pair_requires_root_repair_when_private_root_state_is_tampered() -> None
         channel = ""
         try:
             contract = _contract(project)
-            registration = control.register_workline(contract, expected_contract_hash=_contract_hash(contract), project_root=project)
-            assert registration.get("ok") is True, registration
-            workline = str(registration["scope"]["worklineId"])
+            first = client.bootstrap_bound_channel(
+                contract,
+                expected_contract_hash=_contract_hash(contract),
+                project_root=project,
+                access_mode="read",
+            )
+            assert first.get("ok") is True, first
+            first_channel = str(first["channelId"])
+            initial_status = client.status(first_channel)
+            workline = str(initial_status["scope"]["worklineId"])
+            client.close_channel(first_channel)
             roots_path = state / "workspace/runtime-state/scope-broker/project-roots.json"
             tampered = json.loads(roots_path.read_text(encoding="utf-8"))
             # Preserve the envelope hash to prove that strict per-record shape
@@ -387,10 +411,18 @@ def test_pair_requires_root_repair_when_private_root_state_is_tampered() -> None
             restarted = ScopeBrokerServer(state)
             restarted.start()
             try:
-                channel = client.open_channel()
-                result = control.pair_channel(channel, workline, access_mode="read")
+                result = client.bootstrap_bound_channel(
+                    contract,
+                    expected_contract_hash=_contract_hash(contract),
+                    project_root=project,
+                    access_mode="read",
+                )
                 assert result.get("ok") is False, result
                 assert result.get("code") == "H7_SCOPE_PROJECT_ROOT_REGISTRY_INVALID", result
+                # A bootstrap must never silently replace a malformed private
+                # root map.  The explicit repair path owns that mutation.
+                persisted = json.loads(roots_path.read_text(encoding="utf-8"))
+                assert persisted["roots"][workline]["unexpected"] == "must-not-be-accepted", persisted
             finally:
                 if channel:
                     client.close_channel(channel)
@@ -400,7 +432,7 @@ def test_pair_requires_root_repair_when_private_root_state_is_tampered() -> None
             client.close()
 
 
-def test_pair_rechecks_a_deleted_project_root() -> None:
+def test_bootstrap_rechecks_a_deleted_project_root() -> None:
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-root-deleted-") as directory:
         state = Path(directory) / "state"
         project = Path(directory) / "project"
@@ -412,12 +444,18 @@ def test_pair_rechecks_a_deleted_project_root() -> None:
         channel = ""
         try:
             contract = _contract(project)
-            registration = control.register_workline(contract, expected_contract_hash=_contract_hash(contract), project_root=project)
-            assert registration.get("ok") is True, registration
-            workline = str(registration["scope"]["worklineId"])
+            initial_channel = _bootstrap_bound_channel(client, contract, project, access_mode="read")
+            initial_status = client.status(initial_channel)
+            assert initial_status.get("ok") is True, initial_status
+            assert client.close_channel(initial_channel).get("ok") is True
+            workline = str(initial_status["scope"]["worklineId"])
             project.rmdir()
-            channel = client.open_channel()
-            result = control.pair_channel(channel, workline, access_mode="read")
+            result = client.bootstrap_bound_channel(
+                contract,
+                expected_contract_hash=_contract_hash(contract),
+                project_root=project,
+                access_mode="read",
+            )
             assert result.get("ok") is False, result
             assert result.get("code") == "H7_SCOPE_PROJECT_ROOT_INVALID", result
         finally:
@@ -442,11 +480,7 @@ def test_bound_status_withholds_after_project_root_disappears() -> None:
         channel = ""
         try:
             contract = _contract(project)
-            registration = control.register_workline(contract, expected_contract_hash=_contract_hash(contract), project_root=project)
-            assert registration.get("ok") is True, registration
-            channel = client.open_channel()
-            assert channel
-            assert control.pair_channel(channel, str(registration["scope"]["worklineId"]), access_mode="read").get("ok") is True
+            channel = _bootstrap_bound_channel(client, contract, project, access_mode="read")
             assert client.status(channel).get("code") == "H7_SCOPE_CHANNEL_BOUND"
 
             health = LocalBrokerStdioTransportHealth(client, channel)
@@ -467,8 +501,8 @@ def test_bound_status_withholds_after_project_root_disappears() -> None:
             client.close()
 
 
-def test_authorize_root_check_is_atomic_against_channel_rebind() -> None:
-    """A root proof cannot race a detach/re-pair into a stale scope reply."""
+def test_authorize_root_check_is_atomic_against_concurrent_bootstrap() -> None:
+    """A root proof cannot race a second bootstrap into a stale scope reply."""
 
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-root-atomic-") as directory:
         state = Path(directory) / "state"
@@ -481,6 +515,8 @@ def test_authorize_root_check_is_atomic_against_channel_rebind() -> None:
         server.start()
         control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=runtime)
         client = ScopeBrokerClient(state, auto_start=False, runtime_path=runtime)
+        channel = ""
+        bootstrapped_b: dict[str, object] = {}
         try:
             contract_a = _contract(project_a)
             contract_b = dict(contract_a)
@@ -493,23 +529,7 @@ def test_authorize_root_check_is_atomic_against_channel_rebind() -> None:
                     ).hexdigest()[:24],
                 }
             )
-            registered_a = control.register_workline(
-                contract_a,
-                expected_contract_hash=_contract_hash(contract_a),
-                project_root=project_a,
-            )
-            registered_b = control.register_workline(
-                contract_b,
-                expected_contract_hash=_contract_hash(contract_b),
-                project_root=project_b,
-            )
-            assert registered_a.get("ok") is True, registered_a
-            assert registered_b.get("ok") is True, registered_b
-            workline_a = str(registered_a["scope"]["worklineId"])
-            workline_b = str(registered_b["scope"]["worklineId"])
-            channel = client.open_channel()
-            assert channel
-            assert control.pair_channel(channel, workline_a, access_mode="read").get("ok") is True
+            channel = _bootstrap_bound_channel(client, contract_a, project_a, access_mode="read")
 
             original_root_lookup = server._project_root_for_context
             entered_root_lookup = threading.Event()
@@ -522,51 +542,58 @@ def test_authorize_root_check_is_atomic_against_channel_rebind() -> None:
 
             server._project_root_for_context = paused_root_lookup  # type: ignore[method-assign]
             authorization: dict[str, object] = {}
-            rebind: dict[str, object] = {}
-            rebind_done = threading.Event()
+            bootstrap_done = threading.Event()
 
             def authorize() -> None:
                 authorization.update(server._method("authorize", {"channelId": channel}))
 
-            def detach_and_rebind() -> None:
-                server._method("detach_channel", {"channelId": channel})
-                rebind.update(
+            def bootstrap_successor() -> None:
+                bootstrapped_b.update(
                     server._method(
-                        "pair_channel",
-                        {"channelId": channel, "worklineId": workline_b, "accessMode": "read"},
+                        "bootstrap_bound_channel",
+                        {
+                            "contract": contract_b,
+                            "expectedContractHash": _contract_hash(contract_b),
+                            "projectRoot": str(project_b),
+                            "accessMode": "read",
+                        },
                     )
                 )
-                rebind_done.set()
+                bootstrap_done.set()
 
             authorize_thread = threading.Thread(target=authorize)
-            rebind_thread = threading.Thread(target=detach_and_rebind)
+            rebind_thread = threading.Thread(target=bootstrap_successor)
             authorize_thread.start()
             assert entered_root_lookup.wait(timeout=3)
             rebind_thread.start()
             time.sleep(0.1)
-            assert not rebind_done.is_set()
+            assert not bootstrap_done.is_set()
             release_root_lookup.set()
             authorize_thread.join(timeout=3)
             rebind_thread.join(timeout=3)
             assert not authorize_thread.is_alive()
             assert not rebind_thread.is_alive()
             assert authorization.get("ok") is True, authorization
-            assert authorization.get("scope", {}).get("taskId") == contract_a["taskId"]
-            assert rebind.get("ok") is True, rebind
+            assert authorization.get("scope", {}).get("taskId") == contract_a["taskId"], authorization
+            assert bootstrapped_b.get("ok") is True, bootstrapped_b
+            successor_channel = str(bootstrapped_b.get("channelId", ""))
+            assert successor_channel and successor_channel != channel, bootstrapped_b
+            assert client.status(successor_channel).get("state") == "bound"
+            client.close_channel(successor_channel)
         finally:
             try:
                 server._project_root_for_context = original_root_lookup  # type: ignore[name-defined,method-assign]
             except (NameError, AttributeError):
                 pass
-            if "channel" in locals() and channel:
+            if channel:
                 client.close_channel(channel)
             server.stop()
             control.close()
             client.close()
 
 
-def test_provider_reopens_only_an_unbound_channel_after_broker_restart() -> None:
-    """Restart recovery may reopen transport, but pairing remains explicit."""
+def test_provider_reopens_an_unbound_channel_after_broker_restart() -> None:
+    """A legacy unbound transport may reopen after restart, never regain scope."""
 
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-provider-restart-") as directory:
         state = Path(directory) / "state"
@@ -581,12 +608,7 @@ def test_provider_reopens_only_an_unbound_channel_after_broker_restart() -> None
         second: ScopeBrokerServer | None = None
         try:
             contract = _contract(project)
-            registration = control.register_workline(contract, expected_contract_hash=_contract_hash(contract), project_root=project)
-            assert registration.get("ok") is True, registration
-            workline = str(registration["scope"]["worklineId"])
-            original_channel = client.open_channel()
-            assert original_channel
-            assert control.pair_channel(original_channel, workline, access_mode="read").get("ok") is True
+            original_channel = _bootstrap_bound_channel(client, contract, project, access_mode="read")
             handle = BrokerChannelHandle(client, original_channel)
             provider = BrokerScopeProvider(client, handle)
             assert provider.authorize().get("ok") is True
@@ -595,14 +617,16 @@ def test_provider_reopens_only_an_unbound_channel_after_broker_restart() -> None
             second = ScopeBrokerServer(state)
             second.start()
 
-            # The old channel is rejected, then exactly one replacement opens.
-            # It carries no scope until the control plane pairs it explicitly.
+            # Compatibility recovery may open a replacement transport channel,
+            # but it must remain unbound. Production launcher channels set
+            # ``allow_reopen_after_restart=False`` and return restart-required.
             recovered = provider.authorize()
             assert recovered.get("ok") is False, recovered
             assert recovered.get("code") == "H7_SCOPE_CHANNEL_UNBOUND", recovered
             assert handle.channel_id and handle.channel_id != original_channel
-            assert control.pair_channel(handle.channel_id, workline, access_mode="read").get("ok") is True
-            assert provider.authorize().get("ok") is True
+            retired = control.pair_channel(handle.channel_id, "sbw-" + "a" * 32, access_mode="read")
+            assert retired.get("code") == "H7_SCOPE_PAIRING_CONTROL_RETIRED", retired
+            assert provider.authorize().get("code") == "H7_SCOPE_CHANNEL_UNBOUND"
         finally:
             if handle is not None:
                 handle.close_channel()
@@ -629,12 +653,7 @@ def test_provider_does_not_reopen_an_explicitly_closed_channel() -> None:
         handle: BrokerChannelHandle | None = None
         try:
             contract = _contract(project)
-            registration = control.register_workline(contract, expected_contract_hash=_contract_hash(contract), project_root=project)
-            assert registration.get("ok") is True, registration
-            workline = str(registration["scope"]["worklineId"])
-            channel = client.open_channel()
-            assert channel
-            assert control.pair_channel(channel, workline, access_mode="read").get("ok") is True
+            channel = _bootstrap_bound_channel(client, contract, project, access_mode="read")
             handle = BrokerChannelHandle(client, channel)
             provider = BrokerScopeProvider(client, handle)
             assert provider.authorize().get("ok") is True
@@ -676,62 +695,43 @@ def test_provider_can_open_an_initially_empty_channel_without_pairing() -> None:
             client.close()
 
 
-def test_cli_bind_stdout_never_emits_private_capabilities() -> None:
-    """The public CLI control path must match the IPC secrecy boundary."""
+def test_cli_bind_is_retired_without_private_capabilities() -> None:
+    """The public CLI cannot select a channel/workline binding anymore."""
 
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-cli-bind-") as directory:
         state = Path(directory) / "state"
         project = Path(directory) / "project"
         project.mkdir()
-        server = ScopeBrokerServer(state)
-        server.start()
-        runtime = ROOT / "runtime" / "scope_broker_ipc.py"
-        control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=runtime)
-        client = ScopeBrokerClient(state, auto_start=False, runtime_path=runtime)
-        channel = ""
-        try:
-            contract = _contract(project)
-            registration = control.register_workline(contract, expected_contract_hash=_contract_hash(contract), project_root=project)
-            assert registration.get("ok") is True, registration
-            channel = client.open_channel()
-            assert channel
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    "-B",
-                    str(ROOT / "runtime" / "brain_cli.py"),
-                    "--package-root",
-                    str(ROOT),
-                    "--memory-root",
-                    str(state / "shared"),
-                    "scope",
-                    "--action",
-                    "bind",
-                    "--channel-id",
-                    channel,
-                    "--workline-id",
-                    str(registration["scope"]["worklineId"]),
-                    "--access-mode",
-                    "read",
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                check=False,
-                timeout=20,
-            )
-            assert completed.returncode == 0, completed.stderr
-            payload = json.loads(completed.stdout)
-            assert payload.get("ok") is True, payload
-            serialized = json.dumps(payload, ensure_ascii=False)
-            for private_marker in ("leaseId", "h7Scope", "pairingToken", "sbpg-v1.", "sbl-", "projectRoot"):
-                assert private_marker not in serialized, payload
-        finally:
-            if channel:
-                client.close_channel(channel)
-            server.stop()
-            control.close()
-            client.close()
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(ROOT / "runtime" / "brain_cli.py"),
+                "--package-root",
+                str(ROOT),
+                "--memory-root",
+                str(state / "shared"),
+                "scope",
+                "--action",
+                "bind",
+            ],
+            cwd=str(project),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=20,
+        )
+        assert completed.returncode == 0, completed.stderr
+        payload = json.loads(completed.stdout)
+        assert payload.get("ok") is False, payload
+        assert payload.get("code") == "H7_SCOPE_SELECTOR_CONTROL_RETIRED", payload
+        serialized = json.dumps(payload, ensure_ascii=False)
+        for private_marker in ("leaseId", "h7Scope", "pairingToken", "sbpg-v1.", "sbl-", "projectRoot", "channelId", "worklineId"):
+            assert private_marker not in serialized, payload
+        broker_root = state / "workspace" / "runtime-state" / "scope-broker"
+        assert not (broker_root / "endpoint.json").exists()
+        assert not (broker_root / "registry.json").exists()
 
 
 def test_existing_channel_calls_never_autostart_a_replacement() -> None:
@@ -764,13 +764,13 @@ def test_unbound_channel_gets_a_pairing_grace_window() -> None:
         channel = ""
         try:
             contract = _contract(project)
-            registration = control.register_workline(contract, expected_contract_hash=_contract_hash(contract), project_root=project)
-            assert registration.get("ok") is True, registration
             channel = client.open_channel()
             assert channel
             time.sleep(0.35)
-            result = control.pair_channel(channel, str(registration["scope"]["worklineId"]), access_mode="read")
+            result = client.status(channel)
             assert result.get("ok") is True, result
+            assert result.get("state") == "unbound", result
+            assert result.get("code") == "H7_SCOPE_CHANNEL_UNBOUND", result
         finally:
             if channel:
                 client.close_channel(channel)
@@ -779,15 +779,425 @@ def test_unbound_channel_gets_a_pairing_grace_window() -> None:
             client.close()
 
 
-def test_pairing_request_ref_routes_exact_concurrent_channels() -> None:
-    """The control plane pairs the connection that issued each ref."""
+def test_bootstrap_bound_channel_is_atomic_and_ref_free() -> None:
+    """Local bootstrap binds one current contract without an intermediate ref."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-bootstrap-atomic-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        try:
+            contract = _contract(project)
+            params = {
+                "contract": contract,
+                "expectedContractHash": _contract_hash(contract),
+                "projectRoot": str(project),
+                "accessMode": "write",
+                "leaseSeconds": 300,
+            }
+            result = server._method("bootstrap_bound_channel", params)
+            assert result.get("ok") is True, result
+            channel = str(result.get("channelId", ""))
+            assert channel.startswith("sbc-") and len(channel) == 36, result
+            with server.broker._memory_lock:
+                assert channel in server.broker._channels
+                assert channel in server.broker._bindings
+                assert channel not in server.broker._channel_pairing_refs
+                assert not server.broker._pairing_requests
+            binding = server.broker._bindings[channel]
+            assert binding.context.workspace_key == contract["workspaceKey"]
+            assert binding.context.owner_session_key == contract["ownerSessionKey"]
+        finally:
+            server.stop()
+
+
+def test_bootstrap_bound_channel_rolls_back_registry_and_root_on_bind_failure() -> None:
+    """A failed second write bootstrap leaves the first scope untouched."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-bootstrap-rollback-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        try:
+            contract = _contract(project)
+            params = {
+                "contract": contract,
+                "expectedContractHash": _contract_hash(contract),
+                "projectRoot": str(project),
+                "accessMode": "write",
+                "leaseSeconds": 300,
+            }
+            first = server._method("bootstrap_bound_channel", params)
+            assert first.get("ok") is True, first
+            first_channel = str(first["channelId"])
+            registry_path = state / "workspace" / "runtime-state" / "scope-broker" / "registry.json"
+            roots_path = state / "workspace" / "runtime-state" / "scope-broker" / "project-roots.json"
+            registry_before = registry_path.read_bytes()
+            roots_before = roots_path.read_bytes()
+            with server.broker._memory_lock:
+                channels_before = set(server.broker._channels)
+                bindings_before = dict(server.broker._bindings)
+                leases_before = dict(server.broker._write_leases)
+
+            failed = server._method("bootstrap_bound_channel", params)
+            assert failed.get("ok") is False, failed
+            assert failed.get("code") == "H7_SCOPE_WRITE_LEASE_HELD", failed
+            assert registry_path.read_bytes() == registry_before
+            assert roots_path.read_bytes() == roots_before
+            with server.broker._memory_lock:
+                assert server.broker._channels == channels_before
+                assert server.broker._bindings == bindings_before
+                assert server.broker._write_leases == leases_before
+            assert first_channel in server.broker._bindings
+        finally:
+            server.stop()
+
+
+def test_bootstrap_rolls_back_when_project_root_persist_fails() -> None:
+    """A root-map write fault cannot leave a newly registered scope behind."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-bootstrap-persist-fault-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        try:
+            first_contract = _contract(project)
+            first = server._method(
+                "bootstrap_bound_channel",
+                {
+                    "contract": first_contract,
+                    "expectedContractHash": _contract_hash(first_contract),
+                    "projectRoot": str(project),
+                    "accessMode": "read",
+                    "leaseSeconds": 300,
+                },
+            )
+            assert first.get("ok") is True, first
+            registry_path = state / "workspace" / "runtime-state" / "scope-broker" / "registry.json"
+            roots_path = state / "workspace" / "runtime-state" / "scope-broker" / "project-roots.json"
+            registry_before = registry_path.read_bytes()
+            roots_before = roots_path.read_bytes()
+            with server.broker._memory_lock:
+                channels_before = set(server.broker._channels)
+                bindings_before = dict(server.broker._bindings)
+                leases_before = dict(server.broker._write_leases)
+
+            second_contract = dict(first_contract)
+            second_contract["taskId"] = "scope-broker-ipc-persist-fault"
+            second_contract["taskInstanceId"] = "ti-" + "c" * 32
+            original_persist = server._persist_project_roots
+            server._persist_project_roots = lambda: False  # type: ignore[method-assign]
+            try:
+                failed = server._method(
+                    "bootstrap_bound_channel",
+                    {
+                        "contract": second_contract,
+                        "expectedContractHash": _contract_hash(second_contract),
+                        "projectRoot": str(project),
+                        "accessMode": "read",
+                        "leaseSeconds": 300,
+                    },
+                )
+            finally:
+                server._persist_project_roots = original_persist  # type: ignore[method-assign]
+
+            assert failed.get("ok") is False, failed
+            assert failed.get("code") == "H7_SCOPE_PROJECT_ROOT_WRITE_FAILED", failed
+            assert registry_path.read_bytes() == registry_before
+            assert roots_path.read_bytes() == roots_before
+            with server.broker._memory_lock:
+                assert server.broker._channels == channels_before
+                assert server.broker._bindings == bindings_before
+                assert server.broker._write_leases == leases_before
+        finally:
+            server.stop()
+
+
+def test_failed_bootstrap_rollback_invalidates_cached_project_roots() -> None:
+    """A failed compensating restore must disable pre-fault root authority."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-bootstrap-rollback-fault-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        try:
+            contract = _contract(project)
+            params = {
+                "contract": contract,
+                "expectedContractHash": _contract_hash(contract),
+                "projectRoot": str(project),
+                "accessMode": "write",
+                "leaseSeconds": 300,
+            }
+            first = server._method("bootstrap_bound_channel", params)
+            assert first.get("ok") is True, first
+            original_restore = server._restore_private_file
+            server._restore_private_file = lambda _path, _snapshot: False  # type: ignore[method-assign]
+            try:
+                failed = server._method("bootstrap_bound_channel", params)
+            finally:
+                server._restore_private_file = original_restore  # type: ignore[method-assign]
+
+            assert failed.get("ok") is False, failed
+            assert failed.get("code") == "H7_SCOPE_BOOTSTRAP_ROLLBACK_FAILED", failed
+            with server._project_root_lock:
+                assert server._project_root_registry_invalid is True
+                assert server._project_roots == {}
+            workline = server.broker.get_workline(next(iter(server.broker._write_leases)))
+            assert workline.ok and workline.context is not None
+            assert server._project_root_for_context(workline.context) == ""
+            assert server._project_root_failure_code(workline.context) == "H7_SCOPE_PROJECT_ROOT_REGISTRY_INVALID"
+        finally:
+            server.stop()
+
+
+def test_bootstrap_bound_channel_rejects_invalid_inputs_without_side_effects() -> None:
+    """Validation failures do not create channels or mutate durable state."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-bootstrap-validation-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        foreign = Path(directory) / "foreign"
+        project.mkdir()
+        foreign.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        try:
+            contract = _contract(project)
+            base = {
+                "contract": contract,
+                "expectedContractHash": _contract_hash(contract),
+                "projectRoot": str(project),
+                "accessMode": "write",
+                "leaseSeconds": 300,
+            }
+            invalid_mode = server._method("bootstrap_bound_channel", {**base, "accessMode": "admin"})
+            assert invalid_mode.get("code") == "H7_SCOPE_ACCESS_MODE_INVALID", invalid_mode
+            mismatch = server._method("bootstrap_bound_channel", {**base, "projectRoot": str(foreign)})
+            assert mismatch.get("code") == "H7_SCOPE_PROJECT_ROOT_MISMATCH", mismatch
+            registry_path = state / "workspace" / "runtime-state" / "scope-broker" / "registry.json"
+            roots_path = state / "workspace" / "runtime-state" / "scope-broker" / "project-roots.json"
+            assert not registry_path.exists()
+            assert not roots_path.exists()
+            with server.broker._memory_lock:
+                assert not server.broker._channels
+                assert not server.broker._bindings
+                assert not server.broker._write_leases
+        finally:
+            server.stop()
+
+
+def test_bootstrap_bound_channel_withholds_tampered_root_registry() -> None:
+    """Bootstrap cannot silently repair a malformed private root map."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-bootstrap-root-invalid-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        try:
+            contract = _contract(project)
+            first = server._method(
+                "bootstrap_bound_channel",
+                {
+                    "contract": contract,
+                    "expectedContractHash": _contract_hash(contract),
+                    "projectRoot": str(project),
+                    "accessMode": "read",
+                    "leaseSeconds": 300,
+                },
+            )
+            assert first.get("ok") is True, first
+            first_channel = str(first["channelId"])
+            roots_path = state / "workspace" / "runtime-state" / "scope-broker" / "project-roots.json"
+            tampered = json.loads(roots_path.read_text(encoding="utf-8"))
+            tampered["roots"][next(iter(tampered["roots"]))]["unexpected"] = "nope"
+            tampered["payloadHash"] = _canonical_hash({key: value for key, value in tampered.items() if key != "payloadHash"})
+            roots_path.write_text(json.dumps(tampered, separators=(",", ":")), encoding="utf-8")
+            server._load_project_roots()
+            before_registry = (state / "workspace" / "runtime-state" / "scope-broker" / "registry.json").read_bytes()
+            before_roots = roots_path.read_bytes()
+            failed = server._method(
+                "bootstrap_bound_channel",
+                {
+                    "contract": contract,
+                    "expectedContractHash": _contract_hash(contract),
+                    "projectRoot": str(project),
+                    "accessMode": "read",
+                    "leaseSeconds": 300,
+                },
+            )
+            assert failed.get("code") == "H7_SCOPE_PROJECT_ROOT_REGISTRY_INVALID", failed
+            assert (state / "workspace" / "runtime-state" / "scope-broker" / "registry.json").read_bytes() == before_registry
+            assert roots_path.read_bytes() == before_roots
+            with server.broker._memory_lock:
+                assert set(server.broker._channels) == {first_channel}
+        finally:
+            server.stop()
+
+
+def test_repair_local_scope_rebuilds_only_the_current_contract_root_proof() -> None:
+    """Explicit repair restores a poisoned root map without opening a channel."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-local-repair-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        try:
+            contract = _contract(project)
+            first = server._method(
+                "bootstrap_bound_channel",
+                {
+                    "contract": contract,
+                    "expectedContractHash": _contract_hash(contract),
+                    "projectRoot": str(project),
+                    "accessMode": "read",
+                    "leaseSeconds": 300,
+                },
+            )
+            assert first.get("ok") is True, first
+            channel = str(first["channelId"])
+            roots_path = state / "workspace" / "runtime-state" / "scope-broker" / "project-roots.json"
+            tampered = json.loads(roots_path.read_text(encoding="utf-8"))
+            tampered["roots"][next(iter(tampered["roots"]))]["unexpected"] = "nope"
+            tampered["payloadHash"] = _canonical_hash({key: value for key, value in tampered.items() if key != "payloadHash"})
+            roots_path.write_text(json.dumps(tampered, separators=(",", ":")), encoding="utf-8")
+            server._load_project_roots()
+            with server._project_root_lock:
+                assert server._project_root_registry_invalid is True
+            with server.broker._memory_lock:
+                channels_before = set(server.broker._channels)
+                bindings_before = dict(server.broker._bindings)
+                binding_objects_before = {channel_id: id(binding) for channel_id, binding in server.broker._bindings.items()}
+
+            original_register = server.broker.register_workline
+
+            def forbidden_register(*_args: object, **_kwargs: object) -> object:
+                raise AssertionError("repair_local_scope must not call register_workline")
+
+            server.broker.register_workline = forbidden_register  # type: ignore[method-assign]
+
+            try:
+                repaired = server._method(
+                    "repair_local_scope",
+                    {
+                        "contract": contract,
+                        "expectedContractHash": _contract_hash(contract),
+                        "projectRoot": str(project),
+                    },
+                )
+            finally:
+                server.broker.register_workline = original_register  # type: ignore[method-assign]
+            assert repaired.get("ok") is True, repaired
+            assert repaired.get("code") == "H7_SCOPE_PROJECT_ROOT_REPAIRED", repaired
+            assert "channelId" not in repaired and "scope" not in repaired, repaired
+            with server._project_root_lock:
+                assert server._project_root_registry_invalid is False
+            with server.broker._memory_lock:
+                assert server.broker._channels == channels_before == {channel}
+                assert server.broker._bindings == bindings_before
+                assert {channel_id: id(binding) for channel_id, binding in server.broker._bindings.items()} == binding_objects_before
+            context = server.broker._bindings[channel].context
+            assert server._project_root_for_context(context) == str(project.resolve())
+        finally:
+            server.stop()
+
+
+def test_repair_local_scope_requires_an_existing_exact_workline_without_mutation() -> None:
+    """Repair cannot create or refresh a workline while rebuilding roots."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-local-repair-rebind-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state)
+        server.start()
+        try:
+            contract = _contract(project)
+            first = server._method(
+                "bootstrap_bound_channel",
+                {
+                    "contract": contract,
+                    "expectedContractHash": _contract_hash(contract),
+                    "projectRoot": str(project),
+                    "accessMode": "read",
+                    "leaseSeconds": 300,
+                },
+            )
+            assert first.get("ok") is True, first
+            registry_path = state / "workspace" / "runtime-state" / "scope-broker" / "registry.json"
+            roots_path = state / "workspace" / "runtime-state" / "scope-broker" / "project-roots.json"
+
+            # Put the root map in the explicit repair state, then present a
+            # same-workline but newer contract.  Repair must not turn that
+            # mismatch into a durable refresh/rebind.
+            tampered = json.loads(roots_path.read_text(encoding="utf-8"))
+            workline_id = next(iter(tampered["roots"]))
+            tampered["roots"][workline_id]["unexpected"] = "repair-must-not-refresh"
+            tampered["payloadHash"] = _canonical_hash({key: value for key, value in tampered.items() if key != "payloadHash"})
+            roots_path.write_text(json.dumps(tampered, separators=(",", ":")), encoding="utf-8")
+            registry_before = registry_path.read_bytes()
+            roots_before = roots_path.read_bytes()
+            with server.broker._memory_lock:
+                bindings_before = dict(server.broker._bindings)
+                binding_objects_before = {channel: id(binding) for channel, binding in server.broker._bindings.items()}
+                channels_before = set(server.broker._channels)
+                leases_before = dict(server.broker._write_leases)
+
+            newer = dict(contract)
+            newer["revision"] = int(contract["revision"]) + 1
+            original_register = server.broker.register_workline
+
+            def forbidden_register(*_args: object, **_kwargs: object) -> object:
+                raise AssertionError("repair_local_scope must not call register_workline")
+
+            server.broker.register_workline = forbidden_register  # type: ignore[method-assign]
+            try:
+                failed = server._method(
+                    "repair_local_scope",
+                    {
+                        "contract": newer,
+                        "expectedContractHash": _contract_hash(newer),
+                        "projectRoot": str(project),
+                    },
+                )
+            finally:
+                server.broker.register_workline = original_register  # type: ignore[method-assign]
+
+            assert failed == {
+                "ok": False,
+                "code": "H7_SCOPE_REPAIR_REBIND_REQUIRED",
+                "state": "withheld",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }, failed
+            assert registry_path.read_bytes() == registry_before
+            assert roots_path.read_bytes() == roots_before
+            with server.broker._memory_lock:
+                assert server.broker._channels == channels_before
+                assert server.broker._bindings == bindings_before
+                assert {channel: id(binding) for channel, binding in server.broker._bindings.items()} == binding_objects_before
+                assert server.broker._write_leases == leases_before
+        finally:
+            server.stop()
+
+
+def test_legacy_pairing_control_is_retired_without_state_mutation() -> None:
+    """Retired selector/ref controls cannot bind or mutate live channels."""
 
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-pairing-ref-") as directory:
         state = Path(directory) / "state"
-        project_a = Path(directory) / "project-a"
-        project_b = Path(directory) / "project-b"
-        project_a.mkdir()
-        project_b.mkdir()
         server = ScopeBrokerServer(state)
         server.start()
         runtime = ROOT / "runtime" / "scope_broker_ipc.py"
@@ -796,17 +1206,6 @@ def test_pairing_request_ref_routes_exact_concurrent_channels() -> None:
         client_b = ScopeBrokerClient(state, auto_start=False, runtime_path=runtime)
         channels: list[tuple[ScopeBrokerClient, str]] = []
         try:
-            registrations = []
-            for project in (project_a, project_b):
-                value = _contract(project)
-                registration = control.register_workline(
-                    value,
-                    expected_contract_hash=_contract_hash(value),
-                    project_root=project,
-                )
-                assert registration.get("ok") is True, registration
-                registrations.append(registration)
-
             channel_a = client_a.open_channel()
             channel_b = client_b.open_channel()
             channels.extend(((client_a, channel_a), (client_b, channel_b)))
@@ -826,35 +1225,15 @@ def test_pairing_request_ref_routes_exact_concurrent_channels() -> None:
             assert "pairingRequestRef" not in listed_serialized, listed
             assert ref_a not in listed_serialized and ref_b not in listed_serialized, listed
 
-            results: list[dict[str, object] | None] = [None, None]
-
-            def pair(index: int, ref: str, registration: dict[str, object]) -> None:
-                results[index] = control.pair_request(
-                    ref,
-                    str(registration["scope"]["worklineId"]),
-                    access_mode="read",
-                )
-
-            threads = [
-                threading.Thread(target=pair, args=(0, ref_a, registrations[0])),
-                threading.Thread(target=pair, args=(1, ref_b, registrations[1])),
-            ]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=8)
-            assert all(isinstance(result, dict) and result.get("ok") is True for result in results), results
+            retired_a = control.pair_request(ref_a, "sbw-" + "a" * 32, access_mode="read")
+            retired_b = control.pair_channel(channel_b, "sbw-" + "b" * 32, access_mode="read")
+            assert retired_a.get("ok") is False and retired_a.get("code") == "H7_SCOPE_PAIRING_CONTROL_RETIRED", retired_a
+            assert retired_b.get("ok") is False and retired_b.get("code") == "H7_SCOPE_PAIRING_CONTROL_RETIRED", retired_b
 
             status_a = client_a.status(channel_a)
             status_b = client_b.status(channel_b)
-            assert status_a.get("state") == "bound" and status_b.get("state") == "bound"
-            assert status_a.get("scope", {}).get("workspaceKey") == registrations[0]["scope"]["workspaceKey"], status_a
-            assert status_b.get("scope", {}).get("workspaceKey") == registrations[1]["scope"]["workspaceKey"], status_b
-            assert "pairingRequestRef" not in status_a and "pairingRequestRef" not in status_b
-
-            replay = control.pair_request(ref_a, str(registrations[0]["scope"]["worklineId"]), access_mode="read")
-            assert replay.get("ok") is False, replay
-            serialized = json.dumps({"listed": listed, "results": results, "a": status_a, "b": status_b}, ensure_ascii=False)
+            assert status_a.get("state") == "unbound" and status_b.get("state") == "unbound"
+            serialized = json.dumps({"listed": listed, "a": status_a, "b": status_b}, ensure_ascii=False)
             for private_marker in ("leaseId", "pairingToken", "sbpg-v1.", "sbl-", "projectRoot"):
                 assert private_marker not in serialized, serialized
         finally:
@@ -902,17 +1281,25 @@ def main() -> None:
     test_stale_endpoint_is_replaced()
     test_repeated_stop_cannot_remove_a_new_broker_endpoint()
     test_project_root_survives_broker_restart_and_pair_stays_public()
-    test_pair_requires_root_repair_when_private_root_state_is_tampered()
-    test_pair_rechecks_a_deleted_project_root()
+    test_bootstrap_withholds_tampered_private_root_state()
+    test_bootstrap_rechecks_a_deleted_project_root()
     test_bound_status_withholds_after_project_root_disappears()
-    test_authorize_root_check_is_atomic_against_channel_rebind()
-    test_provider_reopens_only_an_unbound_channel_after_broker_restart()
+    test_authorize_root_check_is_atomic_against_concurrent_bootstrap()
+    test_provider_reopens_an_unbound_channel_after_broker_restart()
     test_provider_does_not_reopen_an_explicitly_closed_channel()
     test_provider_can_open_an_initially_empty_channel_without_pairing()
-    test_cli_bind_stdout_never_emits_private_capabilities()
+    test_cli_bind_is_retired_without_private_capabilities()
     test_existing_channel_calls_never_autostart_a_replacement()
     test_unbound_channel_gets_a_pairing_grace_window()
-    test_pairing_request_ref_routes_exact_concurrent_channels()
+    test_bootstrap_bound_channel_is_atomic_and_ref_free()
+    test_bootstrap_bound_channel_rolls_back_registry_and_root_on_bind_failure()
+    test_bootstrap_rolls_back_when_project_root_persist_fails()
+    test_failed_bootstrap_rollback_invalidates_cached_project_roots()
+    test_bootstrap_bound_channel_rejects_invalid_inputs_without_side_effects()
+    test_bootstrap_bound_channel_withholds_tampered_root_registry()
+    test_repair_local_scope_rebuilds_only_the_current_contract_root_proof()
+    test_repair_local_scope_requires_an_existing_exact_workline_without_mutation()
+    test_legacy_pairing_control_is_retired_without_state_mutation()
     test_channel_activity_index_ignores_unknown_authenticated_ids()
     print("runtime_scope_broker_ipc_regression: PASS")
 

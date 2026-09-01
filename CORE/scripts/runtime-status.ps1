@@ -41,25 +41,16 @@ if ($codex) {
   if ($mcpExitCode -eq 0) { try { $mcp = (($mcpRaw -join "`n") | ConvertFrom-Json) } catch {} }
 }
 
-function Get-McpTransportValue([object]$Registered,[string]$Name) {
-  if (-not $Registered -or -not $Registered.transport) { return '' }
-  if ($Registered.transport.env -and $Registered.transport.env.PSObject.Properties[$Name]) { return [string]$Registered.transport.env.$Name }
-  $args = @($Registered.transport.args)
-  for ($index = 0; $index -lt ($args.Count - 1); $index++) {
-    if ([string]$args[$index] -eq $Name) { return [string]$args[$index + 1] }
-  }
-  return ''
-}
-
 $expectedIdentity = Get-SuperBrainMcpRuntimeIdentity $Root
 $bindingPath = Join-Path (Join-Path (Get-SuperBrainMemoryBaseRoot $Root) 'workspace') 'runtime-state\mcp-runtime-binding.json'
 $binding = $null
 try { if (Test-Path -LiteralPath $bindingPath -PathType Leaf) { $binding = Get-Content -LiteralPath $bindingPath -Raw -Encoding UTF8 | ConvertFrom-Json } } catch {}
-$registeredIdentity = Get-McpTransportValue $mcp 'SUPER_BRAIN_RUNTIME_IDENTITY'
-$registeredTransport = Get-McpTransportValue $mcp 'SUPER_BRAIN_MCP_TRANSPORT'
-$registeredEpoch = Get-McpTransportValue $mcp 'SUPER_BRAIN_MCP_REGISTRATION_EPOCH'
-$staticMcpOk = ($null -ne $mcp -and $mcp.transport -and [string]$mcp.transport.type -eq 'stdio' -and $registeredIdentity -eq $expectedIdentity -and $registeredTransport -eq 'codex_registered_v1' -and [string]$registeredEpoch -match '^[a-f0-9]{32}$')
-$bindingOk = ($binding -and [string]$binding.schema -eq 'super-brain.mcp-runtime-binding.v1' -and [string]$binding.runtimeIdentity -eq $expectedIdentity -and [string]$binding.registrationEpoch -eq $registeredEpoch)
+$mcpContract = Test-SuperBrainMcpRegistrationContract -Registered $mcp -PackageRoot $Root -MemoryRoot $MemoryRoot -RuntimeIdentity $expectedIdentity -RequireEnabled
+$registeredIdentity = Get-SuperBrainMcpTransportValue $mcp 'SUPER_BRAIN_RUNTIME_IDENTITY'
+$registeredTransport = Get-SuperBrainMcpTransportValue $mcp 'SUPER_BRAIN_MCP_TRANSPORT'
+$registeredEpoch = [string]$mcpContract.registrationEpoch
+$staticMcpOk = [bool]$mcpContract.current
+$bindingOk = [bool](Test-SuperBrainMcpRuntimeBinding -Binding $binding -PackageRoot $Root -MemoryBaseRoot (Get-SuperBrainMemoryBaseRoot $Root) -RuntimeIdentity $expectedIdentity -RegistrationEpoch $registeredEpoch)
 $handshake = if ($binding -and $binding.liveHandshake) { $binding.liveHandshake } else { $null }
 $recordedHandshakeOk = ($bindingOk -and $handshake -and [string]$handshake.schema -eq 'super-brain.mcp-live-handshake.v1' -and [string]$handshake.registrationEpoch -eq $registeredEpoch -and [string]$handshake.runtimeIdentity -eq $expectedIdentity -and [string]$handshake.transport -eq 'codex_registered_mcp_stdio')
 $mcpAssessment = Get-SuperBrainMcpProbeAssessment -StaticBindingOk $staticMcpOk -LegacyBindingMatches $bindingOk -RecordedLegacyHandshake $handshake

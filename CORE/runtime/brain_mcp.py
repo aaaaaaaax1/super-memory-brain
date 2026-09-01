@@ -23,19 +23,74 @@ from turn_intent import TURN_INTENTS
 from mcp_transport_health import LocalBrokerStdioTransportHealth, OfflineReplayMcpTransportHealth
 from scope_provider import BrokerChannelHandle, BrokerScopeProvider, OfflineReplayScopeProvider
 from scope_broker_ipc import ScopeBrokerClient
+from local_scope_bootstrap import bootstrap_local_mcp_channel
 
 
 def response(request_id: Any, result: Any) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+    # Tool responses are already projected through ``tool_result``, but the
+    # JSON-RPC initialize and ping responses are not.  Keep one egress gate at
+    # the protocol boundary so a future MCP method cannot accidentally return
+    # a local scope identity or a filesystem locator directly.
+    return {"jsonrpc": "2.0", "id": request_id, "result": _model_safe_payload(result)}
 
 
 def error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
+_MODEL_PRIVATE_KEYS = frozenset(
+    {
+        "channelId", "leaseId", "leaseExpiresAt", "newOwnerSessionKey",
+        "ownerSessionKey", "pairingRequestRef", "path", "projectRoot",
+        "requestingSessionKey", "sessionId", "sessionKey", "taskId",
+        "taskInstanceId", "worklineId", "workspaceKey",
+        # Hashes below are useful only to private H7 binding/projection code.
+        # They are stable local correlation handles rather than evidence a
+        # model needs to select a tool action, so never emit them through MCP.
+        "scopeRef", "contractHash", "taskIdHash", "scopeBindingHash",
+        "bindingHash", "stateHash", "identityKey", "contractFileName",
+        "telemetryLocator", "telemetryPath", "projectEvidencePath",
+    }
+)
+_MODEL_PRIVATE_ID_RE = re.compile(r"\b(?:sid|sbs|sbw|sbc|sbpr|sbl|ws|ti)-[A-Za-z0-9_-]{16,128}\b", re.IGNORECASE)
+_MODEL_LOCAL_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|(?<!:)/(?:[A-Za-z0-9_.-]+(?:[\\/]|$)))")
+
+
+def _model_safe_payload(value: Any, *, key: str = "") -> Any:
+    """Strip local scope identities and filesystem locators at MCP egress."""
+
+    if key in _MODEL_PRIVATE_KEYS:
+        return None
+    if isinstance(value, Mapping):
+        projected: dict[str, Any] = {}
+        for child_key, child_value in value.items():
+            normalized_key = str(child_key)
+            if normalized_key in _MODEL_PRIVATE_KEYS:
+                continue
+            if normalized_key == "scope":
+                if isinstance(child_value, Mapping):
+                    safe_scope = {
+                        name: _model_safe_payload(child_value.get(name), key=name)
+                        for name in ("state", "code", "accessMode", "scopeReady", "scopeAuthorized")
+                        if name in child_value
+                    }
+                    if safe_scope:
+                        projected[normalized_key] = safe_scope
+                continue
+            child = _model_safe_payload(child_value, key=normalized_key)
+            if child is not None:
+                projected[normalized_key] = child
+        return projected
+    if isinstance(value, (list, tuple)):
+        return [item for raw in value if (item := _model_safe_payload(raw)) is not None]
+    if isinstance(value, str) and (_MODEL_PRIVATE_ID_RE.search(value) or _MODEL_LOCAL_PATH_RE.search(value)):
+        return "[local-identity-redacted]"
+    return value
+
+
 def tool_result(payload: Any, is_error: bool = False) -> dict[str, Any]:
     return {
-        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}],
+        "content": [{"type": "text", "text": json.dumps(_model_safe_payload(payload), ensure_ascii=False, separators=(",", ":"))}],
         "isError": is_error,
     }
 
@@ -91,6 +146,78 @@ _MCP_CLI_CHILD_ENV_KEYS = (
     "USERPROFILE",
     "WINDIR",
 )
+
+
+def _startup_scope_injection(
+    *,
+    package_root: str | Path,
+    memory_root: str | Path | None,
+    injected_local_session: str,
+    injected_workspace_root: str,
+    injection_required: bool = False,
+ ) -> tuple[dict[str, Any], str]:
+    """Bind one channel only from a launcher-provided local process scope.
+
+    This is intentionally a process-start injection seam, not an MCP tool or
+    request argument.  The language model never receives the pairing ref and
+    cannot select a task/workline.  A client adapter must launch this process
+    in the real project cwd and inject one explicit random ``sid-*`` value.
+    """
+
+    session = str(injected_local_session or "").strip()
+    workspace_raw = str(injected_workspace_root or "").strip()
+    if not session and not workspace_raw:
+        if injection_required:
+            return {
+                "state": "withheld",
+                "code": "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED",
+                "scopeAuthorized": False,
+            }, ""
+        return {
+            "state": "not_requested",
+            "code": "H7_SCOPE_INJECTION_NOT_REQUESTED",
+            "scopeAuthorized": False,
+        }, ""
+    if not session:
+        return {
+            "state": "withheld",
+            "code": "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED",
+            "scopeAuthorized": False,
+        }, ""
+    if not workspace_raw:
+        return {
+            "state": "withheld",
+            "code": "H7_SCOPE_INJECTION_WORKSPACE_INVALID",
+            "scopeAuthorized": False,
+        }, ""
+    try:
+        requested_root = Path(workspace_raw).expanduser().resolve()
+        current_root = Path.cwd().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return {
+            "state": "withheld",
+            "code": "H7_SCOPE_INJECTION_WORKSPACE_INVALID",
+            "scopeAuthorized": False,
+        }, ""
+    if requested_root != current_root or not requested_root.is_dir():
+        return {
+            "state": "withheld",
+            "code": "H7_SCOPE_INJECTION_WORKSPACE_REBIND_REQUIRED",
+            "scopeAuthorized": False,
+        }, ""
+    result, channel_id = bootstrap_local_mcp_channel(
+        package_root=package_root,
+        memory_root=memory_root,
+        workspace_root=current_root,
+        local_session=session,
+        lifecycle="continue",
+        access_mode="write",
+    )
+    return {
+        "state": str(result.get("state", "withheld")),
+        "code": str(result.get("code", "H7_SCOPE_INJECTION_FAILED")),
+        "scopeAuthorized": bool(result.get("scopeAuthorized") is True),
+    }, channel_id
 
 
 TOOLS = [
@@ -484,12 +611,13 @@ def _local_rebind_request_from_channel(
     write = action in {"issue", "consume", "finalize", "revoke"}
     authorized = core.authorize_scope(write=write)
     if authorized.get("ok") is not True:
+        failure_code = _bound_scope_failure_code(core, authorized)
         return None, {
             "ok": False,
             "schema": "super-brain.scope-binding.v1",
             "available": False,
-            "code": str(authorized.get("code", "H7_SCOPE_CHANNEL_UNBOUND")),
-            "state": str(authorized.get("state", "withheld")),
+            "code": failure_code,
+            "state": "withheld" if failure_code == "H7_SCOPE_LAUNCH_RESTART_REQUIRED" else str(authorized.get("state", "withheld")),
             "scopeBinding": core.scope_status(),
             "rawPromptStored": False,
             "rawTranscriptStored": False,
@@ -630,6 +758,29 @@ def _live_mcp_handshake(
 
     runtime = runtime_identity if isinstance(runtime_identity, dict) else core.runtime_identity_status()
     return dict(core.mcp_transport_status(runtime))
+
+
+def _bound_scope_failure_code(core: BrainCore, scope: Mapping[str, Any]) -> str:
+    """Normalize a lost injected channel to its required launcher recovery.
+
+    A launcher-owned channel intentionally cannot reopen itself after a Broker
+    restart: it no longer has a private bootstrap capability.  Provider calls
+    see the primitive unknown-channel result first, while the transport health
+    projection knows that this particular process was injected and therefore
+    must be restarted.  Keep the model-visible tool result aligned with that
+    fail-closed recovery action instead of exposing two competing diagnoses.
+    """
+
+    code = str(scope.get("code", "H7_SCOPE_CHANNEL_UNBOUND"))
+    if code != "H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED":
+        return code
+    try:
+        handshake = _live_mcp_handshake(core)
+    except Exception:
+        return code
+    if str(handshake.get("code", "")) == "H7_SCOPE_LAUNCH_RESTART_REQUIRED":
+        return "H7_SCOPE_LAUNCH_RESTART_REQUIRED"
+    return code
 
 
 def _public_mcp_status(status: Mapping[str, Any]) -> dict[str, Any]:
@@ -1020,13 +1171,14 @@ def handle_tool(
             )
         scope = core.authorize_scope(write=False)
         if broker_bound_adapter and scope.get("ok") is not True:
+            failure_code = _bound_scope_failure_code(core, scope)
             return tool_result(
                 {
                     "ok": False,
                     "schema": "super-brain.scope-binding.v1",
                     "available": False,
-                    "code": str(scope.get("code", "H7_SCOPE_CHANNEL_UNBOUND")),
-                    "state": str(scope.get("state", "unbound")),
+                    "code": failure_code,
+                    "state": "withheld" if failure_code == "H7_SCOPE_LAUNCH_RESTART_REQUIRED" else str(scope.get("state", "unbound")),
                     "scopeBinding": core.scope_status(),
                     "rawPromptStored": False,
                     "rawTranscriptStored": False,
@@ -1084,13 +1236,14 @@ def handle_tool(
                 # a request selector to choose the task/session.
                 authorized = core.authorize_scope(write=False)
                 if authorized.get("ok") is not True:
+                    failure_code = _bound_scope_failure_code(core, authorized)
                     return tool_result(
                         {
                             "ok": False,
                             "schema": "super-brain.scope-binding.v1",
                             "available": False,
-                            "code": str(authorized.get("code", "H7_SCOPE_CHANNEL_UNBOUND")),
-                            "state": str(authorized.get("state", "unbound")),
+                            "code": failure_code,
+                            "state": "withheld" if failure_code == "H7_SCOPE_LAUNCH_RESTART_REQUIRED" else str(authorized.get("state", "unbound")),
                             "scopeBinding": core.scope_status(),
                             "rawPromptStored": False,
                             "rawTranscriptStored": False,
@@ -1156,13 +1309,14 @@ def handle_tool(
     if name == "brain_recent":
         scope = core.authorize_scope(write=False)
         if broker_bound_adapter and scope.get("ok") is not True:
+            failure_code = _bound_scope_failure_code(core, scope)
             return tool_result(
                 {
                     "ok": False,
                     "schema": "super-brain.scope-binding.v1",
                     "available": False,
-                    "code": str(scope.get("code", "H7_SCOPE_CHANNEL_UNBOUND")),
-                    "state": str(scope.get("state", "unbound")),
+                    "code": failure_code,
+                    "state": "withheld" if failure_code == "H7_SCOPE_LAUNCH_RESTART_REQUIRED" else str(scope.get("state", "unbound")),
                     "scopeBinding": core.scope_status(),
                     "rawPromptStored": False,
                     "rawTranscriptStored": False,
@@ -1239,8 +1393,10 @@ def serve(core: BrainCore, snapshot_path: Path | None = None) -> int:
                 print(json.dumps(error(request_id, -32601, f"unknown method: {method}"), separators=(",", ":")), flush=True)
                 continue
             print(json.dumps(response(request_id, result), ensure_ascii=False, separators=(",", ":")), flush=True)
-        except Exception as exc:
-            print(json.dumps(error(request_id, -32000, str(exc)), ensure_ascii=False, separators=(",", ":")), flush=True)
+        except Exception:
+            # Never serialize an exception: paths, channel identifiers, and
+            # sidecar details may occur in ordinary Python error text.
+            print(json.dumps(error(request_id, -32000, "H7_MCP_INTERNAL_ERROR"), ensure_ascii=False, separators=(",", ":")), flush=True)
     return 0
 
 
@@ -1254,12 +1410,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--package-root", required=True)
     parser.add_argument("--memory-root", default="")
+    # The package-owned launcher transfers one explicit local sid only through
+    # its inherited process environment. The value is consumed before serving
+    # MCP and never appears in argv, tool schemas, or model-visible output.
+    parser.add_argument("--local-launcher", action="store_true")
     # Offline replay is an explicit test harness mode.  Do not let a stale or
     # inherited environment variable silently turn a real local MCP server
     # into a non-live transport.
     parser.add_argument("--offline-replay", action="store_true")
     args = parser.parse_args()
     memory_root = Path(args.memory_root).expanduser().resolve() if args.memory_root else None
+    injected_local_session = ""
+    injected_workspace_root = ""
+    if args.local_launcher:
+        injected_local_session = str(os.environ.pop(_LOCAL_SESSION_ENV, "")).strip()
+        try:
+            injected_workspace_root = str(Path.cwd().resolve())
+        except (OSError, RuntimeError, ValueError):
+            injected_workspace_root = ""
     # Every live MCP stdio process owns one private broker channel.  The only
     # exception is the package's explicit offline protocol replay, which is a
     # test-only compatibility transport and never represents a live adapter.
@@ -1286,8 +1454,32 @@ def main() -> int:
             core.memory_base,
             runtime_path=Path(__file__).with_name("scope_broker_ipc.py"),
         )
-        channel_handle = BrokerChannelHandle(broker_client, broker_client.open_channel())
-        transport_health = LocalBrokerStdioTransportHealth(broker_client, channel_handle)
+        scope_injection, bootstrapped_channel_id = _startup_scope_injection(
+            package_root=args.package_root,
+            memory_root=memory_root,
+            injected_local_session=injected_local_session,
+            injected_workspace_root=injected_workspace_root,
+            injection_required=args.local_launcher,
+        )
+        # A package-owned local launcher has one chance to prove its private
+        # cwd/session/contract scope at startup.  If that proof fails, do not
+        # create an intermediate unbound Broker channel: such a channel has a
+        # one-shot pairing capability even though this process is not allowed
+        # to select or repair a scope.  Static diagnostic workers (the direct
+        # entry point) retain their explicitly unbound discovery channel.
+        launcher_bootstrap_failed = bool(args.local_launcher and not bootstrapped_channel_id)
+        channel_handle = BrokerChannelHandle(
+            broker_client,
+            bootstrapped_channel_id if args.local_launcher else broker_client.open_channel(),
+            allow_reopen_after_restart=not args.local_launcher,
+            allow_initial_open=not launcher_bootstrap_failed,
+            unavailable_code=str(scope_injection.get("code", "H7_SCOPE_INJECTION_FAILED")),
+        )
+        transport_health = LocalBrokerStdioTransportHealth(
+            broker_client,
+            channel_handle,
+            scope_injection=scope_injection,
+        )
         core.inject_runtime_transport(
             runtime_mode="local_stdio_scope_broker",
             scope_provider=BrokerScopeProvider(broker_client, channel_handle),

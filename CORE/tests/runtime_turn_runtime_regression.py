@@ -1704,18 +1704,18 @@ def test_broker_close_resume_parent_refreshes_projection_before_parent_return_op
         server.start()
         control = ScopeBrokerControlClient(state_root, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
         try:
-            registration = control.register_workline(
+            bound = control.bootstrap_bound_channel(
                 current_contract,
                 expected_contract_hash=canonical_hash(current_contract),
                 project_root=project_root,
+                access_mode="write",
             )
-            assert registration.get("ok") is True, registration
-            workline_id = str(registration["scope"]["worklineId"])
-            details = control.open_channel_details()
-            assert details.get("ok") is True, details
-            channel_id = str(details["channelId"])
-            paired = control.pair_request(str(details["pairingRequestRef"]), workline_id, access_mode="write")
-            assert paired.get("ok") is True, paired
+            assert bound.get("ok") is True, bound
+            channel_id = str(bound["channelId"])
+            channel_status = control.status(channel_id)
+            assert channel_status.get("ok") is True, channel_status
+            workline_id = str(channel_status.get("scope", {}).get("worklineId", ""))
+            assert workline_id, channel_status
             provider = BrokerScopeProvider(control, channel_id)
             core = BrainCore(
                 ROOT,

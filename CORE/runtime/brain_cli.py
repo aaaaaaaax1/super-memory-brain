@@ -6,6 +6,7 @@ import binascii
 import hashlib
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -49,6 +50,7 @@ _RETIRED_HOST_OPTION_FIELDS = {
     "host_visible_context_json": "host_visible_context",
     "host_visible_context_base64": "host_visible_context",
 }
+_LOCAL_SESSION_RE = re.compile(r"^sid-[a-f0-9]{16,64}$", re.IGNORECASE)
 
 
 def _parse_object_payload(json_payload: str, base64_payload: str) -> tuple[object | None, bool]:
@@ -226,20 +228,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status")
     sub.add_parser("health")
-    scope = sub.add_parser("scope", help="Local Scope Broker control surface")
+    # ``scope`` is intentionally a repair-only compatibility route.  A CLI
+    # caller must never enumerate channels, name a workline, submit a contract
+    # file, or attach an existing connection.  Those are selectors, and a
+    # selector would let an ordinary local command cross the launcher's exact
+    # cwd/session boundary.
+    scope = sub.add_parser("scope", help=argparse.SUPPRESS)
     scope.add_argument(
         "--action",
-        choices=("list", "status", "register", "bind"),
-        default="list",
+        choices=("repair", "list", "status", "register", "bind"),
+        required=True,
     )
-    scope.add_argument("--channel-id", default="")
-    scope.add_argument("--pairing-request-ref", default="")
-    scope.add_argument("--workline-id", default="")
-    scope.add_argument("--contract-file", default="")
-    scope.add_argument("--project-root", default="")
-    scope.add_argument("--access-mode", choices=("read", "write"), default="write")
-    scope.add_argument("--ttl-seconds", type=int, default=60)
-    scope.add_argument("--lease-seconds", type=int, default=300)
     activate = sub.add_parser("activate")
     activate.add_argument("--route", default="bare_wake")
     activate.add_argument("--workspace-key", default="")
@@ -324,6 +323,131 @@ def _explicit_scope_matches_local(core: BrainCore, workspace_key: str, session_k
     # missing process session therefore cannot authorize any explicit session,
     # even when the workspace key matches.
     return bool(current_session) and supplied_session == current_session
+
+
+def _scope_control_retired() -> dict[str, object]:
+    """Return a non-enumerating response for retired CLI selector controls."""
+
+    return {
+        "ok": False,
+        "schema": "super-brain.local-scope-repair.v1",
+        "available": False,
+        "state": "withheld",
+        "code": "H7_SCOPE_SELECTOR_CONTROL_RETIRED",
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+
+
+def _local_scope_repair_failure(code: str) -> dict[str, object]:
+    """Project a bounded repair failure without exporting local scope fields."""
+
+    normalized = str(code or "H7_SCOPE_LOCAL_REPAIR_UNAVAILABLE")
+    return {
+        "ok": False,
+        "schema": "super-brain.local-scope-repair.v1",
+        "available": False,
+        "state": "withheld",
+        "code": normalized if normalized.startswith("H7_") or normalized.startswith("BRAIN_CONTEXT_") else "H7_SCOPE_LOCAL_REPAIR_UNAVAILABLE",
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+
+
+def _current_local_scope_contract(core: BrainCore) -> tuple[dict[str, object] | None, str, Path | None]:
+    """Read one current contract for the current process scope only.
+
+    The repair command deliberately has no contract-file or root argument. It
+    can repair only the exact scoped workline that the local H7 reader has
+    already verified from the actual cwd and ``SUPER_BRAIN_LOCAL_SESSION_ID``.
+    """
+
+    # The repair path is a new, write-capable control operation.  Do not carry
+    # forward the legacy CLI convenience that hashes an arbitrary session text:
+    # its explicit local session must be the launcher's random ``sid-*``.
+    raw_local_session = str(os.environ.get("SUPER_BRAIN_LOCAL_SESSION_ID", "")).strip()
+    if not _LOCAL_SESSION_RE.fullmatch(raw_local_session):
+        return None, "H7_SCOPE_LOCAL_SESSION_REQUIRED", None
+    authorized = core.authorize_scope(write=True)
+    if authorized.get("ok") is not True:
+        return None, str(authorized.get("code", "H7_SCOPE_LOCAL_SESSION_REQUIRED")), None
+    workspace_key = str(authorized.get("workspaceKey", "")).strip().lower()
+    owner_session_key = str(authorized.get("ownerSessionKey", "")).strip().lower()
+    project_root = core._context_project_root()
+    if not workspace_key or not owner_session_key or project_root is None:
+        return None, "H7_SCOPE_LOCAL_SESSION_REQUIRED", None
+    try:
+        contract, code = core._read_context_contract(workspace_key, owner_session_key)
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return None, "H7_SCOPE_LOCAL_CONTRACT_UNAVAILABLE", None
+    if not isinstance(contract, dict):
+        if str(code) in {"BRAIN_CONTEXT_NO_ACTIVE_CONTRACT", "BRAIN_CONTEXT_HOT_INDEX_MISSING"}:
+            return None, "H7_SCOPE_LOCAL_CURRENT_CONTRACT_REQUIRED", None
+        return None, str(code or "H7_SCOPE_LOCAL_CONTRACT_UNAVAILABLE"), None
+    if (
+        contract.get("schema") != "super-brain.execution-contract.v1"
+        or contract.get("status") != "active"
+        or str(contract.get("workspaceKey", "")).strip().lower() != workspace_key
+        or str(contract.get("ownerSessionKey", "")).strip().lower() != owner_session_key
+        or str(contract.get("packageVersion", "")) != str(core.manifest.get("version", ""))
+        or not str(contract.get("taskId", "")).strip()
+        or not str(contract.get("taskInstanceId", "")).strip()
+        or not isinstance(contract.get("revision"), int)
+        or isinstance(contract.get("revision"), bool)
+        or int(contract.get("revision", 0)) < 1
+    ):
+        return None, "H7_SCOPE_LOCAL_CONTRACT_INVALID", None
+    return dict(contract), "H7_SCOPE_LOCAL_CONTRACT_CURRENT", project_root
+
+
+def _run_local_scope_repair(core: BrainCore) -> dict[str, object]:
+    """Rebuild only the current local workline's private root projection.
+
+    This is the sole remaining CLI control-plane mutation.  It does not open a
+    channel, issue a lease, select a workline, or expose a broker identity.  A
+    malformed project-root sidecar is rebuilt from the already-current local
+    execution contract and real process cwd; a missing/foreign contract is
+    withheld before the broker client is created.
+    """
+
+    contract, code, project_root = _current_local_scope_contract(core)
+    if contract is None or project_root is None:
+        return _local_scope_repair_failure(code)
+    try:
+        encoded = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        expected_contract_hash = hashlib.sha256(encoded).hexdigest()
+    except (TypeError, ValueError):
+        return _local_scope_repair_failure("H7_SCOPE_LOCAL_CONTRACT_INVALID")
+    control = ScopeBrokerControlClient(
+        core.memory_base,
+        runtime_path=Path(__file__).with_name("scope_broker_ipc.py"),
+    )
+    try:
+        repaired = control.repair_local_scope(
+            contract,
+            expected_contract_hash=expected_contract_hash,
+            project_root=project_root,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _local_scope_repair_failure("H7_SCOPE_LOCAL_REPAIR_UNAVAILABLE")
+    finally:
+        try:
+            control.close()
+        except Exception:
+            pass
+    if repaired.get("ok") is not True:
+        return _local_scope_repair_failure(str(repaired.get("code", "H7_SCOPE_LOCAL_REPAIR_FAILED")))
+    return {
+        "ok": True,
+        "schema": "super-brain.local-scope-repair.v1",
+        "available": True,
+        "state": "repaired",
+        "code": "H7_SCOPE_LOCAL_REPAIR_COMPLETED",
+        "scopeVerified": True,
+        "bindingCreated": False,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
 
 
 def _mcp_bridge_failure(code: str) -> dict[str, object]:
@@ -738,6 +862,16 @@ def _run_mcp_bridge(core: BrainCore, workspace_root: Path | None) -> object:
 
 def main() -> int:
     args = build_parser().parse_args()
+    # Keep old spellings observable as explicit retirement, but never create a
+    # broker client (or accept any selector) for them.  This lets a stale local
+    # wrapper fail closed without preserving the legacy control plane.
+    if args.command == "scope" and args.action != "repair":
+        payload = json.dumps(_scope_control_retired(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if args.base64:
+            sys.stdout.write(base64.b64encode(payload).decode("ascii"))
+        else:
+            sys.stdout.buffer.write(payload)
+        return 0
     workspace_root: Path | None = None
     original_cwd = Path.cwd().resolve()
     if args.workspace_root:
@@ -800,65 +934,7 @@ def main() -> int:
         }.get(args.command, "bare_wake")
         activation = _ensure_core_activation(core, route=route, action_authorization="withheld")
     if args.command == "scope":
-        control = ScopeBrokerControlClient(core.memory_base, runtime_path=Path(__file__).with_name("scope_broker_ipc.py"))
-        if args.action == "list":
-            result = control.list_channels()
-        elif args.action == "status":
-            result = control.status(args.channel_id)
-        elif args.action == "register":
-            if not args.contract_file:
-                result = {"ok": False, "code": "H7_SCOPE_CONTRACT_FILE_REQUIRED", "state": "withheld"}
-            else:
-                try:
-                    contract_path = Path(args.contract_file).expanduser().resolve()
-                    contract = json.loads(contract_path.read_text(encoding="utf-8"))
-                    encoded = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-                    result = control.register_workline(
-                        contract,
-                        expected_contract_hash=hashlib.sha256(encoded).hexdigest(),
-                        project_root=args.project_root or None,
-                    )
-                except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
-                    result = {"ok": False, "code": "H7_SCOPE_CONTRACT_FILE_INVALID", "state": "withheld"}
-        elif args.action == "bind":
-            if args.pairing_request_ref:
-                result = control.pair_request(
-                    args.pairing_request_ref,
-                    args.workline_id,
-                    access_mode=args.access_mode,
-                    ttl_seconds=args.ttl_seconds,
-                    lease_seconds=args.lease_seconds,
-                )
-            elif args.channel_id:
-                # Keep the channel-ID form as a narrow compatibility path.
-                # New callers should use the per-connection pairing ref so a
-                # global channel list is never used as a selector.
-                result = control.pair_channel(
-                    args.channel_id,
-                    args.workline_id,
-                    access_mode=args.access_mode,
-                    ttl_seconds=args.ttl_seconds,
-                    lease_seconds=args.lease_seconds,
-                )
-            else:
-                result = {
-                    "ok": False,
-                    "code": "H7_SCOPE_PAIRING_REQUEST_REF_REQUIRED",
-                    "state": "withheld",
-                    "rawPromptStored": False,
-                    "rawTranscriptStored": False,
-                }
-        else:
-            # Keep the result shape defensive if a future parser extension
-            # accidentally reaches an unsupported action.
-            result = {
-                "ok": False,
-                "code": "H7_SCOPE_CONTROL_ACTION_UNSUPPORTED",
-                "state": "withheld",
-                "rawPromptStored": False,
-                "rawTranscriptStored": False,
-            }
-        control.close()
+        result = _run_local_scope_repair(core)
     elif args.command == "recall":
         result = core.recall(args.query, args.top_k, args.max_tokens, args.layer, args.query_date)
     elif args.command == "recent":

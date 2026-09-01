@@ -81,6 +81,8 @@
                                "runtime\\scope_broker.py",
                                "runtime\\scope_provider.py",
                                "runtime\\scope_broker_ipc.py",
+                               "runtime\\local_scope_bootstrap.py",
+                               "runtime\\local_mcp_launcher.py",
                                "runtime\\mcp_transport_health.py",
                                "runtime\\mcp_runtime_identity.py",
                                "runtime\\brain_eval.py",

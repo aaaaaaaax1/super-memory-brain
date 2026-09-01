@@ -561,6 +561,59 @@ class ScopeBroker:
             return self._failure("H7_SCOPE_WORKLINE_UNKNOWN", "withheld")
         return ScopeBrokerResult(True, "H7_SCOPE_WORKLINE_CURRENT", "current", context=self._context_from_record(records[0]))
 
+    def resolve_exact_workline(
+        self,
+        contract: Mapping[str, Any],
+        *,
+        expected_contract_hash: str | None = None,
+    ) -> ScopeBrokerResult:
+        """Read an already-registered workline for one exact H7 contract.
+
+        This is intentionally a read-only counterpart to ``register_workline``.
+        It is used by local project-root repair, where creating or refreshing a
+        durable workline would turn sidecar recovery into an implicit rebind.
+        The compact contract projection must match the durable identity,
+        revision, and hash exactly; otherwise the caller must use the explicit
+        bootstrap/rebind path.
+        """
+
+        try:
+            binding = self._contract_binding(contract, expected_contract_hash=expected_contract_hash)
+        except ValueError as error:
+            return self._failure(str(error), "withheld")
+        try:
+            with _process_lock(self._lock_path):
+                with _advisory_lock(self._lock_path) as acquired:
+                    if not acquired:
+                        return self._failure("H7_SCOPE_REGISTRY_LOCK_TIMEOUT", "withheld")
+                    registry = self._read_registry()
+                    if registry is None:
+                        return self._failure("H7_SCOPE_REGISTRY_INVALID", "withheld")
+                    candidates = [
+                        self._context_from_record(item)
+                        for item in registry["worklines"]
+                        if item.get("workspaceKey") == binding["workspaceKey"]
+                        and item.get("ownerSessionKey") == binding["ownerSessionKey"]
+                        and item.get("taskId") == binding["taskId"]
+                        and item.get("taskInstanceId") == binding["taskInstanceId"]
+                    ]
+        except OSError:
+            return self._failure("H7_SCOPE_REGISTRY_UNAVAILABLE", "withheld")
+        if len(candidates) != 1 or candidates[0] is None:
+            return self._failure("H7_SCOPE_REPAIR_REBIND_REQUIRED", "withheld")
+        context = candidates[0]
+        if (
+            context.workspace_key != binding["workspaceKey"]
+            or context.owner_session_key != binding["ownerSessionKey"]
+            or context.task_id != binding["taskId"]
+            or context.task_instance_id != binding["taskInstanceId"]
+            or context.package_version != binding["packageVersion"]
+            or context.contract_revision != binding["contractRevision"]
+            or not secrets.compare_digest(context.contract_hash, binding["contractHash"])
+        ):
+            return self._failure("H7_SCOPE_REPAIR_REBIND_REQUIRED", "withheld")
+        return ScopeBrokerResult(True, "H7_SCOPE_WORKLINE_CURRENT", "current", context=context)
+
     # -- In-memory channel binding and grants -----------------------------
 
     def open_channel(self) -> str:
@@ -579,9 +632,95 @@ class ScopeBroker:
                     self._channels.add(channel_id)
                     ref = "sbpr-" + secrets.token_hex(16)
                     expires_at = _utc_now(now) + timedelta(seconds=_PAIRING_REQUEST_REF_TTL_SECONDS)
-                    self._pairing_requests[ref] = _PairingRequest(ref, channel_id, self._instance_id, expires_at)
+                    self._pairing_requests[ref] = _PairingRequest(
+                        ref,
+                        channel_id,
+                        self._instance_id,
+                        expires_at,
+                    )
                     self._channel_pairing_refs[channel_id] = ref
                     return channel_id, ref
+
+    def bind_new_channel(
+        self,
+        context: ScopeContext,
+        *,
+        access_mode: str = "write",
+        lease_seconds: int = _DEFAULT_LEASE_SECONDS,
+        now: datetime | None = None,
+    ) -> tuple[str, ScopeBrokerResult]:
+        """Create and bind one channel to an exact current Broker context.
+
+        This is the only channel creation primitive used by the local launcher.
+        It deliberately creates no pairing ref or bearer grant: the context is
+        validated against the durable registry and the channel/lease are
+        committed under one memory-lock boundary.  Keeping this operation
+        separate from ``open_channel`` prevents an unbound channel from ever
+        crossing the local scope bootstrap boundary.
+        """
+
+        mode = self._access_mode(access_mode)
+        lease = self._ttl(lease_seconds, _MIN_LEASE_SECONDS, _MAX_LEASE_SECONDS)
+        if not isinstance(context, ScopeContext):
+            return "", self._failure("H7_SCOPE_CONTEXT_INVALID", "withheld")
+        if not mode:
+            return "", self._failure("H7_SCOPE_ACCESS_MODE_INVALID", "withheld")
+        if lease is None:
+            return "", self._failure("H7_SCOPE_LEASE_TTL_INVALID", "withheld")
+        current_time = _utc_now(now)
+        # Match ``register_workline`` lock ordering (durable registry first,
+        # then process-local channel state) so bootstrap cannot deadlock with
+        # a concurrent registration or contract refresh.
+        try:
+            with _process_lock(self._lock_path):
+                with _advisory_lock(self._lock_path) as acquired:
+                    if not acquired:
+                        return "", self._failure("H7_SCOPE_REGISTRY_LOCK_TIMEOUT", "withheld")
+                    registry = self._read_registry()
+                    if registry is None:
+                        return "", self._failure("H7_SCOPE_REGISTRY_INVALID", "withheld")
+                    records = [
+                        item
+                        for item in registry["worklines"]
+                        if item.get("worklineId") == context.workline_id
+                    ]
+                    if len(records) != 1:
+                        return "", self._failure("H7_SCOPE_WORKLINE_UNKNOWN", "withheld")
+                    current = self._context_from_record(records[0])
+                    if current is None:
+                        return "", self._failure("H7_SCOPE_REGISTRY_INVALID", "withheld")
+                    if current != context:
+                        return "", self._failure("H7_SCOPE_CONTRACT_STALE", "withheld", context=current)
+                    with self._memory_lock:
+                        self._expire_bindings(current_time)
+                        if mode == "write" and context.workline_id in self._write_leases:
+                            return "", self._failure("H7_SCOPE_WRITE_LEASE_HELD", "withheld", context=context)
+                        while True:
+                            channel_id = "sbc-" + secrets.token_hex(16)
+                            if channel_id not in self._channels:
+                                break
+                        binding = _ChannelBinding(
+                            workline_id=context.workline_id,
+                            context=context,
+                            access_mode=mode,
+                            lease_id="sbl-" + secrets.token_hex(16),
+                            lease_expires_at=current_time + timedelta(seconds=lease),
+                        )
+                        self._channels.add(channel_id)
+                        self._bindings[channel_id] = binding
+                        if mode == "write":
+                            self._write_leases[context.workline_id] = channel_id
+                        return channel_id, ScopeBrokerResult(
+                            True,
+                            "H7_SCOPE_CHANNEL_BOUND",
+                            "bound",
+                            context=context,
+                            access_mode=mode,
+                            lease_id=binding.lease_id,
+                            lease_expires_at=_timestamp(binding.lease_expires_at),
+                        )
+        except OSError:
+            return "", self._failure("H7_SCOPE_REGISTRY_UNAVAILABLE", "withheld")
 
     def pairing_request_ref(self, channel_id: str, *, now: datetime | None = None) -> str:
         """Return the current unbound pairing ref for one channel."""

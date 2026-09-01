@@ -565,7 +565,8 @@ class ScopeBrokerServer:
         This sidecar is private transport state: each entry is tied to the
         exact durable workline revision/hash and to the canonical workspace
         key.  A missing sidecar is normal on first boot; malformed or stale
-        data is withheld and can be repaired by an explicit register call.
+        data is withheld and can be repaired only for an already-registered
+        exact workline.
         """
 
         value, invalid = _read_private_json(self.project_roots_path, max_bytes=_PROJECT_ROOTS_MAX_BYTES)
@@ -704,6 +705,12 @@ class ScopeBrokerServer:
         if context is None:
             return ""
         with self._project_root_lock:
+            # Any malformed, stale, or otherwise unverifiable entry poisons
+            # the private root projection until an explicit repair/register
+            # operation rebuilds it.  Never authorize a seemingly valid entry
+            # from a partially trusted sidecar.
+            if self._project_root_registry_invalid:
+                return ""
             entry = self._project_roots.get(str(context.workline_id))
             entry = dict(entry) if isinstance(entry, Mapping) else None
         if not isinstance(entry, Mapping) or not self._project_root_entry_matches(context, entry):
@@ -937,13 +944,6 @@ class ScopeBrokerServer:
                 self._seen_nonces.pop(oldest, None)
             self._seen_nonces[nonce] = now
         touched_channel = str(params.get("channelId", "")) if isinstance(params.get("channelId", ""), str) else ""
-        # ``pair_request`` intentionally carries no channel selector.  Touch
-        # the referenced channel only after authentication so a control-plane
-        # retry near the unbound grace boundary cannot be reaped mid-bind.
-        if method == "pair_request" and not touched_channel:
-            touched_channel = self.broker.pairing_request_channel(
-                str(params.get("pairingRequestRef", "")),
-            )
         self._touch(touched_channel)
         return self._method(method, params)
 
@@ -958,6 +958,43 @@ class ScopeBrokerServer:
                     body["h7Scope"] = result.context.h7_scope_projection()
             return body
         return {"ok": False, "code": "H7_SCOPE_BROKER_RESULT_INVALID", "state": "withheld"}
+
+    @staticmethod
+    def _restore_private_file(path: Path, snapshot: bytes | None) -> bool:
+        """Restore one broker-private file after a failed bootstrap transaction.
+
+        Returning a verification result is important: a failed rollback is a
+        control-plane fault, not a successful cleanup.  Callers must fail
+        closed when the original byte snapshot cannot be restored.
+        """
+
+        if snapshot is None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                return False
+            return not path.exists()
+        temporary = path.with_suffix(path.suffix + ".rollback.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_bytes(snapshot)
+            # Keep broker-private sidecars owner-only after compensation.
+            # In particular, ``project-roots.json`` is rejected by
+            # ``_read_private_json`` when a rollback accidentally restores
+            # the temp file's default umask (often 0644) instead of 0600.
+            try:
+                os.chmod(temporary, 0o600)
+            except OSError:
+                pass
+            os.replace(temporary, path)
+            return path.is_file() and path.read_bytes() == snapshot
+        except (OSError, ValueError):
+            return False
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _method(self, method: str, p: dict[str, Any]) -> dict[str, Any]:
         b = self.broker
@@ -1027,13 +1064,14 @@ class ScopeBrokerServer:
             # Renewal is invoked only by the MCP provider's in-process lease
             # cache.  It needs the refreshed expiry, never another bearer
             # capability or a full scope projection.
-            return self._result(
-                b.renew_lease(
-                    str(p.get("channelId", "")),
-                    str(p.get("leaseId", "")),
-                    lease_seconds=p.get("leaseSeconds", 300),
+            with self._binding_guard:
+                return self._result(
+                    b.renew_lease(
+                        str(p.get("channelId", "")),
+                        str(p.get("leaseId", "")),
+                        lease_seconds=p.get("leaseSeconds", 300),
+                    )
                 )
-            )
         if method == "detach_channel":
             with self._binding_guard:
                 return self._result(b.detach_channel(str(p.get("channelId", ""))))
@@ -1105,6 +1143,238 @@ class ScopeBrokerServer:
                                     "rawTranscriptStored": False,
                                 }
                     return self._result(result)
+        if method == "repair_local_scope":
+            # Repair is deliberately narrower than bootstrap: it can restore
+            # the private root proof for the one *current* H7 contract, but
+            # it never accepts a channel/ref/workline selector and never
+            # creates a channel.  This is the explicit recovery path after a
+            # fail-closed project-root registry fault.
+            with self._lifecycle_lock:
+                if self._shutdown_requested:
+                    return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
+                contract = p.get("contract")
+                raw_root = str(p.get("projectRoot", "")).strip()
+                if not raw_root:
+                    return {"ok": False, "code": "H7_SCOPE_PROJECT_ROOT_REQUIRED", "state": "withheld"}
+                try:
+                    root = Path(raw_root).expanduser().resolve()
+                    if not root.is_dir() or not isinstance(contract, Mapping):
+                        return {"ok": False, "code": "H7_SCOPE_PROJECT_ROOT_INVALID", "state": "withheld"}
+                    if str(contract.get("workspaceKey", "")).strip().lower() != _workspace_key_for_root(root):
+                        return {"ok": False, "code": "H7_SCOPE_PROJECT_ROOT_MISMATCH", "state": "withheld"}
+                except (OSError, RuntimeError, ValueError):
+                    return {"ok": False, "code": "H7_SCOPE_PROJECT_ROOT_INVALID", "state": "withheld"}
+
+                # Re-read the disk sidecar before repair.  Unlike bootstrap,
+                # an invalid map is the condition this explicit operation is
+                # allowed to repair; only entries that still validate against
+                # a current broker contract survive the rebuilt map.
+                self._load_project_roots()
+                with self._binding_guard:
+                    # Repair never registers or refreshes a workline.  The
+                    # current contract must already map to one exact durable
+                    # record; otherwise recovering a root sidecar would
+                    # silently become a workline rebind.
+                    existing = b.resolve_exact_workline(
+                        contract,
+                        expected_contract_hash=p.get("expectedContractHash"),
+                    )
+                    if not existing.ok or existing.context is None:
+                        return {
+                            "ok": False,
+                            "code": str(existing.code or "H7_SCOPE_REPAIR_REBIND_REQUIRED"),
+                            "state": "withheld",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+
+                    project_roots_snapshot = None
+                    try:
+                        if self.project_roots_path.exists():
+                            project_roots_snapshot = self.project_roots_path.read_bytes()
+                    except OSError:
+                        return {"ok": False, "code": "H7_SCOPE_REPAIR_SNAPSHOT_FAILED", "state": "withheld"}
+                    with self._project_root_lock:
+                        prior_roots = {key: dict(value) for key, value in self._project_roots.items()}
+                        prior_invalid = self._project_root_registry_invalid
+                    try:
+                        with self._project_root_lock:
+                            self._project_roots[existing.context.workline_id] = self._project_root_record(existing.context, root)
+                            if not self._persist_project_roots():
+                                raise RuntimeError("H7_SCOPE_PROJECT_ROOT_WRITE_FAILED")
+                        return {
+                            "ok": True,
+                            "code": "H7_SCOPE_PROJECT_ROOT_REPAIRED",
+                            "state": "current",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+                    except Exception as failure:
+                        with self._project_root_lock:
+                            self._project_roots = prior_roots
+                            self._project_root_registry_invalid = prior_invalid
+                        project_roots_restored = self._restore_private_file(self.project_roots_path, project_roots_snapshot)
+                        if not project_roots_restored:
+                            # A failed compensation means no cached root may
+                            # remain authorization evidence.  Subsequent
+                            # requests must stop at explicit repair instead of
+                            # using a pre-fault in-memory projection.
+                            with self._project_root_lock:
+                                self._project_roots = {}
+                                self._project_root_registry_invalid = True
+                            return {
+                                "ok": False,
+                                "code": "H7_SCOPE_REPAIR_ROLLBACK_FAILED",
+                                "state": "withheld",
+                                "rawPromptStored": False,
+                                "rawTranscriptStored": False,
+                            }
+                        return {
+                            "ok": False,
+                            "code": str(failure) if str(failure).startswith("H7_") else "H7_SCOPE_REPAIR_FAILED",
+                            "state": "withheld",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+        if method == "bootstrap_bound_channel":
+            # The local launcher path must never expose an unbound channel
+            # reference and later attach it to a caller-selected workline. Do
+            # registration, project-root proof, channel creation, and binding
+            # under one Broker serialization boundary instead.
+            with self._lifecycle_lock:
+                if self._shutdown_requested:
+                    return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
+                contract = p.get("contract")
+                raw_root = str(p.get("projectRoot", "")).strip()
+                if not raw_root:
+                    return {"ok": False, "code": "H7_SCOPE_PROJECT_ROOT_REQUIRED", "state": "withheld"}
+                try:
+                    root = Path(raw_root).expanduser().resolve()
+                    if not root.is_dir() or not isinstance(contract, Mapping):
+                        return {"ok": False, "code": "H7_SCOPE_PROJECT_ROOT_INVALID", "state": "withheld"}
+                    normalized = str(root).rstrip("/\\").lower()
+                    expected = "ws-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+                    if str(contract.get("workspaceKey", "")).strip().lower() != expected:
+                        return {"ok": False, "code": "H7_SCOPE_PROJECT_ROOT_MISMATCH", "state": "withheld"}
+                except OSError:
+                    return {"ok": False, "code": "H7_SCOPE_PROJECT_ROOT_INVALID", "state": "withheld"}
+                access_mode = p.get("accessMode", "write")
+                if not isinstance(access_mode, str) or access_mode not in {"read", "write"}:
+                    return {"ok": False, "code": "H7_SCOPE_ACCESS_MODE_INVALID", "state": "withheld"}
+                # Re-read the durable private map at this mutation boundary.
+                # A file can be tampered with after server startup; relying
+                # only on the cached flag would let this bootstrap rewrite the
+                # tampered map and accidentally turn repair into authorization.
+                self._load_project_roots()
+                # A malformed or stale private root map is an explicit repair
+                # state.  Do not let the bootstrap transaction rewrite it as a
+                # side effect of registering an otherwise valid contract: the
+                # caller must first perform the dedicated root-map repair and
+                # verification path.
+                with self._project_root_lock:
+                    if self._project_root_registry_invalid:
+                        return {
+                            "ok": False,
+                            "code": "H7_SCOPE_PROJECT_ROOT_REGISTRY_INVALID",
+                            "state": "withheld",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+                channel_id = ""
+                # Capture both durable sidecars and all transient state while
+                # the binding guard is held.  Every server-side mutation path
+                # (including lease renewal) uses this guard, so compensation
+                # cannot overwrite a concurrent channel update.
+                with self._binding_guard:
+                    registry_snapshot = None
+                    project_roots_snapshot = None
+                    try:
+                        if b._registry_path.exists():
+                            registry_snapshot = b._registry_path.read_bytes()
+                        if self.project_roots_path.exists():
+                            project_roots_snapshot = self.project_roots_path.read_bytes()
+                    except OSError:
+                        return {"ok": False, "code": "H7_SCOPE_BOOTSTRAP_SNAPSHOT_FAILED", "state": "withheld"}
+                    prior_roots = {key: dict(value) for key, value in self._project_roots.items()}
+                    prior_invalid = self._project_root_registry_invalid
+                    with b._memory_lock:
+                        prior_channels = set(b._channels)
+                        prior_bindings = dict(b._bindings)
+                        prior_write_leases = dict(b._write_leases)
+                        prior_grants = dict(b._grants)
+                        prior_pairing_requests = dict(b._pairing_requests)
+                        prior_channel_pairing_refs = dict(b._channel_pairing_refs)
+                        prior_channel_last_seen = dict(self._channel_last_seen)
+                    try:
+                        registration = b.register_workline(contract, expected_contract_hash=p.get("expectedContractHash"))
+                        if not registration.ok or registration.context is None:
+                            raise RuntimeError(str(registration.code or "H7_SCOPE_BOOTSTRAP_REGISTER_FAILED"))
+                        with self._project_root_lock:
+                            self._project_roots[registration.context.workline_id] = self._project_root_record(registration.context, root)
+                            if not self._persist_project_roots():
+                                raise RuntimeError("H7_SCOPE_PROJECT_ROOT_WRITE_FAILED")
+                        channel_id, bound = b.bind_new_channel(
+                            registration.context,
+                            access_mode=access_mode,
+                            lease_seconds=p.get("leaseSeconds", 300),
+                        )
+                        if not bound.ok:
+                            raise RuntimeError(str(bound.code or "H7_SCOPE_BOOTSTRAP_BIND_FAILED"))
+                        self._touch(channel_id)
+                        return {
+                            "ok": True,
+                            "code": "H7_SCOPE_BOOTSTRAP_CHANNEL_BOUND",
+                            "state": "bound",
+                            "channelId": channel_id,
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+                    except Exception as failure:
+                        if channel_id:
+                            try:
+                                b.close_channel(channel_id)
+                            except Exception:
+                                pass
+                            with b._memory_lock:
+                                self._channel_last_seen.pop(channel_id, None)
+                        with self._project_root_lock:
+                            self._project_roots = prior_roots
+                            self._project_root_registry_invalid = prior_invalid
+                        with b._memory_lock:
+                            b._channels = prior_channels
+                            b._bindings = prior_bindings
+                            b._write_leases = prior_write_leases
+                            b._grants = prior_grants
+                            b._pairing_requests = prior_pairing_requests
+                            b._channel_pairing_refs = prior_channel_pairing_refs
+                            self._channel_last_seen = prior_channel_last_seen
+                        registry_restored = self._restore_private_file(b._registry_path, registry_snapshot)
+                        project_roots_restored = self._restore_private_file(self.project_roots_path, project_roots_snapshot)
+                        if not registry_restored or not project_roots_restored:
+                            # Never report an ordinary bind failure when the
+                            # compensating transaction itself could not restore
+                            # durable state.  Any cached root record could now
+                            # disagree with disk, so it must not remain usable
+                            # as authorization evidence.  The caller has to
+                            # perform an explicit repair before another local
+                            # bootstrap can proceed.
+                            with self._project_root_lock:
+                                self._project_roots = {}
+                                self._project_root_registry_invalid = True
+                            return {
+                                "ok": False,
+                                "code": "H7_SCOPE_BOOTSTRAP_ROLLBACK_FAILED",
+                                "state": "withheld",
+                                "rawPromptStored": False,
+                                "rawTranscriptStored": False,
+                            }
+                        return {
+                            "ok": False,
+                            "code": str(failure) if str(failure).startswith("H7_") else "H7_SCOPE_BOOTSTRAP_BIND_FAILED",
+                            "state": "withheld",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
         if method == "refresh_bound_contract":
             # This method is reachable only over authenticated local IPC from
             # the injected runtime provider; it is not part of the MCP or CLI
@@ -1151,61 +1421,16 @@ class ScopeBrokerServer:
                                 }
                     return self._result(refreshed)
         if method == "get_workline":
-            return self._result(b.get_workline(str(p.get("worklineId", ""))))
+            # Keep durable workline reads behind the same binding guard as
+            # bootstrap/register.  Otherwise a reader could observe the
+            # narrow interval after registry registration but before its
+            # project-root proof and channel binding were committed.
+            with self._binding_guard:
+                return self._result(b.get_workline(str(p.get("worklineId", ""))))
         if method == "pair_channel":
-            # Pairing is deliberately performed inside the broker.  The
-            # one-shot grant never crosses IPC and therefore cannot appear in
-            # a CLI argument, MCP response, or log line.
-            with self._lifecycle_lock:
-                if self._shutdown_requested:
-                    return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
-                with self._binding_guard:
-                    workline = b.get_workline(str(p.get("worklineId", "")))
-                    if workline.ok and workline.context is not None:
-                        root = self._project_root_for_context(workline.context)
-                        if not root:
-                            return {
-                                "ok": False,
-                                "code": self._project_root_failure_code(workline.context),
-                                "state": "withheld",
-                                "rawPromptStored": False,
-                                "rawTranscriptStored": False,
-                            }
-                    result = b.pair_channel(
-                        str(p.get("channelId", "")),
-                        str(p.get("worklineId", "")),
-                        access_mode=p.get("accessMode", "write"),
-                        ttl_seconds=p.get("ttlSeconds", 60),
-                        lease_seconds=p.get("leaseSeconds", 300),
-                    )
-                    # The control surface receives only a public success projection.
-                    # Lease renewal capability is minted internally and first carried
-                    # only by the private authorize response consumed by the provider.
-                    return self._result(result)
+            return {"ok": False, "code": "H7_SCOPE_PAIRING_CONTROL_RETIRED", "state": "withheld"}
         if method == "pair_request":
-            with self._lifecycle_lock:
-                if self._shutdown_requested:
-                    return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
-                with self._binding_guard:
-                    workline = b.get_workline(str(p.get("worklineId", "")))
-                    if workline.ok and workline.context is not None:
-                        root = self._project_root_for_context(workline.context)
-                        if not root:
-                            return {
-                                "ok": False,
-                                "code": self._project_root_failure_code(workline.context),
-                                "state": "withheld",
-                                "rawPromptStored": False,
-                                "rawTranscriptStored": False,
-                            }
-                    result = b.pair_request(
-                        str(p.get("pairingRequestRef", "")),
-                        str(p.get("worklineId", "")),
-                        access_mode=p.get("accessMode", "write"),
-                        ttl_seconds=p.get("ttlSeconds", 60),
-                        lease_seconds=p.get("leaseSeconds", 300),
-                    )
-                    return self._result(result)
+            return {"ok": False, "code": "H7_SCOPE_PAIRING_CONTROL_RETIRED", "state": "withheld"}
         if method == "issue_pairing_grant":
             # Bearer pairing tokens never cross the IPC boundary.  The
             # historical two-step methods remain available only on the
@@ -1483,6 +1708,31 @@ class ScopeBrokerClient:
             allow_auto_start=allow_auto_start,
         )
 
+    def bootstrap_bound_channel(
+        self,
+        contract: Mapping[str, Any],
+        *,
+        expected_contract_hash: str,
+        project_root: str | Path,
+        access_mode: str = "write",
+        ttl_seconds: int = 60,
+        lease_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Atomically register one local contract and open its bound channel."""
+
+        self.last_pairing_request_ref = ""
+        return self._call(
+            "bootstrap_bound_channel",
+            {
+                "contract": dict(contract),
+                "expectedContractHash": expected_contract_hash,
+                "projectRoot": str(project_root),
+                "accessMode": access_mode,
+                "ttlSeconds": ttl_seconds,
+                "leaseSeconds": lease_seconds,
+            },
+        )
+
     def shutdown_if_idle(self) -> dict[str, Any]:
         """Ask a broker child to exit when no channels remain."""
 
@@ -1542,6 +1792,29 @@ class ScopeBrokerControlClient(ScopeBrokerClient):
         if project_root is not None:
             params["projectRoot"] = str(project_root)
         return self._call("register_workline", params)
+
+    def repair_local_scope(
+        self,
+        contract: Mapping[str, Any],
+        *,
+        expected_contract_hash: str,
+        project_root: str | Path,
+    ) -> dict[str, Any]:
+        """Repair only one current local contract's private root proof.
+
+        This private control call has no channel, pairing-ref, or workline
+        selector.  It is intended solely for the package CLI's current-cwd /
+        current-session repair path after a fail-closed root-map fault.
+        """
+
+        return self._call(
+            "repair_local_scope",
+            {
+                "contract": dict(contract),
+                "expectedContractHash": expected_contract_hash,
+                "projectRoot": str(project_root),
+            },
+        )
 
     def get_workline(self, workline_id: str) -> dict[str, Any]:
         return self._call("get_workline", {"worklineId": workline_id})
