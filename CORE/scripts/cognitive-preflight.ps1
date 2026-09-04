@@ -342,6 +342,11 @@ if ($collaborativeIntent) {
   $priorityKinds += @('product_coherence','bounded_autonomy','risk_based_verification','accepted_constraint')
 }
 if ($engineeringRequired) { $priorityKinds += 'engineering_judgment' }
+# A matched experience is a bounded advisory, but it must remain visible when
+# the hard-card budget is already full.  Promote only the matched advisory
+# kinds; this does not make them authoritative and does not alter the hard
+# must-preserve projection.
+if (@($experienceMatches).Count -gt 0) { $priorityKinds += @('similar_experience','known_pitfall') }
 
 # Keep task-specific execution controls visible within the compact card budget.
 $priorityCards = @($cards | Where-Object { $_.kind -in $priorityKinds })

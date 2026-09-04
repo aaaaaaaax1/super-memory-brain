@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import hmac
 import json
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,10 +23,12 @@ from scope_broker_ipc import (  # noqa: E402
     ScopeBrokerClient,
     ScopeBrokerControlClient,
     ScopeBrokerServer,
+    _FileLease,
     _canonical,
     _canonical_hash,
     _read_endpoint_bundle,
 )
+import scope_broker_ipc as scope_broker_ipc_module  # noqa: E402
 from mcp_transport_health import LocalBrokerStdioTransportHealth  # noqa: E402
 from scope_provider import BrokerChannelHandle, BrokerScopeProvider  # noqa: E402
 
@@ -192,10 +196,148 @@ def test_concurrent_clients_spawn_one_child() -> None:
             for client in clients:
                 client.close()
             # Give the deferred server stop a bounded chance to release its
-            # Windows lock handle before TemporaryDirectory cleanup.
+            # Windows lock handle before TemporaryDirectory cleanup.  The
+            # lock file is intentionally retained as a stable name, so verify
+            # the actual invariant: another process can reacquire it
+            # exclusively, rather than asserting that the file disappeared.
+            lock_path = state / "workspace/runtime-state/scope-broker/broker.lock"
             deadline = time.monotonic() + 3
-            while (state / "workspace/runtime-state/scope-broker/broker.lock").exists() and time.monotonic() < deadline:
+            reacquired = False
+            while time.monotonic() < deadline:
+                lease = _FileLease(lock_path, timeout=0.1)
+                try:
+                    reacquired = lease.acquire()
+                finally:
+                    lease.release()
+                if reacquired:
+                    break
                 time.sleep(0.05)
+            assert reacquired, "broker.lock was not released for exclusive reacquisition"
+
+
+def test_startup_lock_competition_polls_until_endpoint_is_ready() -> None:
+    """A lock loser tolerates the competing broker's publication window."""
+
+    class BusyLease:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def acquire(self) -> bool:
+            return False
+
+        def release(self) -> None:
+            return None
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-startup-poll-") as directory:
+        client = ScopeBrokerClient(Path(directory), auto_start=True)
+        calls = 0
+
+        def endpoint_active(*, force_probe: bool = False) -> bool:
+            nonlocal calls
+            calls += 1
+            return calls >= 3
+
+        original_lease = scope_broker_ipc_module._FileLease
+        client._endpoint_active = endpoint_active  # type: ignore[method-assign]
+        scope_broker_ipc_module._FileLease = BusyLease  # type: ignore[assignment]
+        try:
+            assert client._ensure_endpoint() is True
+            assert calls >= 3
+        finally:
+            scope_broker_ipc_module._FileLease = original_lease  # type: ignore[assignment]
+            client.close()
+
+
+def test_local_lock_registry_drops_unused_state_roots() -> None:
+    """Process-local lock coordination must not grow forever per temp root."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-lock-registry-") as directory:
+        path = Path(directory) / "startup.lock"
+        lease = _FileLease(path, timeout=0.1)
+        lease.release()
+        del lease
+        gc.collect()
+        with scope_broker_ipc_module._LOCAL_LOCKS_GUARD:
+            assert str(path.resolve()).lower() not in scope_broker_ipc_module._LOCAL_LOCKS
+
+
+def test_killed_owned_process_is_reaped_with_final_wait() -> None:
+    """The forced-kill fallback must always reap the child handle."""
+
+    class FakeProcess:
+        pid = 424242
+
+        def __init__(self) -> None:
+            self.killed = False
+            self.wait_calls: list[object] = []
+
+        def wait(self, timeout: object = None) -> int:
+            self.wait_calls.append(timeout)
+            if self.killed:
+                return 0
+            raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+
+        def terminate(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = FakeProcess()
+    ScopeBrokerClient._reap_owned_process(process)  # type: ignore[arg-type]
+    assert process.killed
+    assert len(process.wait_calls) >= 3
+    # A wait call follows kill, proving the process was reaped rather than
+    # merely signalled.
+    assert process.wait_calls[-1] == 1.0
+
+
+def test_close_waits_for_an_endpointless_child_without_killing_or_dropping_it() -> None:
+    """An uncertain endpoint must not orphan or signal an owned child."""
+
+    class FakeProcess:
+        pid = 424243
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.wait_calls: list[object] = []
+            self.terminated = False
+            self.killed = False
+
+        def poll(self) -> int | None:
+            return None if self.alive else 0
+
+        def wait(self, timeout: object = None) -> int:
+            self.wait_calls.append(timeout)
+            if self.alive:
+                raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+            return 0
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-endpointless-close-") as directory:
+        client = ScopeBrokerClient(Path(directory), auto_start=False)
+        process = FakeProcess()
+        client._process = process  # type: ignore[assignment]
+        client._process_instance_id = "sbi-" + "a" * 32
+        client._endpoint_identity = lambda **_: None  # type: ignore[method-assign]
+
+        # Endpoint loss is an uncertain state: close may wait, but must not
+        # kill the child and must retain its handle for a later retry.
+        client.close()
+        assert process.wait_calls
+        assert not process.terminated and not process.killed
+        assert client._process is process
+
+        # Once the child exits, a subsequent close reaps it and releases the
+        # handle; this also proves the first call did not silently lose ownership.
+        process.alive = False
+        client.close()
+        assert client._process is None
 
 
 def test_owner_close_preserves_a_shared_bound_channel() -> None:
@@ -316,6 +458,8 @@ def test_read_only_control_close_preserves_a_warm_idle_broker() -> None:
 
     with tempfile.TemporaryDirectory(prefix="super-brain-ipc-control-close-") as directory:
         state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
         runtime = ROOT / "runtime" / "scope_broker_ipc.py"
         server = ScopeBrokerServer(state, idle_seconds=None)
         server.start()
@@ -323,19 +467,63 @@ def test_read_only_control_close_preserves_a_warm_idle_broker() -> None:
         control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=runtime)
         channel = ""
         try:
-            channel = owner.open_channel()
+            channel = _bootstrap_bound_channel(owner, _contract(project), project)
             assert channel
+            listed = control.list_channels()
+            assert listed.get("ok") is True, listed
             inspected = control.status(channel)
             assert inspected.get("ok") is True, inspected
+            authorized = control.authorize(channel, write=False)
+            assert authorized.get("ok") is True, authorized
             assert owner.close_channel(channel).get("ok") is True
             channel = ""
             control.close()
-            assert server.is_running
+            # A read-only control client must not acquire teardown authority
+            # merely by inspecting another client's channel.  Wait past the
+            # broker's deferred-stop delay so the assertion cannot pass just
+            # because shutdown is still queued.
+            deadline = time.monotonic() + 0.3
+            while time.monotonic() < deadline:
+                assert server.is_running
+                time.sleep(0.02)
         finally:
             if channel:
                 owner.close_channel(channel)
             owner.close()
             server.stop()
+
+
+def test_stale_channel_owner_cannot_shutdown_replacement_broker() -> None:
+    """An old channel record cannot target a newer Broker instance."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-stale-owner-") as directory:
+        state = Path(directory) / "state"
+        runtime = ROOT / "runtime" / "scope_broker_ipc.py"
+        first = ScopeBrokerServer(state, idle_seconds=None)
+        first.start()
+        client = ScopeBrokerClient(state, auto_start=False, runtime_path=runtime)
+        channel = client.open_channel()
+        assert channel
+        replacement: ScopeBrokerServer | None = None
+        try:
+            first_instance = first.endpoint().get("instanceId")
+            first.stop()
+            replacement = ScopeBrokerServer(state, idle_seconds=None)
+            second_instance = replacement.start().get("instanceId")
+            assert first_instance and second_instance and first_instance != second_instance
+
+            # The client still remembers a channel issued by the stopped
+            # instance, but it must not turn that stale record into authority
+            # over the replacement Broker during implicit close().
+            client.close()
+            deadline = time.monotonic() + 0.3
+            while time.monotonic() < deadline:
+                assert replacement.is_running
+                time.sleep(0.02)
+        finally:
+            client.close()
+            if replacement is not None:
+                replacement.stop()
 
 
 def test_stale_endpoint_is_replaced() -> None:
@@ -861,6 +1049,43 @@ def test_unbound_channel_gets_a_pairing_grace_window() -> None:
             client.close()
 
 
+def test_lease_expiry_reaper_runs_when_idle_shutdown_is_disabled() -> None:
+    """Disabling process idle shutdown must not disable lease expiry."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-lease-reaper-none-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state, idle_seconds=None, unbound_channel_grace_seconds=60.0)
+        server.start()
+        try:
+            contract = _contract(project)
+            result = server._method(
+                "bootstrap_bound_channel",
+                {
+                    "contract": contract,
+                    "expectedContractHash": _contract_hash(contract),
+                    "projectRoot": str(project),
+                    "accessMode": "write",
+                    "leaseSeconds": 15,
+                },
+            )
+            assert result.get("ok") is True, result
+            channel = str(result.get("channelId", ""))
+            assert channel
+            with server.broker._memory_lock:
+                binding = server.broker._bindings[channel]
+                binding.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+            assert server._maybe_idle_shutdown() is False
+            with server.broker._memory_lock:
+                assert channel not in server.broker._bindings
+                assert channel in server.broker._channels
+                assert contract["taskId"] not in server.broker._write_leases
+        finally:
+            server.stop()
+
+
 def test_bootstrap_bound_channel_is_atomic_and_ref_free() -> None:
     """Local bootstrap binds one current contract without an intermediate ref."""
 
@@ -892,6 +1117,97 @@ def test_bootstrap_bound_channel_is_atomic_and_ref_free() -> None:
             assert binding.context.workspace_key == contract["workspaceKey"]
             assert binding.context.owner_session_key == contract["ownerSessionKey"]
         finally:
+            server.stop()
+
+
+def test_bootstrap_response_loss_is_cancelled_by_client() -> None:
+    """A committed bootstrap is reclaimed when its response is lost."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-bootstrap-response-loss-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state, idle_seconds=None, bootstrap_operation_grace_seconds=60.0)
+        server.start()
+        client = ScopeBrokerClient(
+            state,
+            auto_start=False,
+            runtime_path=ROOT / "runtime" / "scope_broker_ipc.py",
+        )
+        contract = _contract(project)
+        original_call = client._call
+
+        def drop_bootstrap_response(method: str, params: dict[str, object] | None = None, **kwargs: object) -> dict[str, object]:
+            value = original_call(method, params, **kwargs)
+            if method == "bootstrap_bound_channel":
+                return {"ok": False, "code": "H7_SCOPE_BROKER_UNAVAILABLE", "state": "withheld"}
+            return value
+
+        client._call = drop_bootstrap_response  # type: ignore[method-assign]
+        try:
+            failed = client.bootstrap_bound_channel(
+                contract,
+                expected_contract_hash=_contract_hash(contract),
+                project_root=project,
+                access_mode="write",
+            )
+            assert failed.get("ok") is False, failed
+            with server.broker._memory_lock:
+                assert not server.broker._channels
+                assert not server.broker._bindings
+                assert not server.broker._write_leases
+            assert not server._bootstrap_operations
+        finally:
+            client.close()
+            server.stop()
+
+
+def test_bootstrap_operation_reaper_cleans_when_cancel_is_unavailable() -> None:
+    """The Broker reaper bounds an orphan when the client also disappears."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-bootstrap-reaper-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state, idle_seconds=None, bootstrap_operation_grace_seconds=0.1)
+        server.start()
+        client = ScopeBrokerClient(
+            state,
+            auto_start=False,
+            runtime_path=ROOT / "runtime" / "scope_broker_ipc.py",
+        )
+        contract = _contract(project)
+        original_call = client._call
+
+        def lose_bootstrap_and_cancel(method: str, params: dict[str, object] | None = None, **kwargs: object) -> dict[str, object]:
+            value = original_call(method, params, **kwargs)
+            if method in {"bootstrap_bound_channel", "cancel_bootstrap"}:
+                return {"ok": False, "code": "H7_SCOPE_BROKER_UNAVAILABLE", "state": "withheld"}
+            return value
+
+        client._call = lose_bootstrap_and_cancel  # type: ignore[method-assign]
+        try:
+            failed = client.bootstrap_bound_channel(
+                contract,
+                expected_contract_hash=_contract_hash(contract),
+                project_root=project,
+                access_mode="write",
+            )
+            assert failed.get("ok") is False, failed
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                server._maybe_idle_shutdown()
+                with server.broker._memory_lock:
+                    if not server.broker._channels and not server.broker._bindings:
+                        break
+                time.sleep(0.02)
+            with server.broker._memory_lock:
+                assert not server.broker._channels
+                assert not server.broker._bindings
+                assert not server.broker._write_leases
+            assert not server._bootstrap_operations
+        finally:
+            client.close()
             server.stop()
 
 
@@ -1061,6 +1377,11 @@ def test_bootstrap_bound_channel_rejects_invalid_inputs_without_side_effects() -
                 "accessMode": "write",
                 "leaseSeconds": 300,
             }
+            invalid_operation = server._method(
+                "bootstrap_bound_channel",
+                {**base, "bootstrapOperationId": "not-an-operation"},
+            )
+            assert invalid_operation.get("code") == "H7_SCOPE_BOOTSTRAP_OPERATION_INVALID", invalid_operation
             invalid_mode = server._method("bootstrap_bound_channel", {**base, "accessMode": "admin"})
             assert invalid_mode.get("code") == "H7_SCOPE_ACCESS_MODE_INVALID", invalid_mode
             mismatch = server._method("bootstrap_bound_channel", {**base, "projectRoot": str(foreign)})
@@ -1331,6 +1652,60 @@ def test_legacy_pairing_control_is_retired_without_state_mutation() -> None:
             client_b.close()
 
 
+def test_list_channels_snapshots_all_statuses_with_one_expiry_pass() -> None:
+    """Discovery must not rescan every lease while holding the binding guard."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-ipc-list-snapshot-") as directory:
+        state = Path(directory) / "state"
+        project = Path(directory) / "project"
+        project.mkdir()
+        server = ScopeBrokerServer(state, idle_seconds=None)
+        contract = _contract(project)
+        registered = server.broker.register_workline(contract, expected_contract_hash=_contract_hash(contract))
+        assert registered.ok and registered.context is not None, registered
+        channels: list[str] = []
+        for _ in range(12):
+            channel = server.broker.open_channel()
+            grant = server.broker.issue_pairing_grant(
+                channel,
+                registered.context.workline_id,
+                access_mode="read",
+            )
+            assert not isinstance(grant, type(registered)), grant
+            bound = server.broker.attach_channel(channel, grant.token)
+            assert bound.ok and bound.state == "bound", bound
+            channels.append(channel)
+
+        expiry_calls = 0
+        original_expire = server.broker._expire_bindings
+
+        def count_expiry(now: datetime) -> set[str]:
+            nonlocal expiry_calls
+            expiry_calls += 1
+            return original_expire(now)
+
+        def status_must_not_run(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("list_channels must use the bulk snapshot instead of status() per channel")
+
+        server.broker._expire_bindings = count_expiry  # type: ignore[method-assign]
+        server.broker.status = status_must_not_run  # type: ignore[method-assign]
+        listed = server._method("list_channels", {})
+
+        assert expiry_calls == 1, expiry_calls
+        items = listed.get("channels", [])
+        assert listed.get("ok") is True and len(items) == len(channels), listed
+        assert {str(item.get("channelId", "")) for item in items if isinstance(item, dict)} == set(channels), items
+        assert all(
+            isinstance(item, dict)
+            and item.get("ok") is True
+            and item.get("code") == "H7_SCOPE_CHANNEL_BOUND"
+            and item.get("state") == "bound"
+            for item in items
+        ), items
+        serialized = json.dumps(items, ensure_ascii=False)
+        assert "scope" not in serialized and "pairingRequestRef" not in serialized, serialized
+
+
 def test_channel_activity_index_ignores_unknown_authenticated_ids() -> None:
     """Rejected channel IDs cannot grow the Broker's activity map."""
 
@@ -1359,6 +1734,10 @@ def main() -> None:
     test_endpoint_bundle_rejects_oversized_metadata()
     test_pairing_tokens_cannot_cross_ipc()
     test_concurrent_clients_spawn_one_child()
+    test_startup_lock_competition_polls_until_endpoint_is_ready()
+    test_local_lock_registry_drops_unused_state_roots()
+    test_killed_owned_process_is_reaped_with_final_wait()
+    test_close_waits_for_an_endpointless_child_without_killing_or_dropping_it()
     test_owner_close_preserves_a_shared_bound_channel()
     test_shutdown_if_idle_requires_the_expected_broker_instance()
     test_read_only_control_close_preserves_a_warm_idle_broker()
@@ -1375,7 +1754,10 @@ def main() -> None:
     test_cli_bind_is_retired_without_private_capabilities()
     test_existing_channel_calls_never_autostart_a_replacement()
     test_unbound_channel_gets_a_pairing_grace_window()
+    test_lease_expiry_reaper_runs_when_idle_shutdown_is_disabled()
     test_bootstrap_bound_channel_is_atomic_and_ref_free()
+    test_bootstrap_response_loss_is_cancelled_by_client()
+    test_bootstrap_operation_reaper_cleans_when_cancel_is_unavailable()
     test_bootstrap_bound_channel_rolls_back_registry_and_root_on_bind_failure()
     test_bootstrap_rolls_back_when_project_root_persist_fails()
     test_failed_bootstrap_rollback_invalidates_cached_project_roots()
@@ -1384,6 +1766,7 @@ def main() -> None:
     test_repair_local_scope_rebuilds_only_the_current_contract_root_proof()
     test_repair_local_scope_requires_an_existing_exact_workline_without_mutation()
     test_legacy_pairing_control_is_retired_without_state_mutation()
+    test_list_channels_snapshots_all_statuses_with_one_expiry_pass()
     test_channel_activity_index_ignores_unknown_authenticated_ids()
     print("runtime_scope_broker_ipc_regression: PASS")
 

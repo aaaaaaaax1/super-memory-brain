@@ -153,7 +153,14 @@ function Get-PrimaryCodexMcpStaticBinding([string]$CodexHomePath) {
   $epochMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_MCP_REGISTRATION_EPOCH\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
   $registeredEpoch = if ($epochMatch.Success) { [string]$epochMatch.Groups['value'].Value } else { '' }
   $expectedIdentity = Get-SuperBrainMcpRuntimeIdentity $Root
-  $brainMcpMatches = Test-ConfigHasPath $tableText (Join-Path $Root 'runtime\brain_mcp.py')
+  # The current registration launches the host-neutral local scope adapter;
+  # keep the direct brain_mcp path as a narrow migration-compatible signature
+  # because existing installed entries may still be awaiting one explicit
+  # refresh.  Both paths are package-owned and are checked against the same
+  # package/memory/identity contract below.
+  $launcherMatches = Test-ConfigHasPath $tableText (Join-Path $Root 'runtime\local_mcp_launcher.py')
+  $legacyBrainMcpMatches = Test-ConfigHasPath $tableText (Join-Path $Root 'runtime\brain_mcp.py')
+  $brainMcpMatches = $launcherMatches -or $legacyBrainMcpMatches
   $packageRootMatches = Test-ConfigHasPath $tableText $Root
   $memoryRootMatches = Test-ConfigHasPath $tableText $MemoryRoot
   $argumentContractPresent = ($tableText -match '(?i)--package-root') -and ($tableText -match '(?i)--memory-root')
@@ -164,7 +171,7 @@ function Get-PrimaryCodexMcpStaticBinding([string]$CodexHomePath) {
   return [pscustomobject]@{
     state=if($bindingOk){'configured_current'}else{'stale'}; ok=$bindingOk; configured=$true; configPath=$configPath
     code=if($bindingOk){'H7_MCP_STATIC_CONFIG_CURRENT'}else{'H7_MCP_STATIC_BINDING_STALE'}
-    brainMcpMatches=$brainMcpMatches; packageRootMatches=$packageRootMatches; memoryRootMatches=$memoryRootMatches; argumentContractPresent=$argumentContractPresent
+    brainMcpMatches=$brainMcpMatches; launcherMatches=$launcherMatches; legacyBrainMcpMatches=$legacyBrainMcpMatches; packageRootMatches=$packageRootMatches; memoryRootMatches=$memoryRootMatches; argumentContractPresent=$argumentContractPresent
     expectedRuntimeIdentity=$expectedIdentity; registeredRuntimeIdentity=$registeredIdentity; runtimeIdentityMatches=$identityMatches; transportMatches=$transportMatches; registrationEpochPresent=$epochPresent
   }
 }

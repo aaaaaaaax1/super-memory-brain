@@ -19,39 +19,21 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from pathlib import Path
 
-
-LOCAL_SESSION_ENV = "SUPER_BRAIN_LOCAL_SESSION_ID"
-_SESSION_RE = re.compile(r"^sid-[a-f0-9]{16,64}$", re.IGNORECASE)
-_WORKER_ENV_KEYS = (
-    # Keep only process/runtime essentials.  In particular, do not relay
-    # arbitrary embedding-host variables (thread ids, context snapshots, or
-    # other Host metadata) into the H7 worker simply because the launcher
-    # shares a process boundary with that host.
-    "APPDATA",
-    "COMSPEC",
-    "ComSpec",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "LOCALAPPDATA",
-    "OS",
-    "PATH",
-    "PATHEXT",
-    "PROCESSOR_ARCHITECTURE",
-    "PROGRAMDATA",
-    "PYTHONIOENCODING",
-    "PYTHONUTF8",
-    "SystemRoot",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "WINDIR",
+from local_scope_adapter import (
+    LOCAL_SESSION_ENV,
+    SESSION_RE,
+    WORKER_ENV_KEYS,
+    validate_session_id,
 )
+
+
+# Keep these private aliases for the existing focused regressions and for
+# compatibility with callers that imported the launcher's old helper names.
+_SESSION_RE = SESSION_RE
+_WORKER_ENV_KEYS = WORKER_ENV_KEYS
 
 
 def _normalized_directory(value: str | Path) -> Path | None:
@@ -97,8 +79,9 @@ def _worker_environment(session: str, *, source: dict[str, str] | None = None) -
         for name in _WORKER_ENV_KEYS
         if isinstance((value := inherited.get(name)), str) and value
     }
-    if _SESSION_RE.fullmatch(session):
-        environment[LOCAL_SESSION_ENV] = session.lower()
+    normalized = validate_session_id(session)
+    if normalized:
+        environment[LOCAL_SESSION_ENV] = normalized
     return environment
 
 

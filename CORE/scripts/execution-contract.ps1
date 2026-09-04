@@ -3942,6 +3942,13 @@ function Complete-ContractContinuityMutation([object]$Contract,[string]$Mutation
       # this response-only projection so older callers keep their contract.
       $continuityResult | Add-Member -NotePropertyName taskSessionRebindReceipt -NotePropertyValue (ConvertTo-TaskSessionRebindResponseReceipt $continuityResult.taskSessionRebindReceipt) -Force
     }
+    if ($continuityResult -and $continuityResult.ok -eq $true -and $continuityResult.PSObject.Properties['intentSessionRebindReceipt']) {
+      # Intent and task transfers share the v18 local ledger, but their
+      # response contracts are intentionally different.  Keep the full local
+      # receipt on disk for authority verification and expose the narrow intent
+      # projection (including the prior immutable receipt id/hash) to callers.
+      $continuityResult | Add-Member -NotePropertyName intentSessionRebindReceipt -NotePropertyValue (ConvertTo-IntentSessionRebindResponseReceipt $continuityResult.intentSessionRebindReceipt) -Force
+    }
     return Finalize-ContractContinuationReceipt $continuityResult $Mutation
   }
   $publish = Publish-ExecutionContractDirect $Contract
@@ -3959,6 +3966,12 @@ function Complete-ContractContinuityMutation([object]$Contract,[string]$Mutation
   }
   $Contract | Add-Member -NotePropertyName continuityRefresh -NotePropertyValue $refresh -Force
   $Contract | Add-Member -NotePropertyName hotIndex -NotePropertyValue $publish.hotIndex -Force
+  if ($Contract.PSObject.Properties['intentSessionRebindReceipt']) {
+    $Contract | Add-Member -NotePropertyName intentSessionRebindReceipt -NotePropertyValue (ConvertTo-IntentSessionRebindResponseReceipt $Contract.intentSessionRebindReceipt) -Force
+  }
+  if ($Contract.PSObject.Properties['taskSessionRebindReceipt']) {
+    $Contract | Add-Member -NotePropertyName taskSessionRebindReceipt -NotePropertyValue (ConvertTo-TaskSessionRebindResponseReceipt $Contract.taskSessionRebindReceipt) -Force
+  }
   return Finalize-ContractContinuationReceipt $Contract $Mutation
 }
 

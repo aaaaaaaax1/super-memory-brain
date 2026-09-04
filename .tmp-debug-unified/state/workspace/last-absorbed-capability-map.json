@@ -1,0 +1,1969 @@
+{
+  "ok": true,
+  "state": "ready",
+  "code": "CAPABILITY_MAP_CURRENT",
+  "checkedAt": "2026-09-02 05:31:56",
+  "schema": "super-brain.absorbed-capability-map.v1",
+  "version": "0.6.0",
+  "query": "",
+  "count": 22,
+  "total": 22,
+  "capabilities": [
+    {
+      "name": "browser-act",
+      "capabilityId": "sb.browser-act-suite.browser-act",
+      "category": "tool_execution",
+      "role": "browser_operator",
+      "canDo": [
+        "absorbed source capability: browser-act",
+        "auto-routable from verified metadata and source frontmatter",
+        "source intent: Fallback browser automation via browser-act. Use only when explicitly requested or Playwright cannot reliably complete the operation, especially visible verification controls, browser-act session/state, or HAR capture. L..."
+      ],
+      "cannotDo": [
+        "skip extension setup or safety notes",
+        "override current user instructions or live evidence"
+      ],
+      "triggers": [
+        "browser-act",
+        "Playwright cannot complete",
+        "Playwright browser limitation",
+        "checkbox verification",
+        "captcha assistance",
+        "browser-act profile",
+        "browser-act session",
+        "HAR network capture"
+      ],
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "verification": [
+        "extension manifest is valid",
+        "SKILL.md exists",
+        "route appears in skill-capability-map query when triggers match"
+      ],
+      "stopCondition": "Do not use when trigger intent does not match, setup is missing, or the task is safer with core Super Brain behavior.",
+      "extensionId": "browser-act-suite",
+      "extensionName": "Browser Act Suite",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\browser-act-suite\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\browser-act-suite\\skills\\browser-act",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\browser-act-suite\\skills\\browser-act",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "Requires local browser-act CLI. Prompt for install if missing.",
+      "description": "Fallback browser automation via browser-act. Use only when explicitly requested or Playwright cannot reliably complete the operation, especially visible verification controls, browser-act session/state, or HAR capture. Load before running browser-act.",
+      "semanticTags": [],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "model_invocable_upstream",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "bounded_cold_source",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "inferred_legacy",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "legacy_source_metadata",
+      "nativeBehaviorContractId": "",
+      "nativeBehaviorContract": null,
+      "nativeParityProcedureId": "",
+      "nativeParityMapping": null,
+      "sourceRepo": "https://github.com/browser-act/skills",
+      "sourceCommit": "main",
+      "license": "unknown",
+      "upstreamPath": "",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "browser-act-skill-forge",
+      "capabilityId": "sb.browser-act-suite.browser-act-skill-forge",
+      "category": "tool_execution",
+      "role": "browser_operator",
+      "canDo": [
+        "absorbed source capability: browser-act-skill-forge",
+        "auto-routable from verified metadata and source frontmatter",
+        "source intent: Forge reusable website automation or extraction skills after browser-act exploration. Use for site/API discovery, repeatable scraping, bulk deduplicated collection, monitoring, reproducing observable workflows, or reques..."
+      ],
+      "cannotDo": [
+        "skip extension setup or safety notes",
+        "override current user instructions or live evidence"
+      ],
+      "triggers": [
+        "forge website skill",
+        "reusable browser skill",
+        "site-specific automation",
+        "bulk extraction",
+        "monitor website",
+        "scrape many records",
+        "automate permanently"
+      ],
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "verification": [
+        "extension manifest is valid",
+        "SKILL.md exists",
+        "route appears in skill-capability-map query when triggers match"
+      ],
+      "stopCondition": "Do not use when trigger intent does not match, setup is missing, or the task is safer with core Super Brain behavior.",
+      "extensionId": "browser-act-suite",
+      "extensionName": "Browser Act Suite",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\browser-act-suite\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\browser-act-suite\\skills\\browser-act-skill-forge",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\browser-act-suite\\skills\\browser-act-skill-forge",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "Requires browser-act CLI and configured browser before exploration.",
+      "description": "Forge reusable website automation or extraction skills after browser-act exploration. Use for site/API discovery, repeatable scraping, bulk deduplicated collection, monitoring, reproducing observable workflows, or requests to make browser work reusable; not one-off browsing.",
+      "semanticTags": [],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "model_invocable_upstream",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "bounded_cold_source",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "inferred_legacy",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "legacy_source_metadata",
+      "nativeBehaviorContractId": "",
+      "nativeBehaviorContract": null,
+      "nativeParityProcedureId": "",
+      "nativeParityMapping": null,
+      "sourceRepo": "https://github.com/browser-act/skills",
+      "sourceCommit": "main",
+      "license": "unknown",
+      "upstreamPath": "",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "karpathy-guidelines",
+      "capabilityId": "sb.karpathy-guidelines.karpathy-guidelines",
+      "category": "domain_execution",
+      "role": "pre_action_constraint",
+      "canDo": [
+        "absorbed source capability: karpathy-guidelines",
+        "auto-routable from verified metadata and source frontmatter",
+        "source intent: Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria."
+      ],
+      "cannotDo": [
+        "skip extension setup or safety notes",
+        "override current user instructions or live evidence"
+      ],
+      "triggers": [
+        "AI",
+        "ML",
+        "coding mistakes",
+        "overengineering",
+        "surgical changes",
+        "verification",
+        "first principles"
+      ],
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "verification": [
+        "extension manifest is valid",
+        "SKILL.md exists",
+        "route appears in skill-capability-map query when triggers match"
+      ],
+      "stopCondition": "Do not use when trigger intent does not match, setup is missing, or the task is safer with core Super Brain behavior.",
+      "extensionId": "karpathy-guidelines",
+      "extensionName": "Karpathy Guidelines",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\karpathy-guidelines\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\karpathy-guidelines\\skills\\karpathy-guidelines",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\karpathy-guidelines\\skills\\karpathy-guidelines",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.",
+      "semanticTags": [
+        "challenge_assumptions",
+        "engineering_design",
+        "implementation"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "model_invocable_upstream",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "bounded_cold_source",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "inferred_legacy",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "legacy_source_metadata",
+      "nativeBehaviorContractId": "",
+      "nativeBehaviorContract": null,
+      "nativeParityProcedureId": "",
+      "nativeParityMapping": null,
+      "sourceRepo": "https://github.com/multica-ai/andrej-karpathy-skills",
+      "sourceCommit": "2c606141936f1eeef17fa3043a72095b4765b9c2",
+      "license": "MIT",
+      "upstreamPath": "",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "ask-matt",
+      "capabilityId": "sb.mattpocock-skills.ask-matt",
+      "category": "internal_routing",
+      "role": "capability_discovery_reference",
+      "canDo": [
+        "Explain which absorbed capability fits a verified task without exposing a host skill menu."
+      ],
+      "cannotDo": [
+        "Replace Super Brain intent routing, H7 scope, or user authorization."
+      ],
+      "triggers": [
+        "which workflow",
+        "which capability",
+        "哪个方法",
+        "选哪个流程"
+      ],
+      "applyAt": "planning",
+      "verification": [
+        "Selected capability has explicit metadata and a verified cold source."
+      ],
+      "stopCondition": "Skip when the task already has a high-confidence Super Brain capability card.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\ask-matt",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\ask-matt",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Ask which skill or flow fits your situation. A router over the user-invoked skills in this repo.",
+      "semanticTags": [
+        "capability_discovery"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_internal_capability_discovery",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "reference_only",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "",
+      "nativeBehaviorContract": null,
+      "nativeParityProcedureId": "sb.native.capability-discovery.reference.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.capability-discovery.reference.v1",
+        "sourceOutcomes": [
+          "recommend a suitable source workflow"
+        ],
+        "nativeOutcomes": [
+          "Super Brain selects a verified native capability without exposing a host-skill menu"
+        ],
+        "enhancements": [
+          "H7 scope and authorization remain authoritative"
+        ],
+        "acceptance": [
+          "reference-only source is never emitted as an automatic executable card"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/ask-matt",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "diagnosing-bugs",
+      "capabilityId": "sb.mattpocock-skills.diagnosing-bugs",
+      "category": "engineering",
+      "role": "bug_diagnosis",
+      "canDo": [
+        "Run an evidence-first diagnosis loop for failures, regressions, and slow behavior."
+      ],
+      "cannotDo": [
+        "Claim a root cause without current project evidence and a discriminating verification."
+      ],
+      "triggers": [
+        "diagnose",
+        "debug",
+        "root cause",
+        "performance regression",
+        "诊断",
+        "调试",
+        "根因",
+        "性能回归"
+      ],
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "verification": [
+        "Record FACT/INFERENCE/UNKNOWN and run a focused regression after the repair."
+      ],
+      "stopCondition": "Skip when the issue is not a defect, regression, or performance investigation.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\diagnosing-bugs",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\diagnosing-bugs",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Diagnosis loop for hard bugs and performance regressions. Use when the user says \"diagnose\"/\"debug this\", or reports something broken/throwing/failing/slow.",
+      "semanticTags": [
+        "bug_diagnosis",
+        "optimization"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.engineering.evidence-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.engineering.evidence-loop.v1",
+        "entry": "evidence_first_engineering_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_project_evidence",
+          "fact_inference_unknown",
+          "focused_verification"
+        ],
+        "verification": [
+          "route receipt names evidence and verification requirements",
+          "the native loop preserves authorization and H7 boundaries"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.engineering.diagnosis.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.engineering.diagnosis.v1",
+        "sourceOutcomes": [
+          "diagnose failures, regressions, and performance problems"
+        ],
+        "nativeOutcomes": [
+          "current evidence, FACT/INFERENCE/UNKNOWN, discriminating check, and focused regression"
+        ],
+        "enhancements": [
+          "project evidence and authorization gates precede repair"
+        ],
+        "acceptance": [
+          "root-cause status and focused verification are explicit"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/diagnosing-bugs",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "grill-with-docs",
+      "capabilityId": "sb.mattpocock-skills.grill-with-docs",
+      "category": "engineering",
+      "role": "design_interview_documentation",
+      "canDo": [
+        "Stress-test a design and propose ADR or glossary artifacts when they are explicitly useful."
+      ],
+      "cannotDo": [
+        "Write project documents or replace H7 approval merely because a challenge was requested."
+      ],
+      "triggers": [
+        "grill the design",
+        "challenge with ADR",
+        "design interview",
+        "追问设计",
+        "挑战方案",
+        "ADR"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "Each accepted design decision names evidence, tradeoffs, and an owner-approved artifact target."
+      ],
+      "stopCondition": "Skip for a simple implementation request without a design decision to challenge.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\grill-with-docs",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\grill-with-docs",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go.",
+      "semanticTags": [
+        "challenge_assumptions",
+        "engineering_design"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "explicit_only",
+      "mutualExclusionGroup": "challenge_interview",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.engineering.evidence-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.engineering.evidence-loop.v1",
+        "entry": "evidence_first_engineering_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_project_evidence",
+          "fact_inference_unknown",
+          "focused_verification"
+        ],
+        "verification": [
+          "route receipt names evidence and verification requirements",
+          "the native loop preserves authorization and H7 boundaries"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.engineering.design-challenge.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.engineering.design-challenge.v1",
+        "sourceOutcomes": [
+          "stress-test a design and identify decision documentation needs"
+        ],
+        "nativeOutcomes": [
+          "challenge design assumptions with current evidence and bounded ADR/glossary proposals"
+        ],
+        "enhancements": [
+          "document writes stay proposal-only until approved"
+        ],
+        "acceptance": [
+          "each accepted decision has evidence, tradeoff, and authorized artifact target"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/grill-with-docs",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "triage",
+      "capabilityId": "sb.mattpocock-skills.triage",
+      "category": "product_planning",
+      "role": "issue_triage",
+      "canDo": [
+        "Prepare evidence-backed triage proposals and agent-ready briefs."
+      ],
+      "cannotDo": [
+        "Change an issue tracker, labels, issue state, or external PR without exact action, target, and impact approval."
+      ],
+      "triggers": [
+        "triage issues",
+        "issue backlog",
+        "external PR",
+        "分诊问题",
+        "问题池",
+        "外部 PR"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "Show the proposed state transition and verify the exact approved external target before action."
+      ],
+      "stopCondition": "Skip when no issue or pull-request workflow is in scope.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\triage",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\triage",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Move issues and external PRs through a state machine of triage roles — categorise, verify, grill if needed, and write agent-ready briefs.",
+      "semanticTags": [
+        "product_planning",
+        "issue_triage"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "proposal_only_until_exact_user_approval",
+      "projectMutationPolicy": "none",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.product-planning.proposal-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.product-planning.proposal-loop.v1",
+        "entry": "bounded_product_proposal_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "approved_scope_or_proposal_mode",
+          "acceptance_criteria",
+          "external_action_authorization_when_needed"
+        ],
+        "verification": [
+          "proposal names scope, non-goals, and acceptance criteria",
+          "no tracker or external mutation is authorized by the capability"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.product.issue-triage.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.product.issue-triage.v1",
+        "sourceOutcomes": [
+          "triage issues and create agent-ready briefs"
+        ],
+        "nativeOutcomes": [
+          "prepare evidence-backed priority and state-transition proposals"
+        ],
+        "enhancements": [
+          "external tracker mutation remains exactly-approval-gated"
+        ],
+        "acceptance": [
+          "proposed priority and transition are visible before any external action"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/triage",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "capabilityId": "sb.mattpocock-skills.improve-codebase-architecture",
+      "category": "engineering",
+      "role": "architecture_review",
+      "canDo": [
+        "Inspect current code for bounded architecture opportunities and compare them against project evidence."
+      ],
+      "cannotDo": [
+        "Treat an HTML report, a cold source, or a generic pattern as proof that a refactor is authorized."
+      ],
+      "triggers": [
+        "improve architecture",
+        "codebase architecture",
+        "module boundaries",
+        "架构评估",
+        "改善架构",
+        "模块边界"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "Tie each recommendation to live source evidence, constraints, and a focused acceptance check."
+      ],
+      "stopCondition": "Skip when the task is not an architecture or module-boundary decision.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\improve-codebase-architecture",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\improve-codebase-architecture",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.",
+      "semanticTags": [
+        "engineering_design",
+        "architecture_review"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.engineering.evidence-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.engineering.evidence-loop.v1",
+        "entry": "evidence_first_engineering_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_project_evidence",
+          "fact_inference_unknown",
+          "focused_verification"
+        ],
+        "verification": [
+          "route receipt names evidence and verification requirements",
+          "the native loop preserves authorization and H7 boundaries"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.engineering.architecture-review.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.engineering.architecture-review.v1",
+        "sourceOutcomes": [
+          "identify bounded architecture improvements"
+        ],
+        "nativeOutcomes": [
+          "compare module and boundary options against live project evidence"
+        ],
+        "enhancements": [
+          "generic patterns cannot substitute for current call-site and test evidence"
+        ],
+        "acceptance": [
+          "recommendation names source evidence, constraints, and focused acceptance"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/improve-codebase-architecture",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "setup-matt-pocock-skills",
+      "capabilityId": "sb.mattpocock-skills.setup-matt-pocock-skills",
+      "category": "engineering",
+      "role": "engineering_workflow_setup",
+      "canDo": [
+        "Propose a repository-specific issue, triage, and domain-document setup plan."
+      ],
+      "cannotDo": [
+        "Configure trackers, labels, or documents without the current project's explicit mutation and external-action approvals."
+      ],
+      "triggers": [
+        "set up engineering workflow",
+        "issue tracker setup",
+        "triage labels",
+        "配置工程流程",
+        "问题跟踪器配置"
+      ],
+      "applyAt": "planning",
+      "verification": [
+        "List every intended project and external change before implementation."
+      ],
+      "stopCondition": "Skip unless the user explicitly asks to establish this workflow.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\setup-matt-pocock-skills",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\setup-matt-pocock-skills",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Configure this repo for the engineering skills — set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills.",
+      "semanticTags": [
+        "engineering_setup",
+        "product_planning"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "proposal_only_until_exact_user_approval",
+      "projectMutationPolicy": "proposal_only_until_exact_user_approval",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "explicit_only",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.engineering.evidence-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.engineering.evidence-loop.v1",
+        "entry": "evidence_first_engineering_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_project_evidence",
+          "fact_inference_unknown",
+          "focused_verification"
+        ],
+        "verification": [
+          "route receipt names evidence and verification requirements",
+          "the native loop preserves authorization and H7 boundaries"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.product.workflow-setup-proposal.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.product.workflow-setup-proposal.v1",
+        "sourceOutcomes": [
+          "propose repository-specific engineering workflow setup"
+        ],
+        "nativeOutcomes": [
+          "produce a bounded setup proposal with every project and external change listed"
+        ],
+        "enhancements": [
+          "setup cannot perform tracker or document mutation without approval"
+        ],
+        "acceptance": [
+          "scope and mutation targets are explicitly approved before execution"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/setup-matt-pocock-skills",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "tdd",
+      "capabilityId": "sb.mattpocock-skills.tdd",
+      "category": "engineering",
+      "role": "test_strategy",
+      "canDo": [
+        "Shape a focused red-green-refactor loop for an authorized feature or repair."
+      ],
+      "cannotDo": [
+        "Invent behavior without an observable acceptance target."
+      ],
+      "triggers": [
+        "TDD",
+        "test first",
+        "red green refactor",
+        "integration test",
+        "测试先行",
+        "红绿重构",
+        "集成测试"
+      ],
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "verification": [
+        "Demonstrate the intended failing case, the passing case, and the targeted regression."
+      ],
+      "stopCondition": "Skip when testing does not clarify the change or is outside task constraints.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\tdd",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\tdd",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions \"red-green-refactor\", or wants integration tests.",
+      "semanticTags": [
+        "testing"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.engineering.evidence-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.engineering.evidence-loop.v1",
+        "entry": "evidence_first_engineering_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_project_evidence",
+          "fact_inference_unknown",
+          "focused_verification"
+        ],
+        "verification": [
+          "route receipt names evidence and verification requirements",
+          "the native loop preserves authorization and H7 boundaries"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.engineering.test-strategy.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.engineering.test-strategy.v1",
+        "sourceOutcomes": [
+          "run a red-green-refactor development loop"
+        ],
+        "nativeOutcomes": [
+          "define observable acceptance, focused failing case, smallest repair, and targeted regression"
+        ],
+        "enhancements": [
+          "tests remain tied to current project behavior and authorized change scope"
+        ],
+        "acceptance": [
+          "failing case, passing case, and focused regression are demonstrated"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/tdd",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "to-issues",
+      "capabilityId": "sb.mattpocock-skills.to-issues",
+      "category": "product_planning",
+      "role": "issue_decomposition",
+      "canDo": [
+        "Turn an approved plan or PRD into proposed independently deliverable work items."
+      ],
+      "cannotDo": [
+        "Create or edit tracker issues without exact external action, target, and impact approval."
+      ],
+      "triggers": [
+        "break into issues",
+        "issue breakdown",
+        "vertical slices",
+        "拆分 issue",
+        "拆分任务",
+        "垂直切片"
+      ],
+      "applyAt": "planning",
+      "verification": [
+        "Validate each proposed issue against the approved scope and acceptance criteria before external publication."
+      ],
+      "stopCondition": "Skip when no plan, spec, or issue breakdown is requested.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\to-issues",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\to-issues",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Break a plan, spec, or PRD into independently-grabbable issues on the project issue tracker using tracer-bullet vertical slices.",
+      "semanticTags": [
+        "product_planning",
+        "issue_decomposition"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "proposal_only_until_exact_user_approval",
+      "projectMutationPolicy": "none",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.product-planning.proposal-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.product-planning.proposal-loop.v1",
+        "entry": "bounded_product_proposal_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "approved_scope_or_proposal_mode",
+          "acceptance_criteria",
+          "external_action_authorization_when_needed"
+        ],
+        "verification": [
+          "proposal names scope, non-goals, and acceptance criteria",
+          "no tracker or external mutation is authorized by the capability"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.product.issue-decomposition.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.product.issue-decomposition.v1",
+        "sourceOutcomes": [
+          "decompose an approved plan into deliverable issues"
+        ],
+        "nativeOutcomes": [
+          "propose independently verifiable work items with scope and acceptance"
+        ],
+        "enhancements": [
+          "issue publication is never implied by decomposition"
+        ],
+        "acceptance": [
+          "each proposed item is checked against approved scope and criteria"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/to-issues",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "to-prd",
+      "capabilityId": "sb.mattpocock-skills.to-prd",
+      "category": "product_planning",
+      "role": "prd_synthesis",
+      "canDo": [
+        "Synthesize current approved discussion into a proposed PRD or requirements specification."
+      ],
+      "cannotDo": [
+        "Publish to an issue tracker or alter external project records without exact approval."
+      ],
+      "triggers": [
+        "PRD",
+        "product requirements document",
+        "requirements spec",
+        "产品需求文档",
+        "需求规格",
+        "写 PRD"
+      ],
+      "applyAt": "planning",
+      "verification": [
+        "Show scope, non-goals, acceptance criteria, and intended publication target before any external action."
+      ],
+      "stopCondition": "Skip when the user did not request a product requirement or specification artifact.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\to-prd",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\to-prd",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Turn the current conversation into a PRD and publish it to the project issue tracker — no interview, just synthesis of what you've already discussed.",
+      "semanticTags": [
+        "product_planning",
+        "prd_synthesis"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "proposal_only_until_exact_user_approval",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.product-planning.proposal-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.product-planning.proposal-loop.v1",
+        "entry": "bounded_product_proposal_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "approved_scope_or_proposal_mode",
+          "acceptance_criteria",
+          "external_action_authorization_when_needed"
+        ],
+        "verification": [
+          "proposal names scope, non-goals, and acceptance criteria",
+          "no tracker or external mutation is authorized by the capability"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.product.prd-synthesis.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.product.prd-synthesis.v1",
+        "sourceOutcomes": [
+          "turn discussion into a PRD or requirements specification"
+        ],
+        "nativeOutcomes": [
+          "produce a proposed PRD with scope, non-goals, and acceptance criteria"
+        ],
+        "enhancements": [
+          "publication and external records stay separate from synthesis"
+        ],
+        "acceptance": [
+          "publication target and authorization are explicit before external action"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/to-prd",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "prototype",
+      "capabilityId": "sb.mattpocock-skills.prototype",
+      "category": "product_planning",
+      "role": "prototype_exploration",
+      "canDo": [
+        "Propose a bounded throwaway experiment to answer a design or behavior question."
+      ],
+      "cannotDo": [
+        "Turn an experiment into a production change or create files without project authorization."
+      ],
+      "triggers": [
+        "prototype",
+        "throwaway prototype",
+        "UI variations",
+        "runnable experiment",
+        "原型",
+        "临时实验",
+        "界面变体"
+      ],
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "verification": [
+        "State the question, disposal boundary, and observation that ends the experiment."
+      ],
+      "stopCondition": "Skip when a focused test or existing evidence can answer the question more cheaply.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\prototype",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\prototype",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Build a throwaway prototype to flesh out a design — a runnable terminal app for state/business-logic questions, or several radically different UI variations toggleable from one route.",
+      "semanticTags": [
+        "product_planning",
+        "engineering_design",
+        "prototype_exploration"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.product-planning.proposal-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.product-planning.proposal-loop.v1",
+        "entry": "bounded_product_proposal_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "approved_scope_or_proposal_mode",
+          "acceptance_criteria",
+          "external_action_authorization_when_needed"
+        ],
+        "verification": [
+          "proposal names scope, non-goals, and acceptance criteria",
+          "no tracker or external mutation is authorized by the capability"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.product.prototype-experiment.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.product.prototype-experiment.v1",
+        "sourceOutcomes": [
+          "run a bounded throwaway experiment"
+        ],
+        "nativeOutcomes": [
+          "define question, disposal boundary, and observation before an authorized experiment"
+        ],
+        "enhancements": [
+          "prototype cannot silently become a production change"
+        ],
+        "acceptance": [
+          "the observation resolves the stated question or stops the experiment"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/prototype",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "domain-modeling",
+      "capabilityId": "sb.mattpocock-skills.domain-modeling",
+      "category": "engineering",
+      "role": "domain_modeling",
+      "canDo": [
+        "Clarify domain language, boundaries, and architecture decisions from current project evidence."
+      ],
+      "cannotDo": [
+        "Invent business terminology or store a decision without evidence and approval."
+      ],
+      "triggers": [
+        "domain model",
+        "ubiquitous language",
+        "domain terms",
+        "领域模型",
+        "统一语言",
+        "业务术语"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "Confirm terms against current code, documents, and the user's accepted domain meaning."
+      ],
+      "stopCondition": "Skip when the task does not need a domain boundary or terminology decision.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\domain-modeling",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\domain-modeling",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Build and sharpen a project's domain model. Use when the user wants to pin down domain terminology or a ubiquitous language, record an architectural decision, or when another skill needs to maintain the domain model.",
+      "semanticTags": [
+        "engineering_design",
+        "domain_modeling"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.engineering.evidence-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.engineering.evidence-loop.v1",
+        "entry": "evidence_first_engineering_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_project_evidence",
+          "fact_inference_unknown",
+          "focused_verification"
+        ],
+        "verification": [
+          "route receipt names evidence and verification requirements",
+          "the native loop preserves authorization and H7 boundaries"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.engineering.domain-modeling.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.engineering.domain-modeling.v1",
+        "sourceOutcomes": [
+          "clarify domain language and boundaries"
+        ],
+        "nativeOutcomes": [
+          "validate terms and boundaries against current code, documents, and accepted domain meaning"
+        ],
+        "enhancements": [
+          "business terminology is not invented or stored without evidence"
+        ],
+        "acceptance": [
+          "terms and boundary decisions identify current evidence"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/domain-modeling",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "codebase-design",
+      "capabilityId": "sb.mattpocock-skills.codebase-design",
+      "category": "engineering",
+      "role": "module_design",
+      "canDo": [
+        "Design or improve a module boundary, interface, seam, and testability strategy."
+      ],
+      "cannotDo": [
+        "Replace current code evidence with a generic design pattern."
+      ],
+      "triggers": [
+        "module design",
+        "interface design",
+        "seam",
+        "deep module",
+        "模块设计",
+        "接口设计",
+        "解耦点"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "Validate the proposed boundary against call sites, tests, and an explicit tradeoff."
+      ],
+      "stopCondition": "Skip when no module or interface decision is present.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\codebase-design",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\engineering\\codebase-design",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Shared vocabulary for designing deep modules. Use when the user wants to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary.",
+      "semanticTags": [
+        "engineering_design",
+        "module_design"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.engineering.evidence-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.engineering.evidence-loop.v1",
+        "entry": "evidence_first_engineering_loop",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_project_evidence",
+          "fact_inference_unknown",
+          "focused_verification"
+        ],
+        "verification": [
+          "route receipt names evidence and verification requirements",
+          "the native loop preserves authorization and H7 boundaries"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.engineering.module-design.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.engineering.module-design.v1",
+        "sourceOutcomes": [
+          "design module boundaries, interfaces, seams, and testability"
+        ],
+        "nativeOutcomes": [
+          "compare boundary options against call sites, tests, and explicit tradeoffs"
+        ],
+        "enhancements": [
+          "generic designs cannot override current source evidence"
+        ],
+        "acceptance": [
+          "proposed boundary names evidence, test strategy, and tradeoff"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/engineering/codebase-design",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "grill-me",
+      "capabilityId": "sb.mattpocock-skills.grill-me",
+      "category": "productivity_workflow",
+      "role": "challenge_gate",
+      "canDo": [
+        "Open a Super Brain internal challenge gate before an important plan or design is accepted."
+      ],
+      "cannotDo": [
+        "Become a standalone host skill, authorize changes, or replace the H7 lifecycle."
+      ],
+      "triggers": [
+        "grill me",
+        "challenge this plan",
+        "stress test the plan",
+        "挑战这个方案",
+        "拷问我",
+        "压测计划"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "Capture challenged assumptions, counterexamples, and the user's resolved decision."
+      ],
+      "stopCondition": "Skip when the user is not asking to challenge a plan or design.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\grill-me",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\grill-me",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "A relentless interview to sharpen a plan or design.",
+      "semanticTags": [
+        "challenge_assumptions"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_internal_challenge_gate",
+      "adapterTarget": "grilling",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "challenge_interview",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.challenge.gate.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.challenge.gate.v1",
+        "entry": "bounded_challenge_gate",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_plan_or_design",
+          "material_assumption_or_counterexample",
+          "resolved_deferred_or_unknown_decision"
+        ],
+        "verification": [
+          "challenge receipt records assumptions and resolution",
+          "one bounded question or review step never authorizes a change"
+        ],
+        "routePriority": 100
+      },
+      "nativeParityProcedureId": "sb.native.challenge.gate.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.challenge.gate.v1",
+        "sourceOutcomes": [
+          "challenge an important plan or design"
+        ],
+        "nativeOutcomes": [
+          "run a bounded challenge gate for assumptions and counterexamples"
+        ],
+        "enhancements": [
+          "challenge intent wins over generic test wording and cannot authorize mutation"
+        ],
+        "acceptance": [
+          "receipt records challenged assumption and resolved, deferred, or unknown decision"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/productivity/grill-me",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "grilling",
+      "capabilityId": "sb.mattpocock-skills.grilling",
+      "category": "productivity_workflow",
+      "role": "interactive_challenge_loop",
+      "canDo": [
+        "Run one bounded question at a time to test a plan or design."
+      ],
+      "cannotDo": [
+        "Loop indefinitely, bypass the user's stop signal, or create a standalone host entry."
+      ],
+      "triggers": [
+        "grill",
+        "interview the plan",
+        "challenge assumptions",
+        "逐题挑战",
+        "追问假设",
+        "拷问方案"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "End with an explicit resolved, deferred, or unknown decision."
+      ],
+      "stopCondition": "Stop on the user's answer, stop signal, or when no material assumption remains.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\grilling",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\grilling",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Interview the user relentlessly about a plan or design. Use when the user wants to stress-test a plan before building, or uses any 'grill' trigger phrases.",
+      "semanticTags": [
+        "challenge_assumptions"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "super_brain_single_question_challenge_loop",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "adapter_only",
+      "mutualExclusionGroup": "challenge_interview",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.challenge.gate.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.challenge.gate.v1",
+        "entry": "bounded_challenge_gate",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_plan_or_design",
+          "material_assumption_or_counterexample",
+          "resolved_deferred_or_unknown_decision"
+        ],
+        "verification": [
+          "challenge receipt records assumptions and resolution",
+          "one bounded question or review step never authorizes a change"
+        ],
+        "routePriority": 100
+      },
+      "nativeParityProcedureId": "sb.native.challenge.single-question-loop.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.challenge.single-question-loop.v1",
+        "sourceOutcomes": [
+          "ask one question at a time to challenge a plan"
+        ],
+        "nativeOutcomes": [
+          "serve as the bounded internal adapter used by the native challenge gate"
+        ],
+        "enhancements": [
+          "adapter is never a standalone automatic or host route"
+        ],
+        "acceptance": [
+          "loop stops on answer, stop signal, or no material assumption"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/productivity/grilling",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "handoff",
+      "capabilityId": "sb.mattpocock-skills.handoff",
+      "category": "productivity_workflow",
+      "role": "continuity_handoff",
+      "canDo": [
+        "Turn current verified state into a bounded handoff artifact only when an artifact is useful and authorized."
+      ],
+      "cannotDo": [
+        "Replace H7 contracts, checkpoints, latest user instruction, or create a handoff document without project authorization."
+      ],
+      "triggers": [
+        "handoff",
+        "hand over",
+        "next session",
+        "resume later",
+        "交接",
+        "下一个会话",
+        "继续这个任务"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "Handoff must bind current phase, evidence, next action, and return point through H7."
+      ],
+      "stopCondition": "Skip when H7 continuity already supplies the required state and no artifact is requested.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\handoff",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\handoff",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Compact the current conversation into a handoff document for another agent to pick up.",
+      "semanticTags": [
+        "productivity_workflow",
+        "handoff_continuity"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "h7_continuity_adapter",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "explicit_only",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.h7.handoff.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.h7.handoff.v1",
+        "entry": "h7_continuity_handoff",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "current_h7_scope",
+          "verified_phase_and_evidence",
+          "next_action_and_return_point"
+        ],
+        "verification": [
+          "handoff binds the H7 phase, evidence, next action, and return point",
+          "handoff artifact creation remains authorization-gated"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.h7.handoff.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.h7.handoff.v1",
+        "sourceOutcomes": [
+          "prepare a current-task handoff"
+        ],
+        "nativeOutcomes": [
+          "bind phase, evidence, next action, and return point through H7"
+        ],
+        "enhancements": [
+          "handoff never replaces H7 contracts or creates an artifact without authorization"
+        ],
+        "acceptance": [
+          "H7-bound handoff receipt verifies phase, evidence, next action, and return point"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/productivity/handoff",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "teach",
+      "capabilityId": "sb.mattpocock-skills.teach",
+      "category": "learning_support",
+      "role": "teaching",
+      "canDo": [
+        "Teach a requested concept or workflow with workspace-relevant examples."
+      ],
+      "cannotDo": [
+        "Pretend a lesson is project evidence or store learning records without authorization."
+      ],
+      "triggers": [
+        "teach me",
+        "help me learn",
+        "explain step by step",
+        "教我",
+        "带我学",
+        "步骤讲解"
+      ],
+      "applyAt": [
+        "planning",
+        "execution"
+      ],
+      "verification": [
+        "Use a small check-back, example, or user-confirmed outcome appropriate to the lesson."
+      ],
+      "stopCondition": "Skip when the user wants execution rather than explanation or learning support.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\teach",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\teach",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Teach the user a new skill or concept, within this workspace.",
+      "semanticTags": [
+        "learning_teaching",
+        "productivity_workflow"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.productivity.learning-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.productivity.learning-loop.v1",
+        "entry": "bounded_learning_support",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "learning_goal",
+          "workspace_relevant_example",
+          "check_back"
+        ],
+        "verification": [
+          "lesson outcome is distinguishable from project evidence",
+          "no learning record is stored without authorization"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.productivity.learning-support.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.productivity.learning-support.v1",
+        "sourceOutcomes": [
+          "teach a requested concept with examples"
+        ],
+        "nativeOutcomes": [
+          "provide workspace-relevant explanation, example, and check-back"
+        ],
+        "enhancements": [
+          "lesson output is not conflated with project evidence or durable memory"
+        ],
+        "acceptance": [
+          "user check-back or small example demonstrates learning outcome"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/productivity/teach",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "writing-great-skills",
+      "capabilityId": "sb.mattpocock-skills.writing-great-skills",
+      "category": "learning_support",
+      "role": "skill_authoring",
+      "canDo": [
+        "Provide predictable skill-authoring principles and review a proposed Super Brain capability boundary."
+      ],
+      "cannotDo": [
+        "Install a standalone host skill or write project skill files without current project authorization."
+      ],
+      "triggers": [
+        "write a skill",
+        "improve a skill",
+        "skill design",
+        "写技能",
+        "优化技能",
+        "技能设计"
+      ],
+      "applyAt": [
+        "planning",
+        "verification"
+      ],
+      "verification": [
+        "Check trigger, boundary, source provenance, verification, and non-authorizing behavior."
+      ],
+      "stopCondition": "Skip when the task is not about authoring or improving a reusable capability.",
+      "extensionId": "mattpocock-skills",
+      "extensionName": "Matt Pocock Skills",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\writing-great-skills",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\mattpocock-skills\\skills\\productivity\\writing-great-skills",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Reference for writing and editing skills well — the vocabulary and principles that make a skill predictable.",
+      "semanticTags": [
+        "learning_teaching",
+        "skill_authoring",
+        "productivity_workflow"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "provenance_cold_reference_only",
+      "upstreamAuthoredInvocation": "user_only_upstream",
+      "superBrainInvocation": "super_brain_native_contract",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "requires_current_project_authorization",
+      "policySource": "manifest_explicit",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "provenance_cold_reference_only",
+      "nativeBehaviorContractId": "sb.native.productivity.learning-loop.v1",
+      "nativeBehaviorContract": {
+        "schema": "super-brain.native-capability-contract.v1",
+        "id": "sb.native.productivity.learning-loop.v1",
+        "entry": "bounded_learning_support",
+        "executionOwner": "super-memory-brain",
+        "sourceUse": "provenance_cold_reference_only",
+        "requiredReceipts": [
+          "learning_goal",
+          "workspace_relevant_example",
+          "check_back"
+        ],
+        "verification": [
+          "lesson outcome is distinguishable from project evidence",
+          "no learning record is stored without authorization"
+        ],
+        "routePriority": 0
+      },
+      "nativeParityProcedureId": "sb.native.productivity.capability-authoring.v1",
+      "nativeParityMapping": {
+        "schema": "super-brain.native-capability-parity.v1",
+        "procedureId": "sb.native.productivity.capability-authoring.v1",
+        "sourceOutcomes": [
+          "guide reusable skill authoring"
+        ],
+        "nativeOutcomes": [
+          "review a Super Brain capability trigger, boundary, provenance, and verification contract"
+        ],
+        "enhancements": [
+          "cannot install a standalone skill or write project capability files without approval"
+        ],
+        "acceptance": [
+          "review checks trigger, boundary, source provenance, verification, and non-authorizing behavior"
+        ]
+      },
+      "sourceRepo": "https://github.com/mattpocock/skills",
+      "sourceCommit": "6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461",
+      "license": "MIT",
+      "upstreamPath": "skills/productivity/writing-great-skills",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "ponytail",
+      "capabilityId": "sb.ponytail.ponytail",
+      "category": "rule",
+      "role": "pre_action_constraint",
+      "canDo": [
+        "absorbed source capability: ponytail",
+        "auto-routable from verified metadata and source frontmatter",
+        "source intent: Apply an anti-overengineering gate before code edits, bug fixes, scripts, UI tweaks, dependency choices, or refactors. Trigger on ponytail, 懒人模式, 最小实现, simplest solution, YAGNI, 少写点, or requests to reduce bloat."
+      ],
+      "cannotDo": [
+        "skip extension setup or safety notes",
+        "override current user instructions or live evidence"
+      ],
+      "triggers": [
+        "anti-overengineering",
+        "minimal solution",
+        "YAGNI",
+        "pre-code check",
+        "少写点",
+        "别过度工程",
+        "最小实现"
+      ],
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "verification": [
+        "extension manifest is valid",
+        "SKILL.md exists",
+        "route appears in skill-capability-map query when triggers match"
+      ],
+      "stopCondition": "Do not use when trigger intent does not match, setup is missing, or the task is safer with core Super Brain behavior.",
+      "extensionId": "ponytail",
+      "extensionName": "Ponytail",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\ponytail\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\ponytail\\skills\\ponytail",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\ponytail\\skills\\ponytail",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "",
+      "description": "Apply an anti-overengineering gate before code edits, bug fixes, scripts, UI tweaks, dependency choices, or refactors. Trigger on ponytail, 懒人模式, 最小实现, simplest solution, YAGNI, 少写点, or requests to reduce bloat.",
+      "semanticTags": [
+        "bug_diagnosis",
+        "engineering_design",
+        "implementation"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "model_invocable_upstream",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "bounded_cold_source",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "inferred_legacy",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "legacy_source_metadata",
+      "nativeBehaviorContractId": "",
+      "nativeBehaviorContract": null,
+      "nativeParityProcedureId": "",
+      "nativeParityMapping": null,
+      "sourceRepo": "https://github.com/DietrichGebert/ponytail",
+      "sourceCommit": "local-adapted",
+      "license": "MIT",
+      "upstreamPath": "",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    },
+    {
+      "name": "reverselab-unified",
+      "capabilityId": "sb.reverselab-unified.reverselab-unified",
+      "category": "domain_execution",
+      "role": "reverse_engineering_router",
+      "canDo": [
+        "route reverse-engineering tasks to open-reverselab commands, Open-tgtylab MCP tools, or browser-act-skill-forge",
+        "detect whether both upstream ReverseLab repositories and MCP tools are available",
+        "run a one-click local deployment path when the external repositories or dependencies are missing, after exact approval",
+        "use local knowledge bases for PE/APK/CTF/website API reverse workflows"
+      ],
+      "cannotDo": [
+        "make external repositories available without cloning or bundling them",
+        "hide missing host-specific GUI/device setup from the final deploy report"
+      ],
+      "triggers": [
+        "逆向",
+        "ReverseLab",
+        "open-reverselab",
+        "Open-tgtylab",
+        "reverse engineering",
+        "reversing",
+        "sample analysis",
+        "malware triage",
+        "PE reverse",
+        "APK reverse",
+        "CTF reverse",
+        "website API reverse",
+        "接口逆向",
+        "样本分析",
+        "APK 逆向",
+        "PE 逆向",
+        "一键部署逆向工具",
+        "装齐逆向工具"
+      ],
+      "applyAt": [
+        "planning",
+        "execution",
+        "verification"
+      ],
+      "verification": [
+        "extension manifest is valid",
+        "SKILL.md exists",
+        "route appears in skill-capability-map query when triggers match"
+      ],
+      "stopCondition": "Do not use when trigger intent does not match, setup is missing, or the task is safer with core Super Brain behavior.",
+      "extensionId": "reverselab-unified",
+      "extensionName": "ReverseLab Unified",
+      "manifestPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\reverselab-unified\\extension.json",
+      "sourcePath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\reverselab-unified\\skills\\reverselab-unified",
+      "skillPath": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\extensions\\reverselab-unified\\skills\\reverselab-unified",
+      "executionOwner": "super-memory-brain",
+      "sourceKind": "absorbed_package_capability_source",
+      "standaloneInstall": false,
+      "defaultEnabled": true,
+      "setupRequired": "Use scripts/reverselab-deploy.ps1 only as an approved local deployment procedure. It requires Git, Python/uv, network access, and host-specific confirmation; it never creates a share/export package or independent host skill.",
+      "description": "Route explicit reverse-engineering work across ReverseLab tools and browser-act-skill-forge. Trigger on 逆向, ReverseLab, PE/APK/CTF reverse, sample analysis, website/API reverse, 接口逆向, or ReverseLab install/share checks; not generic debugging.",
+      "semanticTags": [
+        "bug_diagnosis"
+      ],
+      "triggerProvenance": "manifest_explicit",
+      "routingMetadataSource": "manifest_explicit",
+      "upstreamInvocation": "model_invocable_upstream",
+      "upstreamAuthoredInvocation": "model_invocable_upstream",
+      "superBrainInvocation": "bounded_cold_source",
+      "adapterTarget": "",
+      "externalActionPolicy": "none",
+      "projectMutationPolicy": "none",
+      "policySource": "inferred_legacy",
+      "routeEligibility": "auto",
+      "mutualExclusionGroup": "",
+      "sourceUse": "legacy_source_metadata",
+      "nativeBehaviorContractId": "",
+      "nativeBehaviorContract": null,
+      "nativeParityProcedureId": "",
+      "nativeParityMapping": null,
+      "sourceRepo": "https://github.com/LING71671/open-reverselab + https://github.com/GeniusHu-tgty/Open-tgtylab",
+      "sourceCommit": "external-install",
+      "license": "external-repos-see-upstream",
+      "upstreamPath": "",
+      "provenance": "absorbed-capability-map.ps1 (package source retained for provenance, not host installation)"
+    }
+  ],
+  "guard": "Verified package sources are absorbed as Super Brain capabilities. Super Brain is the execution owner; source folders are cold provenance references and must not be installed as independent host skills.",
+  "path": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\.tmp-debug-unified\\state\\workspace\\absorbed-capability-map.json"
+}

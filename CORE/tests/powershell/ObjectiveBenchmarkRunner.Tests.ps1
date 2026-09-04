@@ -100,65 +100,128 @@ function Start-TestJudgeSseServer([string]$Model='gpt-5.6-luna',[string]$Text='O
   $port = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
   $portProbe.Stop()
   $prefix = "http://127.0.0.1:$port/"
-  $readyPath = Join-Path $TestDrive "judge-sse-$port.ready"
-  $stopPath = Join-Path $TestDrive "judge-sse-$port.stop"
+  $testDrivePath = (Get-Item -LiteralPath $TestDrive).FullName
+  $readyPath = Join-Path $testDrivePath "judge-sse-$port.ready"
+  $stopPath = Join-Path $testDrivePath "judge-sse-$port.stop"
+  $errorPath = Join-Path $testDrivePath "judge-sse-$port.error.txt"
   Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
-  $job = Start-Job -ScriptBlock {
-    param($Prefix,$ReadyPath,$StopPath,$Model,$Text,$RequestCount)
-    $listener = [Net.HttpListener]::new()
-    $listener.Prefixes.Add($Prefix)
-    try {
-      $listener.Start()
-      [IO.File]::WriteAllText($ReadyPath,'ready',[Text.UTF8Encoding]::new($false))
-      for ($requestIndex = 1; $requestIndex -le $RequestCount; $requestIndex++) {
-        $pending = $listener.BeginGetContext($null,$null)
-        while (-not $pending.AsyncWaitHandle.WaitOne(50)) {
-          if (Test-Path -LiteralPath $StopPath) { return }
+  Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
+  # Windows PowerShell jobs can run under a host where HttpListener is not
+  # supported. Use a local Python stdlib server for this transport fixture.
+  $serverConfig = [pscustomobject]@{
+    port=$port; readyPath=$readyPath; stopPath=$stopPath; errorPath=$errorPath
+    model=$Model; text=$Text; requestCount=$RequestCount
+  } | ConvertTo-Json -Compress
+  $configEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($serverConfig))
+  $serverScript = @'
+import base64
+import json
+import os
+import traceback
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+config = json.loads(base64.b64decode("__JUDGE_SERVER_CONFIG__").decode("utf-8"))
+
+class JudgeHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return
+
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length:
+            self.rfile.read(content_length)
+        request_index = self.server.handled + 1
+        payload = {
+            "type": "response.completed",
+            "response": {
+                "id": "response-test-{}".format(request_index),
+                "object": "response",
+                "model": config["model"],
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": config["text"]}],
+                }],
+            },
         }
-        $context = $listener.EndGetContext($pending)
-        $payload = [pscustomobject]@{
-          type = 'response.completed'
-          response = [pscustomobject]@{
-            id = "response-test-$requestIndex"
-            object = 'response'
-            model = $Model
-            status = 'completed'
-            output = @([pscustomobject]@{
-              type = 'message'
-              content = @([pscustomobject]@{ type='output_text'; text=$Text })
-            })
-          }
-        } | ConvertTo-Json -Depth 10 -Compress
-        $body = "event: response.completed`ndata: $payload`n`n"
-        $bytes = [Text.Encoding]::UTF8.GetBytes($body)
-        $context.Response.StatusCode = 200
-        $context.Response.ContentType = 'text/event-stream'
-        $context.Response.ContentLength64 = $bytes.Length
-        $context.Response.OutputStream.Write($bytes,0,$bytes.Length)
-        $context.Response.Close()
-      }
-    } finally {
-      if ($listener.IsListening) { $listener.Stop() }
-      $listener.Close()
-    }
-  } -ArgumentList $prefix,$readyPath,$stopPath,$Model,$Text,$RequestCount
+        response_bytes = ("event: response.completed\n" + "data: " + json.dumps(payload, separators=(",", ":")) + "\n\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Content-Length", str(len(response_bytes)))
+        self.end_headers()
+        self.wfile.write(response_bytes)
+        self.wfile.flush()
+        self.server.handled += 1
+
+class JudgeServer(HTTPServer):
+    def handle_error(self, request, client_address):
+        with open(config["errorPath"], "w", encoding="utf-8", newline="") as handle:
+            traceback.print_exc(file=handle)
+
+server = None
+try:
+    server = JudgeServer(("127.0.0.1", int(config["port"])), JudgeHandler)
+    server.timeout = 0.05
+    server.handled = 0
+    with open(config["readyPath"], "w", encoding="utf-8", newline="") as handle:
+        handle.write("ready")
+    while server.handled < int(config["requestCount"]) and not os.path.exists(config["stopPath"]):
+        server.handle_request()
+except Exception:
+    with open(config["errorPath"], "w", encoding="utf-8", newline="") as handle:
+        traceback.print_exc(file=handle)
+    raise
+finally:
+    if server is not None:
+        server.server_close()
+'@
+  $scriptEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($serverScript.Replace('__JUDGE_SERVER_CONFIG__', $configEncoded)))
+  $python = Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = [string]$python.Source
+  $startInfo.Arguments = '-c "import base64;exec(compile(base64.b64decode(''' + $scriptEncoded + '''),''<judge-sse-server>'',''exec''))"'
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  if (-not $process.Start()) { throw 'Test SSE judge server process did not start.' }
   $deadline = (Get-Date).AddSeconds(10)
-  while (-not (Test-Path -LiteralPath $readyPath) -and (Get-Date) -lt $deadline -and $job.State -notin @('Failed','Completed','Stopped')) {
-    Start-Sleep -Milliseconds 50
-  }
+  while (-not (Test-Path -LiteralPath $readyPath) -and (Get-Date) -lt $deadline -and -not $process.HasExited) { Start-Sleep -Milliseconds 50 }
   if (-not (Test-Path -LiteralPath $readyPath)) {
-    $detail = @($job | Receive-Job -ErrorAction SilentlyContinue) -join "`n"
-    $job | Stop-Job -ErrorAction SilentlyContinue
-    $job | Remove-Job -Force -ErrorAction SilentlyContinue
-    throw "Test SSE judge server failed to start: $detail"
+    if (-not $process.HasExited) { try { $process.Kill() } catch {} }
+    $process.WaitForExit()
+    $details = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+    if (Test-Path -LiteralPath $errorPath) { $details += [IO.File]::ReadAllText($errorPath, [Text.Encoding]::UTF8) }
+    $exitCode = $process.ExitCode
+    $process.Dispose()
+    throw "Test SSE judge server failed to start: exitCode=$exitCode details=$details"
   }
-  return [pscustomobject]@{ url=($prefix + 'responses'); job=$job; readyPath=$readyPath; stopPath=$stopPath }
+  return [pscustomobject]@{ url=($prefix + 'responses'); process=$process; readyPath=$readyPath; stopPath=$stopPath; errorPath=$errorPath }
 }
 
 function Stop-TestJudgeSseServer($Server) {
   if (-not $Server) { return }
   if ($Server.PSObject.Properties['stopPath']) {
     try { [IO.File]::WriteAllText([string]$Server.stopPath,'stop',[Text.UTF8Encoding]::new($false)) } catch {}
+  }
+  if ($Server.PSObject.Properties['process'] -and $null -ne $Server.process) {
+    try {
+      if (-not $Server.process.HasExited -and -not $Server.process.WaitForExit(5000)) { $Server.process.Kill(); $Server.process.WaitForExit() }
+      if ($Server.process.ExitCode -ne 0) {
+        $details = $Server.process.StandardOutput.ReadToEnd() + $Server.process.StandardError.ReadToEnd()
+        throw "Test SSE judge server failed: exitCode=$($Server.process.ExitCode) details=$details"
+      }
+    } finally {
+      $Server.process.Dispose()
+    }
+    if ($Server.PSObject.Properties['errorPath'] -and (Test-Path -LiteralPath $Server.errorPath)) {
+      throw "Test SSE judge server failed: $([IO.File]::ReadAllText([string]$Server.errorPath, [Text.Encoding]::UTF8))"
+    }
+    Remove-Item -LiteralPath $Server.readyPath -Force -ErrorAction SilentlyContinue
+    if ($Server.PSObject.Properties['stopPath']) { Remove-Item -LiteralPath ([string]$Server.stopPath) -Force -ErrorAction SilentlyContinue }
+    return
   }
   $Server.job | Wait-Job -Timeout 5 | Out-Null
   if ($Server.job.State -notin @('Completed','Failed','Stopped')) { $Server.job | Stop-Job -ErrorAction SilentlyContinue }

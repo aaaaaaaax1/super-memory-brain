@@ -141,12 +141,26 @@ Describe 'Optional host startup and current policy surface' {
   }
 
   It 'keeps one active policy root, current registry metadata, and retired helpers off the active script surface' {
-    $policy = Get-Content -LiteralPath (Join-Path $root 'private-state\workspace\memory-sharing-policy.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $fixture = New-OptionalHostProfile (Join-Path $TestDrive 'policy-surface')
+    $startup = Invoke-OptionalHostStartup $fixture
+
+    $startup.exitCode | Should Be 0
+    $startup.value.ok | Should Be $true
+
+    $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
+    try {
+      $env:SUPER_BRAIN_STATE_ROOT = $fixture.stateRoot
+      Write-SuperBrainSharingPolicy $root 'shared' $fixture.memoryRoot @('all-agents') | Out-Null
+    } finally {
+      if ($null -eq $oldStateRoot) { Remove-Item Env:\SUPER_BRAIN_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot }
+    }
+
+    $policy = Get-Content -LiteralPath (Join-Path $fixture.stateRoot 'workspace\memory-sharing-policy.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $policy.initialized | Should Be $true
     $policy.mode | Should Be 'shared'
     $policy.requestedMode | Should Be 'shared'
-    (Get-NormalizedSuperBrainRoot ([string]$policy.activeRoot)) | Should Be (Get-NormalizedSuperBrainRoot (Join-Path $root 'private-state\shared'))
-    (Get-NormalizedSuperBrainRoot ([string]$policy.sharedRoot)) | Should Be (Get-NormalizedSuperBrainRoot (Join-Path $root 'private-state\shared'))
+    (Get-NormalizedSuperBrainRoot ([string]$policy.activeRoot)) | Should Be (Get-NormalizedSuperBrainRoot $fixture.memoryRoot)
+    (Get-NormalizedSuperBrainRoot ([string]$policy.sharedRoot)) | Should Be (Get-NormalizedSuperBrainRoot $fixture.memoryRoot)
     $policy.rootAuthority | Should Be 'stateRoot/shared'
     $policy.legacyRootsReadOnly | Should Be $true
     @($policy.members) | Should Be @('all-agents')

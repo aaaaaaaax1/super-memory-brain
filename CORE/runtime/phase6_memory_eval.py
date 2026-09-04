@@ -347,6 +347,7 @@ def _write_record(root: Path, state_root: Path, workspace_key: str, record: dict
         record["layer"],
         "-WorkspaceKey",
         workspace_key,
+        "-Force",
     ]
     completed = subprocess.run(command, cwd=root, env=environment, capture_output=True, text=True, timeout=45)
     return completed.returncode == 0 and "WRITE_OK" in completed.stdout

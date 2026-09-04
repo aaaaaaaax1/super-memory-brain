@@ -23,6 +23,7 @@ or entry skill has selected a route. Read one referenced file at a time.
 | Technology stack, framework, database, AI toolchain, edge, deployment, or architecture selection | `references/technology-decision.md` | Long-form requirement interrogation, unscored option dumps, catalog priors presented as live facts |
 | Feature, workflow, product behavior, or automation intent | `references/collaborative-intent.md` | Isolated function work without product role, flow integration, non-goals, or bounded autonomy |
 | Refresh / install / repair | `references/install-refresh.md` | Destructive install, hook rewrite, broad overwrite without approval |
+| Host-neutral local MCP embedding / injected user scope | `references/local-mcp-adapter.md` | Host metadata, dynamic MCP scope selectors, or static launcher as a governed session |
 | Git repository maintenance | `references/maintenance-release.md` | Private memory, raw secrets, unverified packages |
 | Source/runtime/state/archive layout, oversized evidence, or backup architecture | `references/four-layer-runtime-layout.md` | Moving private state into Git, deleting evidence, runtime-root backup accumulation |
 | New/update skill, extension, plugin, MCP, route, or script capability | `references/extension-integration-invariant.md` | AGENTS/global bootstrap, hot-refresh, release/publish without explicit approval |

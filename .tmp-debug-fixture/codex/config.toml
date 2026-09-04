@@ -1,0 +1,11 @@
+[mcp_servers.super-memory-brain]
+command = 'python'
+args = ['G:\Ai\Zcode项目\super-memory-brain-package\CORE\runtime\local_mcp_launcher.py', '--package-root', 'G:\Ai\Zcode项目\super-memory-brain-package\CORE', '--memory-root', 'G:\Ai\Zcode项目\super-memory-brain-package\.tmp-debug-fixture\state\shared']
+
+[mcp_servers.super-memory-brain.env]
+SUPER_BRAIN_PACKAGE_ROOT = 'G:\Ai\Zcode项目\super-memory-brain-package\CORE'
+NEXSANDBASE_HOME = 'G:\Ai\Zcode项目\super-memory-brain-package\.tmp-debug-fixture\state\shared'
+SUPER_BRAIN_RUNTIME_IDENTITY = 'eee321b0cd8e4b4b417403b4f87f954ac39af64c6e64d448b7a63f64878ca353'
+SUPER_BRAIN_MCP_TRANSPORT = 'codex_registered_v1'
+SUPER_BRAIN_MCP_REGISTRATION_EPOCH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+SUPER_BRAIN_MCP_REGISTRATION_SCHEMA = 'super-brain.codex-mcp.v2'

@@ -14,7 +14,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from brain_core import BrainCore
 from scope_broker_ipc import ScopeBrokerClient
@@ -91,6 +91,7 @@ def bootstrap_local_mcp_channel(
     lifecycle: str = "continue",
     access_mode: str = "write",
     broker_client: ScopeBrokerClient | None = None,
+    core: BrainCore | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Bind a new private MCP channel from one exact local H7 contract.
 
@@ -124,12 +125,39 @@ def bootstrap_local_mcp_channel(
         cwd_reader=lambda: str(project_root),
         session_reader=lambda: normalized_session,
     )
-    core = BrainCore(package_root, memory_root, scope_provider=provider)
+    normalized_package_root = Path(package_root).expanduser().resolve()
+    if core is not None:
+        # Reuse is an optimization only when the supplied core is for the
+        # exact package/memory roots named by this bootstrap call.  A caller
+        # must not smuggle a different package snapshot or state root through
+        # the optional reuse seam and thereby cross a local scope boundary.
+        try:
+            if core.package_root != normalized_package_root:
+                return _withheld("H7_SCOPE_BOOTSTRAP_CORE_SCOPE_MISMATCH", lifecycle=normalized_lifecycle), ""
+            # ``memory_root=None`` is still a concrete scope: it means the
+            # package's configured/ambient state resolution for this exact
+            # process.  Compare against that resolved value instead of
+            # treating omission as permission to reuse an arbitrary injected
+            # BrainCore from another private state root.
+            expected_memory_root = (
+                Path(memory_root).expanduser().resolve()
+                if memory_root is not None
+                else core._resolve_memory_root(None)
+            )
+            if core.memory_root != expected_memory_root:
+                return _withheld("H7_SCOPE_BOOTSTRAP_CORE_SCOPE_MISMATCH", lifecycle=normalized_lifecycle), ""
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _withheld("H7_SCOPE_BOOTSTRAP_CORE_SCOPE_MISMATCH", lifecycle=normalized_lifecycle), ""
+    # Contract lookup is a pure read over the package/memory roots.  Reuse the
+    # caller's already-constructed core when the MCP entrypoint provides one;
+    # constructing a second BrainCore here would repeat manifest, rule, and
+    # runtime-identity scans on every local worker startup.
+    contract_core = core or BrainCore(package_root, memory_root, scope_provider=provider)
     resolution = provider.resolve(write=True)
     if not resolution.current or not resolution.workspace_key or not resolution.owner_session_key:
         return _withheld(str(resolution.code or "H7_SCOPE_BOOTSTRAP_LOCAL_SCOPE_REQUIRED"), lifecycle=normalized_lifecycle), ""
     contract, contract_code = _current_contract(
-        core,
+        contract_core,
         workspace_key=resolution.workspace_key,
         owner_session_key=resolution.owner_session_key,
     )
@@ -142,7 +170,7 @@ def bootstrap_local_mcp_channel(
     # and MCP teardown. Standalone callers retain the self-contained client
     # lifecycle below.
     control = broker_client if broker_client is not None else ScopeBrokerClient(
-        core.memory_base,
+        contract_core.memory_base,
         auto_start=True,
         runtime_path=Path(__file__).with_name("scope_broker_ipc.py"),
     )
@@ -155,6 +183,8 @@ def bootstrap_local_mcp_channel(
             project_root=project_root,
             access_mode=normalized_mode,
         )
+        if not isinstance(bound, Mapping):
+            return _withheld("H7_SCOPE_BOOTSTRAP_CONTROL_UNAVAILABLE", lifecycle=normalized_lifecycle), ""
         channel_id = str(bound.get("channelId", ""))
         if bound.get("ok") is not True:
             return _withheld(str(bound.get("code", "H7_SCOPE_BOOTSTRAP_BIND_FAILED")), lifecycle=normalized_lifecycle), ""

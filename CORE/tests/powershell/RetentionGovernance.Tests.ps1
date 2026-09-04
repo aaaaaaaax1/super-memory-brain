@@ -15,7 +15,10 @@ function Write-RetentionTestText([string]$Path,[string]$Text) {
 
 function Initialize-RetentionTestState([string]$StateRoot,[string[]]$Lines) {
   $memoryRoot = Join-Path $StateRoot 'shared'
-  $runtimeRoot = Join-Path $root 'vendor\NexSandglass-Agent-DedicatedMemory'
+  # Keep the runtime copy inside the isolated fixture.  Copying into the
+  # package vendor directory made the cold-migration test self-copy files and
+  # fail before the preview-only behavior could be exercised.
+  $runtimeRoot = Join-Path $StateRoot 'vendor\NexSandglass-Agent-DedicatedMemory'
   New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
   foreach ($file in @(Get-ChildItem -LiteralPath $script:vendorRoot -File -Filter '*.py')) {
     Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $runtimeRoot $file.Name) -Force
@@ -175,7 +178,9 @@ Describe 'RetentionGovernance' {
     $oldPythonPath = $env:PYTHONPATH
     try {
       $env:NEXSANDBASE_HOME = $memory
-      $env:PYTHONPATH = Join-Path $memory 'scripts'
+      # Import the isolated vendor copy created by the fixture, not the
+      # package's live vendor tree or a nonexistent memory/scripts folder.
+      $env:PYTHONPATH = Join-Path $state 'vendor\NexSandglass-Agent-DedicatedMemory'
       $raw = @(& python -c "import json; from sandglass_archive import cold_migration; print(json.dumps(cold_migration(dry_run=False)))" 2>$null)
       $exitCode = $LASTEXITCODE
     } finally {

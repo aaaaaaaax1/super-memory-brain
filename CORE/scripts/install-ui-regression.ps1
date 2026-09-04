@@ -61,6 +61,7 @@ function Get-InstallUiRegressionInputHashes {
     'scripts\migrate-memory-layout.ps1',
     'scripts\cleanup-install-backups.ps1',
     'references\install-refresh.md',
+    'references\local-mcp-adapter.md',
     'references\maintenance-release.md',
     'references\index.md',
     'references\single-agent-subagent-workflow.md',

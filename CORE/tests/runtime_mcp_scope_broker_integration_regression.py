@@ -22,7 +22,7 @@ from brain_control import BrainControl
 from brain_context import canonical_hash, project_progress_root_hash, scope_ref, visible_progress_scope_binding_hash
 from brain_core import BrainCore
 from local_mcp_launcher import _worker_environment
-from local_scope_bootstrap import bootstrap_local_scope
+from local_scope_bootstrap import bootstrap_local_mcp_channel, bootstrap_local_scope
 from mcp_transport_health import LocalBrokerStdioTransportHealth
 from scope_broker import ScopeBroker
 from scope_broker_ipc import ScopeBrokerControlClient, ScopeBrokerServer
@@ -950,6 +950,71 @@ def test_standalone_scope_bootstrap_closes_its_private_channel() -> None:
         assert not (broker_root / "secret.bin").exists()
 
 
+def test_bootstrap_rejects_injected_core_from_a_different_memory_root() -> None:
+    """The optional Core reuse seam cannot cross private state roots."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-local-core-memory-mismatch-") as directory:
+        root = Path(directory)
+        state_a = root / "state-a"
+        state_b = root / "state-b"
+        memory_a = state_a / "shared"
+        memory_b = state_b / "shared"
+        project = root / "project"
+        memory_a.mkdir(parents=True)
+        memory_b.mkdir(parents=True)
+        project.mkdir()
+        session_key = "sid-" + "f" * 24
+        _write_native_memory_snapshot(state_a / "workspace")
+        _write_live_contract(state_a, project, session_key, "mcp-core-memory-mismatch")
+        injected = BrainCore(ROOT, memory_b)
+
+        class ForbiddenBroker:
+            def bootstrap_bound_channel(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+                raise AssertionError("scope-mismatched Core must be rejected before Broker access")
+
+        result, channel_id = bootstrap_local_mcp_channel(
+            package_root=ROOT,
+            memory_root=None,
+            workspace_root=project,
+            local_session=session_key,
+            broker_client=ForbiddenBroker(),  # type: ignore[arg-type]
+            core=injected,
+        )
+        assert result.get("ok") is False, result
+        assert result.get("code") == "H7_SCOPE_BOOTSTRAP_CORE_SCOPE_MISMATCH", result
+        assert channel_id == ""
+
+
+def test_bootstrap_withholds_malformed_broker_result() -> None:
+    """A malformed Broker seam fails closed instead of raising AttributeError."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-local-malformed-broker-") as directory:
+        root = Path(directory)
+        state = root / "state"
+        memory = state / "shared"
+        project = root / "project"
+        memory.mkdir(parents=True)
+        project.mkdir()
+        session_key = "sid-" + "1" * 24
+        _write_native_memory_snapshot(state / "workspace")
+        _write_live_contract(state, project, session_key, "mcp-malformed-broker")
+
+        class MalformedBroker:
+            def bootstrap_bound_channel(self, *_args: object, **_kwargs: object) -> object:
+                return None
+
+        result, channel_id = bootstrap_local_mcp_channel(
+            package_root=ROOT,
+            memory_root=memory,
+            workspace_root=project,
+            local_session=session_key,
+            broker_client=MalformedBroker(),  # type: ignore[arg-type]
+        )
+        assert result.get("ok") is False, result
+        assert result.get("code") == "H7_SCOPE_BOOTSTRAP_CONTROL_UNAVAILABLE", result
+        assert channel_id == ""
+
+
 def test_injected_launcher_requires_process_restart_after_broker_restart() -> None:
     """A restarted Broker cannot silently regain an injected user scope."""
 
@@ -1086,6 +1151,8 @@ def main() -> None:
     test_injected_mcp_scope_bootstrap_pairs_the_current_local_contract_without_host_identity()
     test_first_local_launcher_starts_and_binds_its_own_broker()
     test_standalone_scope_bootstrap_closes_its_private_channel()
+    test_bootstrap_rejects_injected_core_from_a_different_memory_root()
+    test_bootstrap_withholds_malformed_broker_result()
     test_injected_launcher_requires_process_restart_after_broker_restart()
     test_registered_launcher_without_local_injection_is_inert_discovery_only()
     test_static_mcp_remains_unbound_and_pairing_controls_are_retired()

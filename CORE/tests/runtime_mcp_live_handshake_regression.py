@@ -302,6 +302,16 @@ def test_retired_host_inputs_are_rejected_before_any_bridge() -> None:
             assert body["code"] == "H7_HOST_TRANSPORT_RETIRED", body
 
 
+def test_mcp_tool_arguments_fail_closed_when_not_an_object() -> None:
+    """Malformed JSON-RPC arguments must not escape as generic exceptions."""
+
+    for malformed in ([], "not-an-object", 17):
+        result = handle_tool(object(), "brain_turn", malformed)  # type: ignore[arg-type]
+        body = payload(result)
+        assert result["isError"] is True, result
+        assert body["code"] == "H7_MCP_ARGUMENTS_INVALID", body
+
+
 def test_brain_status_reuses_transport_only_within_one_request() -> None:
     """Status projections share one fresh transport health snapshot."""
 

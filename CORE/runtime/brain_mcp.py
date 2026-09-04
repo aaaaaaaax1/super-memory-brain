@@ -156,7 +156,8 @@ def _startup_scope_injection(
     injected_workspace_root: str,
     injection_required: bool = False,
     broker_client: ScopeBrokerClient | None = None,
- ) -> tuple[dict[str, Any], str]:
+    core: BrainCore | None = None,
+) -> tuple[dict[str, Any], str]:
     """Bind one channel only from a launcher-provided local process scope.
 
     This is intentionally a process-start injection seam, not an MCP tool or
@@ -214,6 +215,7 @@ def _startup_scope_injection(
         lifecycle="continue",
         access_mode="write",
         broker_client=broker_client,
+        core=core,
     )
     return {
         "state": str(result.get("state", "withheld")),
@@ -1071,6 +1073,24 @@ def handle_tool(
     arguments: dict[str, Any],
     snapshot_path: Path | None = None,
 ) -> dict[str, Any]:
+    # JSON-RPC allows omitted/null arguments, but list/string payloads are
+    # malformed tools/call inputs. Normalize them at the transport boundary so
+    # retired-host checks and later mapping operations fail closed with one
+    # stable result instead of leaking a generic internal exception.
+    if not isinstance(arguments, Mapping):
+        return tool_result(
+            {
+                "ok": False,
+                "schema": "super-brain.mcp-tool-arguments.v1",
+                "available": False,
+                "code": "H7_MCP_ARGUMENTS_INVALID",
+                "state": "withheld",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            },
+            True,
+        )
+    arguments = dict(arguments)
     retired_host = _retired_host_transport_payload(arguments)
     if retired_host is not None:
         return tool_result(retired_host, True)
@@ -1476,6 +1496,7 @@ def main() -> int:
             injected_workspace_root=injected_workspace_root,
             injection_required=args.local_launcher,
             broker_client=broker_client,
+            core=core,
         )
         # A package-owned local launcher has one chance to prove its private
         # cwd/session/contract scope at startup.  If that proof fails, do not

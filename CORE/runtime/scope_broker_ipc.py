@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import stat
@@ -23,6 +24,8 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -55,6 +58,13 @@ _BROKER_SHUTDOWN_POLL_SECONDS = 0.02
 # bounded pairing grace window.  Explicit close_channel still releases it
 # immediately, so this does not pin a healthy client after normal teardown.
 _UNBOUND_CHANNEL_GRACE_SECONDS = 120.0
+# A bootstrap response can be lost after the Broker commits its channel and
+# lease.  Keep a private operation record long enough for the client to issue
+# an idempotent cancel; the maintenance loop is the last-resort cleanup when
+# the client itself disappears.  The token never carries scope or path data.
+_BOOTSTRAP_OPERATION_ID_RE = re.compile(r"^sbo-[a-f0-9]{32}$", re.IGNORECASE)
+_BOOTSTRAP_OPERATION_GRACE_SECONDS = 15.0
+_MAX_BOOTSTRAP_OPERATIONS = 128
 PROJECT_ROOTS_SCHEMA = "super-brain.scope-broker-project-roots.v1"
 _PROJECT_ROOTS_MAX_BYTES = 512 * 1024
 _PROJECT_ROOTS_MAX_ENTRIES = 2048
@@ -90,11 +100,36 @@ class ScopeBrokerAlreadyRunning(RuntimeError):
         super().__init__("scope broker is already running")
 
 
+@dataclass(slots=True)
+class _BootstrapOperation:
+    """Private uncertainty record for one committed local bootstrap."""
+
+    operation_id: str
+    channel_id: str
+    workline_id: str
+    created_at: float
+
+
 _LOCAL_LOCKS_GUARD = threading.Lock()
-_LOCAL_LOCKS: dict[str, threading.Lock] = {}
 
 
-def _local_lock(path: Path) -> threading.Lock:
+class _LocalLockEntry:
+    """Strongly hold one process-local lock while a lease is using it.
+
+    The registry is weak so temporary state roots do not leave one lock object
+    behind forever in a long-lived adapter process.  Each ``_FileLease`` keeps
+    its entry alive until release; concurrent leases therefore still resolve to
+    the exact same primitive lock.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+
+
+_LOCAL_LOCKS: weakref.WeakValueDictionary[str, _LocalLockEntry] = weakref.WeakValueDictionary()
+
+
+def _local_lock(path: Path) -> _LocalLockEntry:
     key = str(path.resolve()).lower()
     with _LOCAL_LOCKS_GUARD:
         value = _LOCAL_LOCKS.get(key)
@@ -103,7 +138,7 @@ def _local_lock(path: Path) -> threading.Lock:
             # stop may run on its deferred-stop thread while start acquired
             # the lease on the main thread; primitive locks can be released by
             # that owner thread without leaving a process-local lock stuck.
-            value = threading.Lock()
+            value = _LocalLockEntry()
             _LOCAL_LOCKS[key] = value
         return value
 
@@ -119,12 +154,22 @@ class _FileLease:
     def __init__(self, path: Path, *, timeout: float = _START_LOCK_TIMEOUT) -> None:
         self.path = path
         self.timeout = max(0.1, float(timeout))
-        self._local = _local_lock(path)
+        self._local_entry: _LocalLockEntry | None = _local_lock(path)
+        self._local = self._local_entry.lock
+        self._local_ref_held = True
         self._handle: Any = None
         self._local_held = False
         self._held = False
 
     def acquire(self) -> bool:
+        # A lease object may be reused after ``release`` by a caller that
+        # probes the same path repeatedly.  Re-resolve the weak registry entry
+        # so it still coordinates with concurrent leases after our prior
+        # strong reference was dropped.
+        if not self._local_ref_held:
+            self._local_entry = _local_lock(self.path)
+            self._local = self._local_entry.lock
+            self._local_ref_held = True
         if not self._local.acquire(timeout=self.timeout):
             return False
         self._local_held = True
@@ -190,6 +235,10 @@ class _FileLease:
                 self._local.release()
             except RuntimeError:
                 pass
+        # Drop the lease's strong reference after every terminal release so a
+        # short-lived state root does not accumulate in the process registry.
+        self._local_ref_held = False
+        self._local_entry = None
 
     def __enter__(self) -> "_FileLease":
         if not self.acquire():
@@ -410,6 +459,7 @@ class ScopeBrokerServer:
         *,
         idle_seconds: float | None = None,
         unbound_channel_grace_seconds: float | None = None,
+        bootstrap_operation_grace_seconds: float | None = None,
     ) -> None:
         self.state_root = _safe_path(state_root)
         self.runtime_root = self.state_root / "workspace" / "runtime-state" / "scope-broker"
@@ -446,6 +496,15 @@ class ScopeBrokerServer:
         # this guard a delayed second ``stop`` could remove a newer broker's
         # endpoint after this instance has already released its lifetime lock.
         self._stop_finalized = True
+        # A bootstrap operation is a private uncertainty record only.  It is
+        # never a scope selector and is removed on explicit settlement,
+        # channel activity, cancellation, or bounded reaping.
+        self._bootstrap_operations: dict[str, _BootstrapOperation] = {}
+        self.bootstrap_operation_grace_seconds = (
+            _BOOTSTRAP_OPERATION_GRACE_SECONDS
+            if bootstrap_operation_grace_seconds is None
+            else max(0.1, float(bootstrap_operation_grace_seconds))
+        )
         self.unbound_channel_grace_seconds = (
             _UNBOUND_CHANNEL_GRACE_SECONDS
             if unbound_channel_grace_seconds is None
@@ -477,6 +536,7 @@ class ScopeBrokerServer:
             self._stop.clear()
             self._shutdown_requested = False
             self._channel_last_seen.clear()
+            self._bootstrap_operations.clear()
             with self._memory_nonce_lock:
                 self._seen_nonces.clear()
             # Channels, grants, and leases are intentionally process-local;
@@ -798,28 +858,84 @@ class ScopeBrokerServer:
     def is_running(self) -> bool:
         return self._socket is not None and not self._stop.is_set()
 
+    @staticmethod
+    def _normalize_bootstrap_operation_id(value: Any) -> str:
+        candidate = str(value or "").strip().lower()
+        return candidate if _BOOTSTRAP_OPERATION_ID_RE.fullmatch(candidate) else ""
+
+    def _settle_bootstrap_operation_for_channel(self, channel_id: str) -> None:
+        """Forget uncertainty records once a channel is demonstrably used."""
+
+        normalized = str(channel_id or "").strip()
+        if not normalized:
+            return
+        for operation_id, operation in tuple(self._bootstrap_operations.items()):
+            if operation.channel_id == normalized:
+                self._bootstrap_operations.pop(operation_id, None)
+
+    def _reap_bootstrap_operations(self, now: float) -> None:
+        """Cancel abandoned committed bootstraps without selecting a scope."""
+
+        with self._binding_guard:
+            with self.broker._memory_lock:
+                for operation_id, operation in tuple(self._bootstrap_operations.items()):
+                    if now - operation.created_at < self.bootstrap_operation_grace_seconds:
+                        continue
+                    # Closing the exact channel recorded by the operation is
+                    # safe; no caller-provided channel/workline selector is
+                    # accepted on this maintenance path.
+                    result = self.broker.close_channel(operation.channel_id)
+                    if result.ok or str(result.code) in {
+                        "H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED",
+                        "H7_SCOPE_CHANNEL_CLOSED",
+                    }:
+                        self._channel_last_seen.pop(operation.channel_id, None)
+                        self._bootstrap_operations.pop(operation_id, None)
+                    else:
+                        # Preserve the record for a later retry instead of
+                        # claiming cleanup when the Broker could not close the
+                        # exact channel yet.
+                        operation.created_at = now
+
     def _touch(self, channel_id: str = "") -> None:
         now = time.monotonic()
-        if not channel_id:
-            self._last_activity = now
-            return
-        # Only retain activity for channels that the Broker actually owns.
-        # An authenticated caller can still submit a syntactically valid but
-        # unknown channel ID; indexing those arbitrary values would create an
-        # unbounded memory-growth path before the request is rejected.
-        with self.broker._memory_lock:
-            if channel_id not in self.broker._channels:
+        with self._binding_guard:
+            if not channel_id:
+                self._last_activity = now
                 return
-            self._channel_last_seen[channel_id] = now
-        self._last_activity = now
+            # Only retain activity for channels that the Broker actually owns.
+            # An authenticated caller can still submit a syntactically valid
+            # but unknown channel ID; indexing those arbitrary values would
+            # create an unbounded memory-growth path before the request is
+            # rejected.
+            with self.broker._memory_lock:
+                if channel_id not in self.broker._channels:
+                    return
+                self._channel_last_seen[channel_id] = now
+                # A follow-up request proves that the client received the
+                # bootstrap result.  It is therefore safe to retire the
+                # uncertainty record without an extra round trip.
+                self._settle_bootstrap_operation_for_channel(channel_id)
+            self._last_activity = now
 
     def _maybe_idle_shutdown(self) -> bool:
-        if self.idle_seconds is None:
-            return False
         now = time.monotonic()
+        # Reap a response-loss bootstrap before evaluating process idleness.
+        # This maintenance path is intentionally independent of
+        # ``idle_seconds`` so a resident Broker cannot retain an orphaned
+        # write lease forever.
+        try:
+            self._reap_bootstrap_operations(now)
+        except Exception:
+            # A maintenance failure must not tear down a live accept loop;
+            # the next socket timeout retries the bounded cleanup.
+            pass
         # Never stop while a channel is bound; its lease is the client-visible
         # liveness contract.  Unbound channels are transport remnants and can
-        # be reaped after one idle interval.
+        # be reaped after one grace interval.  Lease expiry and unbound-channel
+        # maintenance must continue even when automatic Broker shutdown is
+        # disabled (``idle_seconds=None``); otherwise an abandoned binding can
+        # hold a write lease indefinitely without another request arriving.
         # Take one lock-protected snapshot.  Handler threads can pair, open,
         # or close channels concurrently; iterating the live dict/set without
         # the broker lock can otherwise race and kill the accept loop.
@@ -860,6 +976,10 @@ class ScopeBrokerServer:
                                 self._channel_last_seen.pop(channel_id, None)
                 except Exception:
                     pass
+        # ``idle_seconds=None`` disables only process shutdown.  The expiry and
+        # unbound-channel maintenance above is still required for lease safety.
+        if self.idle_seconds is None:
+            return False
         # Close the last race with a concurrent open_channel: reserve the
         # shutdown state while holding the lifecycle lock, so a client cannot
         # receive a fresh channel ID in the tiny interval before stop().
@@ -1016,26 +1136,33 @@ class ScopeBrokerServer:
                     return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
                 channel_id, pairing_ref = b.open_channel_with_ref()
                 self._touch(channel_id)
-                return {"ok": True, "channelId": channel_id, "pairingRequestRef": pairing_ref}
+                return {
+                    "ok": True,
+                    "channelId": channel_id,
+                    "pairingRequestRef": pairing_ref,
+                    # Bind client teardown ownership to the exact Broker
+                    # instance that created this channel.  Reading the
+                    # endpoint in a second IPC round trip would permit a
+                    # restart race between creation and ownership recording.
+                    "instanceId": self._instance_id,
+                }
         if method == "list_channels":
             channels = []
             with self._binding_guard:
-                with b._memory_lock:
-                    channel_ids = tuple(sorted(getattr(b, "_channels", set())))
-                for channel_id in channel_ids:
-                    status = b.status(channel_id)
-                    item = status.public_projection()
-                    item["channelId"] = channel_id
-                    # Listing is only a control-plane discovery operation.  Do
-                    # not project another connection's task/workspace context;
-                    # the caller must target one channel and then authorize it.
-                    # A pairing request ref is a connection-owned, short-lived
-                    # capability: only the connection's own initialize/status
-                    # response may carry it.  Never turn ``list_channels``
-                    # into a cross-connection pairing-ref discovery surface.
-                    item.pop("scope", None)
-                    item.pop("pairingRequestRef", None)
-                    channels.append(item)
+                statuses = b.list_channel_statuses()
+            for channel_id, status in statuses:
+                item = status.public_projection()
+                item["channelId"] = channel_id
+                # Listing is only a control-plane discovery operation.  Do
+                # not project another connection's task/workspace context;
+                # the caller must target one channel and then authorize it.
+                # A pairing request ref is a connection-owned, short-lived
+                # capability: only the connection's own initialize/status
+                # response may carry it.  Never turn ``list_channels``
+                # into a cross-connection pairing-ref discovery surface.
+                item.pop("scope", None)
+                item.pop("pairingRequestRef", None)
+                channels.append(item)
             return {"ok": True, "channels": channels}
         if method == "status":
             with self._binding_guard:
@@ -1083,14 +1210,18 @@ class ScopeBrokerServer:
                     )
                 )
         if method == "detach_channel":
+            channel_id = str(p.get("channelId", ""))
             with self._binding_guard:
-                return self._result(b.detach_channel(str(p.get("channelId", ""))))
+                result = b.detach_channel(channel_id)
+                self._settle_bootstrap_operation_for_channel(channel_id)
+                return self._result(result)
         if method == "close_channel":
             channel_id = str(p.get("channelId", ""))
             with self._binding_guard:
                 result = b.close_channel(channel_id)
                 with b._memory_lock:
                     self._channel_last_seen.pop(channel_id, None)
+                self._settle_bootstrap_operation_for_channel(channel_id)
             return self._result(result)
         if method == "shutdown_if_idle":
             # This control method is intentionally idempotent.  A client may
@@ -1262,6 +1393,32 @@ class ScopeBrokerServer:
             with self._lifecycle_lock:
                 if self._shutdown_requested:
                     return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
+                raw_operation_id = p.get("bootstrapOperationId", "")
+                operation_id = self._normalize_bootstrap_operation_id(raw_operation_id)
+                if raw_operation_id and not operation_id:
+                    return {
+                        "ok": False,
+                        "code": "H7_SCOPE_BOOTSTRAP_OPERATION_INVALID",
+                        "state": "withheld",
+                        "rawPromptStored": False,
+                        "rawTranscriptStored": False,
+                    }
+                if operation_id and operation_id in self._bootstrap_operations:
+                    return {
+                        "ok": False,
+                        "code": "H7_SCOPE_BOOTSTRAP_OPERATION_REPLAYED",
+                        "state": "withheld",
+                        "rawPromptStored": False,
+                        "rawTranscriptStored": False,
+                    }
+                if operation_id and len(self._bootstrap_operations) >= _MAX_BOOTSTRAP_OPERATIONS:
+                    return {
+                        "ok": False,
+                        "code": "H7_SCOPE_BOOTSTRAP_OPERATION_CAPACITY",
+                        "state": "withheld",
+                        "rawPromptStored": False,
+                        "rawTranscriptStored": False,
+                    }
                 contract = p.get("contract")
                 raw_root = str(p.get("projectRoot", "")).strip()
                 if not raw_root:
@@ -1339,15 +1496,29 @@ class ScopeBrokerServer:
                         if not bound.ok:
                             raise RuntimeError(str(bound.code or "H7_SCOPE_BOOTSTRAP_BIND_FAILED"))
                         self._touch(channel_id)
+                        if operation_id:
+                            self._bootstrap_operations[operation_id] = _BootstrapOperation(
+                                operation_id=operation_id,
+                                channel_id=channel_id,
+                                workline_id=registration.context.workline_id,
+                                created_at=time.monotonic(),
+                            )
                         return {
                             "ok": True,
                             "code": "H7_SCOPE_BOOTSTRAP_CHANNEL_BOUND",
                             "state": "bound",
                             "channelId": channel_id,
+                            "instanceId": self._instance_id,
+                            # This remains private IPC plumbing. The public
+                            # local bootstrap projection deliberately strips
+                            # it before any MCP result can be exposed.
+                            **({"bootstrapOperationId": operation_id} if operation_id else {}),
                             "rawPromptStored": False,
                             "rawTranscriptStored": False,
                         }
                     except Exception as failure:
+                        if operation_id:
+                            self._bootstrap_operations.pop(operation_id, None)
                         if channel_id:
                             try:
                                 b.close_channel(channel_id)
@@ -1393,6 +1564,72 @@ class ScopeBrokerServer:
                             "rawPromptStored": False,
                             "rawTranscriptStored": False,
                         }
+        if method in {"finalize_bootstrap", "cancel_bootstrap"}:
+            # These private acknowledgements carry only an unguessable
+            # operation token created by the local client. They never accept
+            # a channel, workline, workspace, session, or path selector.
+            operation_id = self._normalize_bootstrap_operation_id(p.get("bootstrapOperationId", ""))
+            if not operation_id:
+                return {
+                    "ok": False,
+                    "code": "H7_SCOPE_BOOTSTRAP_OPERATION_INVALID",
+                    "state": "withheld",
+                    "rawPromptStored": False,
+                    "rawTranscriptStored": False,
+                }
+            with self._lifecycle_lock:
+                if self._shutdown_requested:
+                    return {"ok": False, "code": "H7_SCOPE_BROKER_STOPPING", "state": "stopping"}
+                with self._binding_guard:
+                    operation = self._bootstrap_operations.pop(operation_id, None)
+                    if operation is None:
+                        # Settlement is intentionally idempotent. A timeout
+                        # race may let maintenance win before the client sends
+                        # its cancel/finalize request; there is then nothing
+                        # left to clean or authorize.
+                        return {
+                            "ok": True,
+                            "code": "H7_SCOPE_BOOTSTRAP_ALREADY_SETTLED",
+                            "state": "settled",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+                    if method == "finalize_bootstrap":
+                        return {
+                            "ok": True,
+                            "code": "H7_SCOPE_BOOTSTRAP_FINALIZED",
+                            "state": "bound",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+                    result = self.broker.close_channel(operation.channel_id)
+                    self._channel_last_seen.pop(operation.channel_id, None)
+                    if result.ok:
+                        return {
+                            "ok": True,
+                            "code": "H7_SCOPE_BOOTSTRAP_CANCELLED",
+                            "state": "cancelled",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+                    # A restarted broker has already lost the transient
+                    # channel. Treat that as settled rather than leaking a
+                    # private channel identity through the error projection.
+                    if str(result.code) in {"H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED", "H7_SCOPE_CHANNEL_CLOSED"}:
+                        return {
+                            "ok": True,
+                            "code": "H7_SCOPE_BOOTSTRAP_ALREADY_SETTLED",
+                            "state": "settled",
+                            "rawPromptStored": False,
+                            "rawTranscriptStored": False,
+                        }
+                    return {
+                        "ok": False,
+                        "code": str(result.code or "H7_SCOPE_BOOTSTRAP_CANCEL_FAILED"),
+                        "state": "withheld",
+                        "rawPromptStored": False,
+                        "rawTranscriptStored": False,
+                    }
         if method == "refresh_bound_contract":
             # This method is reachable only over authenticated local IPC from
             # the injected runtime provider; it is not part of the MCP or CLI
@@ -1477,11 +1714,17 @@ class ScopeBrokerClient:
         self._start_lock = threading.Lock()
         self._process: subprocess.Popen[Any] | None = None
         self._process_instance_id = ""
-        # Distinguish a channel-serving adapter from a read-only control
-        # client.  Only the former should eagerly request idle shutdown when
-        # it did not launch the shared Broker; otherwise a harmless control
-        # query could evict a warm resident endpoint.
-        self._channel_activity = False
+        # Teardown authority is tied to channels this client actually opened
+        # (or atomically bootstrapped), never to a successful status/authorize
+        # query against somebody else's channel. A control client may inspect
+        # arbitrary channels, so a boolean activity bit would let a read
+        # operation accidentally shut down a shared Broker after its owner
+        # disconnected.
+        # Keep the Broker instance that issued each channel as well as the
+        # channel id.  If a shared Broker restarts, an old channel owner must
+        # not use its stale ownership to shut down the replacement instance.
+        self._owned_channel_ids: dict[str, str] = {}
+        self._ownership_lock = threading.Lock()
         self.last_context: Any = None
         self.last_pairing_request_ref = ""
         self._endpoint_checked_at = 0.0
@@ -1500,7 +1743,20 @@ class ScopeBrokerClient:
             # lock, so only one child can be spawned.
             startup_lock = _FileLease(self._startup_lock_path)
             if not startup_lock.acquire():
-                ready = self._endpoint_active()
+                # Another process may have held the startup lock while it was
+                # publishing the endpoint pair.  A single probe here can
+                # observe that narrow publication window and return a false
+                # negative even though the competing startup succeeds.  Keep
+                # polling only for the bounded connection budget; this never
+                # waits indefinitely or treats an unverified endpoint as
+                # authoritative.
+                deadline = time.monotonic() + _CONNECT_TIMEOUT
+                ready = False
+                while time.monotonic() < deadline:
+                    if self._endpoint_active():
+                        ready = True
+                        break
+                    time.sleep(0.03)
                 if ready:
                     self._remember_owned_process_instance()
                 return ready
@@ -1606,8 +1862,53 @@ class ScopeBrokerClient:
             self._process_instance_id = instance_id
 
     def _mark_channel_activity(self, result: Mapping[str, Any] | None, channel_id: str = "") -> None:
-        if str(channel_id or "").strip() and isinstance(result, Mapping) and result.get("ok") is True:
-            self._channel_activity = True
+        """Record a channel created by this client for teardown ownership.
+
+        The historical private name is retained for nearby call sites, but
+        this is deliberately not a generic activity marker. Read-side
+        operations must not call it.
+        """
+
+        normalized = str(channel_id or "").strip()
+        if normalized and isinstance(result, Mapping) and result.get("ok") is True:
+            # The server returns the creating instance in the same response as
+            # the channel.  Do not probe the endpoint afterward: a Broker
+            # restart in that gap could make an old channel look owned by the
+            # replacement instance.  An older server response without the
+            # field is treated as non-owned (safe, though less eager teardown).
+            instance_id = str(result.get("instanceId", "")).strip()
+            if not instance_id:
+                return
+            with self._ownership_lock:
+                self._owned_channel_ids[normalized] = instance_id
+
+    def _forget_channel_activity(self, channel_id: str = "", result: Mapping[str, Any] | None = None) -> None:
+        """Drop ownership after a channel is closed or irreversibly lost."""
+
+        normalized = str(channel_id or "").strip()
+        if not normalized:
+            return
+        terminal = isinstance(result, Mapping) and (
+            result.get("ok") is True
+            or str(result.get("code", "")) in {
+                "H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED",
+                "H7_SCOPE_CHANNEL_CLOSED",
+            }
+        )
+        if terminal:
+            with self._ownership_lock:
+                self._owned_channel_ids.pop(normalized, None)
+
+    def _has_owned_channels(self) -> bool:
+        with self._ownership_lock:
+            return bool(self._owned_channel_ids)
+
+    def _owns_broker_instance(self, instance_id: str) -> bool:
+        normalized = str(instance_id or "").strip()
+        if not normalized:
+            return False
+        with self._ownership_lock:
+            return normalized in self._owned_channel_ids.values()
 
     def _wait_for_shutdown(self, instance_id: str, owner_pid: int) -> None:
         """Wait until one accepted shutdown no longer owns this endpoint.
@@ -1649,6 +1950,74 @@ class ScopeBrokerClient:
             return lease.acquire()
         finally:
             lease.release()
+
+    @staticmethod
+    def _reap_owned_process(process: subprocess.Popen[Any]) -> None:
+        """Terminate and reap one child without leaving a zombie handle.
+
+        ``Popen.kill`` only signals the child; it does not reap the process.
+        Keep a final ``wait`` after every successful kill (including when the
+        bounded wait races a slow process) so Windows handles and POSIX child
+        table entries cannot leak into the next test/startup cycle.
+        """
+
+        try:
+            process.wait(timeout=_BROKER_SHUTDOWN_WAIT_SECONDS)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            process.terminate()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=1.0)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            process.kill()
+        except OSError:
+            # A concurrent broker shutdown may have reaped the child between
+            # terminate and kill.  Still execute the final wait below.
+            pass
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            # ``kill`` is terminal on supported platforms.  A final
+            # unbounded wait is therefore safe and guarantees the child is
+            # reaped even when the timeout above raced process teardown.
+            try:
+                process.wait()
+            except OSError:
+                pass
+        except OSError:
+            pass
+
+    @staticmethod
+    def _wait_owned_process(process: subprocess.Popen[Any]) -> bool:
+        """Wait briefly for an owned child without signalling it.
+
+        A client may lose the endpoint response after the Broker has begun
+        shutting down, or may observe a replacement endpoint.  In both cases
+        killing the child without an accepted instance-CAS would be unsafe.
+        Still perform a bounded wait so an already-exited child is reaped, and
+        retain the handle when it remains alive so a later close can retry
+        rather than silently dropping a running child.
+        """
+
+        try:
+            process.wait(timeout=_BROKER_SHUTDOWN_WAIT_SECONDS)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+        except OSError:
+            # ``poll`` is a non-signalling fallback for a handle that was
+            # concurrently closed/reaped by another owner.
+            try:
+                return process.poll() is not None
+            except OSError:
+                return True
 
     def _endpoint_active(self, *, force_probe: bool = False) -> bool:
         bundle = _read_endpoint_bundle(self.endpoint_path, self.secret_path)
@@ -1766,7 +2135,6 @@ class ScopeBrokerClient:
             {"channelId": channel_id, "write": bool(write)},
             allow_auto_start=allow_auto_start,
         )
-        self._mark_channel_activity(value, channel_id)
         self.last_context = value.get("scope") if isinstance(value.get("scope"), dict) else None
         # ``authorize`` is the provider's hot-path read and is also the first
         # response after a lease expiry/detach.  Keep the connection-owned
@@ -1794,17 +2162,19 @@ class ScopeBrokerClient:
             {"channelId": channel_id, "leaseId": lease_id, "leaseSeconds": lease_seconds},
             allow_auto_start=allow_auto_start,
         )
-        self._mark_channel_activity(value, channel_id)
         return value
 
     def detach_channel(self, channel_id: str, *, allow_auto_start: bool = False) -> dict[str, Any]:
         value = self._call("detach_channel", {"channelId": channel_id}, allow_auto_start=allow_auto_start)
-        self._mark_channel_activity(value, channel_id)
+        # Detach leaves the channel open (and eligible for a later explicit
+        # re-pair), so it remains owned by the client that created it. Only an
+        # explicit close or an irrecoverably unknown channel releases this
+        # teardown ownership.
         return value
 
     def close_channel(self, channel_id: str, *, allow_auto_start: bool = False) -> dict[str, Any]:
         value = self._call("close_channel", {"channelId": channel_id}, allow_auto_start=allow_auto_start)
-        self._mark_channel_activity(value, channel_id)
+        self._forget_channel_activity(channel_id, value)
         return value
 
     def refresh_bound_contract(
@@ -1820,7 +2190,6 @@ class ScopeBrokerClient:
             {"channelId": channel_id, "leaseId": lease_id, "contract": dict(contract)},
             allow_auto_start=allow_auto_start,
         )
-        self._mark_channel_activity(value, channel_id)
         return value
 
     def bootstrap_bound_channel(
@@ -1836,6 +2205,10 @@ class ScopeBrokerClient:
         """Atomically register one local contract and open its bound channel."""
 
         self.last_pairing_request_ref = ""
+        # The Broker may commit before the response reaches this process. A
+        # private operation token lets the uncertain client cancel that exact
+        # transaction without ever supplying a channel/workline selector.
+        operation_id = "sbo-" + secrets.token_hex(16)
         value = self._call(
             "bootstrap_bound_channel",
             {
@@ -1845,9 +2218,37 @@ class ScopeBrokerClient:
                 "accessMode": access_mode,
                 "ttlSeconds": ttl_seconds,
                 "leaseSeconds": lease_seconds,
+                "bootstrapOperationId": operation_id,
             },
         )
-        self._mark_channel_activity(value, str(value.get("channelId", "")))
+        channel_id = str(value.get("channelId", "")) if isinstance(value, Mapping) else ""
+        if value.get("ok") is True and channel_id:
+            self._mark_channel_activity(value, channel_id)
+            # Settlement is best-effort. A follow-up channel request or an
+            # explicit close also settles the operation, while the Broker's
+            # bounded reaper covers a client that disappears immediately.
+            try:
+                self._call(
+                    "finalize_bootstrap",
+                    {"bootstrapOperationId": operation_id},
+                    allow_auto_start=False,
+                )
+            except Exception:
+                pass
+        else:
+            # ``_call`` intentionally collapses timeout, malformed response,
+            # and endpoint loss into a fail-closed result. In all of those
+            # cases attempt the matching idempotent cancellation; if the
+            # endpoint is already gone, the server-side reaper is the final
+            # bounded cleanup.
+            try:
+                self._call(
+                    "cancel_bootstrap",
+                    {"bootstrapOperationId": operation_id},
+                    allow_auto_start=False,
+                )
+            except Exception:
+                pass
         return value
 
     def shutdown_if_idle(self, *, expected_instance_id: str = "") -> dict[str, Any]:
@@ -1855,11 +2256,14 @@ class ScopeBrokerClient:
 
         instance_id = str(expected_instance_id or "").strip()
         if not instance_id:
+            # Preserve the convenience API while making the wire-level CAS
+            # mandatory: resolve one authenticated current instance and put it
+            # explicitly in the request. The server still rejects any request
+            # that arrives without this field, and compares it atomically.
             instance_id = self.current_instance_id(force_probe=True)
         if not instance_id:
             return {"ok": False, "code": "H7_SCOPE_BROKER_UNAVAILABLE", "state": "withheld"}
-        params: dict[str, Any] = {}
-        params["expectedInstanceId"] = instance_id
+        params: dict[str, Any] = {"expectedInstanceId": instance_id}
         return self._call("shutdown_if_idle", params, allow_auto_start=False)
 
     def close(self) -> None:
@@ -1876,12 +2280,13 @@ class ScopeBrokerClient:
         owned_instance_id = str(self._process_instance_id or "")
         endpoint_identity: tuple[str, int] | None = None
         shutdown_accepted = False
+        shutdown_code = ""
         try:
-            # Never target an endpoint that replaced a child owned by this
-            # client.  Non-owner clients have no process handle and may target
-            # the currently authenticated endpoint because the Broker itself
-            # enforces the no-channels condition.
-            if (process is not None or self._channel_activity) and (process is None or process.poll() is None):
+            # Never target an endpoint that replaced a child/channel instance
+            # owned by this client.  A read-only/control client has neither a
+            # process handle nor an owned channel-instance record and therefore
+            # cannot turn close() into an implicit Broker shutdown.
+            if (process is not None or self._has_owned_channels()) and (process is None or process.poll() is None):
                 endpoint_identity = self._endpoint_identity(force_probe=True)
                 if endpoint_identity is not None:
                     instance_id, owner_pid = endpoint_identity
@@ -1890,9 +2295,15 @@ class ScopeBrokerClient:
                         and owner_pid == process.pid
                         and (not owned_instance_id or instance_id == owned_instance_id)
                     )
-                    if process is None or owns_current_process:
+                    owns_current_instance = (
+                        owns_current_process
+                        if process is not None
+                        else self._owns_broker_instance(instance_id)
+                    )
+                    if owns_current_instance:
                         shutdown = self.shutdown_if_idle(expected_instance_id=instance_id)
-                        shutdown_accepted = shutdown.get("code") == "H7_SCOPE_BROKER_SHUTDOWN_ACCEPTED"
+                        shutdown_code = str(shutdown.get("code", ""))
+                        shutdown_accepted = shutdown_code == "H7_SCOPE_BROKER_SHUTDOWN_ACCEPTED"
         except Exception:
             endpoint_identity = None
 
@@ -1903,23 +2314,30 @@ class ScopeBrokerClient:
             # A NOT_IDLE or uncertain response is not proof that this client
             # owns the last active channel, so never terminate the child then.
             if shutdown_accepted:
+                self._reap_owned_process(process)
+            elif endpoint_identity is None:
+                # Reap a child that has already exited, but never signal a
+                # still-live process without the Broker's accepted instance
+                # CAS.  Keep its exact handle for a later retry when it is
+                # still alive; dropping it here leaks the process ownership
+                # proof and can leave a zombie on POSIX.
+                self._wait_owned_process(process)
+            else:
+                # A live endpoint with ``NOT_IDLE`` or an instance-CAS
+                # mismatch is a concrete shared/replacement state, not an
+                # endpoint-loss uncertainty.  Avoid adding a two-second wait
+                # to every owner close on the normal shared-broker path; a
+                # non-blocking poll still reaps a child that exited in the
+                # response race.
                 try:
-                    process.wait(timeout=_BROKER_SHUTDOWN_WAIT_SECONDS)
-                except (OSError, subprocess.TimeoutExpired):
-                    try:
-                        process.terminate()
-                        process.wait(timeout=1.0)
-                    except (OSError, subprocess.TimeoutExpired):
-                        try:
-                            process.kill()
-                            process.wait(timeout=1.0)
-                        except OSError:
-                            pass
-                        except subprocess.TimeoutExpired:
-                            pass
-            self._process = None
-            self._process_instance_id = ""
-        self._channel_activity = False
+                    process.poll()
+                except OSError:
+                    pass
+            if process.poll() is not None:
+                self._process = None
+                self._process_instance_id = ""
+        with self._ownership_lock:
+            self._owned_channel_ids.clear()
 
 
 class ScopeBrokerControlClient(ScopeBrokerClient):
@@ -2014,6 +2432,11 @@ def main() -> int:
         type=float,
         default=_UNBOUND_CHANNEL_GRACE_SECONDS,
     )
+    serve.add_argument(
+        "--bootstrap-operation-grace-seconds",
+        type=float,
+        default=_BOOTSTRAP_OPERATION_GRACE_SECONDS,
+    )
     args = parser.parse_args()
     if args.command != "serve":
         return 2
@@ -2021,6 +2444,7 @@ def main() -> int:
         args.state_root,
         idle_seconds=args.idle_seconds,
         unbound_channel_grace_seconds=args.unbound_channel_grace_seconds,
+        bootstrap_operation_grace_seconds=args.bootstrap_operation_grace_seconds,
     )
     try:
         server.start()

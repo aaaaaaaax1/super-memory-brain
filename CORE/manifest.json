@@ -4,6 +4,18 @@
     "description":  "Focused native Windows Super Brain package with BAT/VBS entrypoints, a host-independent H7 core, Codex integration, optional ZCode and compatible host adapters, one active shared memory root, custom agent skill directory injection, preview-first install-backup cleanup, Hybrid Recall, ADR decision records, Memory Eval Harness, structured local memory, package-root and memory-root hot-load markers, verification, direct Git privacy preflight, silent START response discipline, Commander review gates, team memory retrieval, roadmap management, recall regression checks, task state reporting, cross-agent/session task identity indexing, lightweight task registration fast path, compact task status tables, scriptable intent gating, recovery E2E checks, detailed step ledgers, ranked resume candidates, host cache checks, paste-free current-task resume, host-tool availability boundaries, privacy sentinel checks, completion guard, maintenance tools, strict task verification parameter binding, smoke-test policy restoration, regression guards for completion-state isolation, dispatch learning, trigger simulation, intent routing, smart next actions, health summaries, agent scorecards, agent bridge isolation/failover, shared channel conversations with active target mode, task handoff, bridge dispatch packets, bridge role permissions, bridge queue relay, team-task archival, release readiness checks, a unified brain command, safe version bump previews, a read-only optimization advisor, causal change plans for structural problem-solving, automatic workspace lifecycle maintenance, auto memory hygiene, policy-governed post-task maintenance hooks, self-improvement queues, compaction-safe continuation priority, and evidence-bounded engineering decision gates.",
     "entrySkill":  "super-memory-brain",
     "runtimeMode":  "hookless_h7",
+    "localMcpAdapter":  {
+                             "path":  "runtime/local_scope_adapter.py",
+                             "schema":  "super-brain.local-mcp-adapter.v1",
+                             "sessionEnvironment":  "SUPER_BRAIN_LOCAL_SESSION_ID",
+                             "sessionPattern":  "^sid-[a-f0-9]{16,64}$",
+                             "memoryRootRequired":  true,
+                             "scopeInputs":  [
+                                                "processCwd",
+                                                "sessionEnvironment"
+                                            ],
+                             "requiresFreshProcessOnScopeChange":  true
+                         },
     "mcpRuntimeIdentityRoots":  [
                                      "runtime/brain_mcp.py"
                                  ],
@@ -12,6 +24,8 @@
                                      "capability-shadow-fixtures.json",
                                      "capability-shadow-evaluation.json",
                                      "super-brain-rules.json",
+                                     "runtime/local_mcp_launcher.py",
+                                     "runtime/local_scope_adapter.py",
                                      "scripts/common.ps1",
                                      "scripts/execution-contract.ps1",
                                      "scripts/execution-contract-worker.ps1",
@@ -83,6 +97,7 @@
                                "runtime\\scope_broker_ipc.py",
                                "runtime\\local_scope_bootstrap.py",
                                "runtime\\local_mcp_launcher.py",
+                               "runtime\\local_scope_adapter.py",
                                "runtime\\mcp_transport_health.py",
                                "runtime\\mcp_runtime_identity.py",
                                "runtime\\brain_eval.py",

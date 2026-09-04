@@ -216,7 +216,7 @@ Describe 'Execution contract continuity projection refresh' {
     (Read-ProjectionTaskCard $stateRoot $taskId).currentStep | Should Be 'first action'
   }
 
-  It 'rebuilds continuity from the SQLite outbox when the process stops before file WAL prepare' {
+  It 'replays the prepared continuity WAL and SQLite outbox after a post-authority interruption' {
     $stateRoot = Join-Path $TestDrive 'sqlite-outbox-recovery'
     $workspaceKey = 'ws-sqlite-outbox-20260727'
     $taskId = 'task-sqlite-outbox'
@@ -232,7 +232,10 @@ Describe 'Execution contract continuity projection refresh' {
     $interrupted.value.code | Should Be 'EXECUTION_CONTRACT_CONTINUITY_TRANSACTION_FAILED'
 
     $pendingAudit = Invoke-ProjectionScript $TaskStateStoreScript @('-Action','Audit','-Json') $stateRoot
-    $pendingAudit.value.incompleteTransactionCount | Should Be 0
+    # H7 prepares the file WAL before applying SQLite authority.  A crash after
+    # authority therefore leaves both durable records for one explicit replay;
+    # the old test expected the retired authority-first ordering.
+    $pendingAudit.value.incompleteTransactionCount | Should Be 1
     $dryRun = Invoke-ProjectionScript $TaskStateStoreScript @('-Action','Reconcile','-Json') $stateRoot
     $dryRun.exitCode | Should Be 1
     $dryRun.value.authorityPendingCount | Should Be 1
@@ -240,10 +243,10 @@ Describe 'Execution contract continuity projection refresh' {
     $reconcile = Invoke-ProjectionScript $TaskStateStoreScript @('-Action','Reconcile','-Apply','-Json') $stateRoot
     if ($reconcile.exitCode -ne 0) { throw ('SQLITE_OUTBOX_RECONCILE_FAILED ' + $reconcile.text) }
     $reconcile.exitCode | Should Be 0
-    $reconcile.value.recoveredCount | Should Be 0
-    $reconcile.value.authorityRecoveredCount | Should Be 1
+    $reconcile.value.recoveredCount | Should Be 1
+    $reconcile.value.authorityRecoveredCount | Should Be 0
     $reconcile.value.blockedCount | Should Be 0
-    $reconcile.value.authorityPendingCount | Should Be 1
+    $reconcile.value.authorityPendingCount | Should Be 0
 
     $routeStatus = Invoke-ProjectionScript $RouteScript @('-Phase','Status','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-Json') $stateRoot
     $routeStatus.exitCode | Should Be 0

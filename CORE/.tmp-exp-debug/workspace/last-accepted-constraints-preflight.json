@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "checkedAt": "2026-09-02 06:54:24",
+  "packageRoot": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE",
+  "version": "0.6.0",
+  "query": "fix cache regression",
+  "scope": "",
+  "required": true,
+  "constraints": [
+    {
+      "id": "accepted_memory:d0cf6d561d96",
+      "kind": "accepted_memory",
+      "claim": "[PROJECT][CURRENT][VERIFIED][SUMMARY] experience cache-regression title=Cache regression status=active confidence=0.7 recallQuery=cache regression Cache regress...",
+      "sourceType": "state",
+      "source": "memory\\workspace\\experiences\\cache-regression.json",
+      "status": "current_verified",
+      "confidence": 0.7825,
+      "hard": true
+    }
+  ],
+  "mustPreserve": [
+    "[PROJECT][CURRENT][VERIFIED][SUMMARY] experience cache-regression title=Cache regression status=active confidence=0.7 recallQuery=cache regression Cache regress..."
+  ],
+  "mustNotViolate": [
+    "Do not violate accepted constraint: [PROJECT][CURRENT][VERIFIED][SUMMARY] experience cache-regression title=Cache regression status=active confidence=0.7 recallQuery=cache regression Cache regress..."
+  ],
+  "conflicts": [],
+  "guardHash": "guard:807d5b2dc8cb",
+  "noTail": {
+    "rawTranscript": false,
+    "longSnippet": false,
+    "historyTail": false
+  },
+  "nextAction": "Apply these accepted constraints before editing; ask before changing them."
+}

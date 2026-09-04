@@ -1,0 +1,72 @@
+{
+  "ok": true,
+  "action": "already_configured",
+  "checkedAt": "2026-09-02 05:26:18",
+  "version": "0.6.0",
+  "mcpName": "super-memory-brain",
+  "codexCli": "C:\\Users\\MSJ\\AppData\\Local\\OpenAI\\Codex\\bin\\b99306303521e97e\\codex.exe",
+  "packageRoot": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE",
+  "memoryRoot": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\.tmp-debug-install2\\state\\shared",
+  "runtimeIdentity": "eee321b0cd8e4b4b417403b4f87f954ac39af64c6e64d448b7a63f64878ca353",
+  "registrationEpochHash": "2781f884665deaa7c4b43d17ae70725caa0984be2ba8df22f157a0809ef194a4",
+  "configurationState": "configuration_current",
+  "configurationScope": "codex-home:g:\\ai\\zcode项目\\super-memory-brain-package\\.tmp-debug-install2",
+  "configurationAuthority": "explicit_codex_home",
+  "liveTransportState": "runtime_probe_required",
+  "restartRequired": false,
+  "fullRuntimeReady": false,
+  "runtime": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\runtime\\brain_mcp.py",
+  "tools": [
+    "brain_recall",
+    "brain_status",
+    "brain_turn",
+    "brain_recent"
+  ],
+  "evaluationMode": "offline_replay_only",
+  "offlineReplay": {
+    "mode": "portable-contract-and-mcp",
+    "total": 0,
+    "passed": 0,
+    "p50Ms": 0.0,
+    "p95Ms": 0.0
+  },
+  "contract": {
+    "total": 0,
+    "passed": 0,
+    "p50Ms": 0.0,
+    "p95Ms": 0.0
+  },
+  "configBackup": "",
+  "previousMcpReplaced": false,
+  "registered": {
+    "name": "super-memory-brain",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\runtime\\local_mcp_launcher.py",
+        "--package-root",
+        "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE",
+        "--memory-root",
+        "G:\\Ai\\Zcode项目\\super-memory-brain-package\\.tmp-debug-install2\\state\\shared"
+      ],
+      "env": {
+        "SUPER_BRAIN_PACKAGE_ROOT": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE",
+        "SUPER_BRAIN_RUNTIME_IDENTITY": "eee321b0cd8e4b4b417403b4f87f954ac39af64c6e64d448b7a63f64878ca353",
+        "NEXSANDBASE_HOME": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\.tmp-debug-install2\\state\\shared",
+        "SUPER_BRAIN_MCP_REGISTRATION_EPOCH": "68159f7a462c4b0cba7955ceec2f9f21",
+        "SUPER_BRAIN_MCP_REGISTRATION_SCHEMA": "super-brain.codex-mcp.v2",
+        "SUPER_BRAIN_MCP_TRANSPORT": "codex_registered_v1"
+      },
+      "env_vars": [],
+      "cwd": null
+    },
+    "enabled_tools": null,
+    "disabled_tools": null,
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null
+  },
+  "rollback": "No configuration write was required. Verify the live MCP with brain_status in Codex."
+}

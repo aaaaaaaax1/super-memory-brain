@@ -1,0 +1,51 @@
+{
+  "schema": "super-brain.pester-report.v1",
+  "checkedAt": "2026-09-04 19:18:32",
+  "tier": "Full",
+  "stateSeed": "empty-controlled-state",
+  "stateSeedPolicy": "Tests never mirror active private state; every suite must create the smallest explicit fixture it needs.",
+  "stateRootIsolation": "single_controlled_state",
+  "reportPathExplicit": true,
+  "parallelExecution": false,
+  "maxParallelSuites": 1,
+  "parallelismCap": 8,
+  "observedMaxParallelSuites": 1,
+  "exclusiveSuites": [],
+  "suiteTimeoutSeconds": 180,
+  "suiteTimeoutPolicy": "uniform=180",
+  "tierBudgetMs": 3600000,
+  "durationMs": 58082,
+  "budgetMet": true,
+  "ok": true,
+  "suiteCount": 1,
+  "failedSuiteCount": 0,
+  "timedOutSuiteCount": 0,
+  "total": 11,
+  "passed": 11,
+  "failed": 0,
+  "latency": {
+    "scope": "isolated test-suite process duration; not prompt-hook latency",
+    "sampleCount": 1,
+    "p50Ms": 57940,
+    "p95Ms": 57940,
+    "maxMs": 57940
+  },
+  "suites": [
+    {
+      "order": 1,
+      "file": "EngineeringBehaviorHoldout.Tests.ps1",
+      "ok": true,
+      "total": 11,
+      "passed": 11,
+      "failed": 0,
+      "durationMs": 57940,
+      "workerDurationMs": 57578,
+      "timedOut": false,
+      "timeoutSeconds": 180,
+      "timeoutReason": "",
+      "terminatedProcessIds": [],
+      "error": "",
+      "failures": null
+    }
+  ]
+}

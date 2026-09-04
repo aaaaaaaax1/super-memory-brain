@@ -86,6 +86,7 @@ function Initialize-IsolatedQueueMemory([string]$StateRoot) {
   $memoryRoot = Join-Path $StateRoot 'shared'
   $scriptRoot = Join-Path $root 'vendor\NexSandglass-Agent-DedicatedMemory'
   if (-not (Test-Path -LiteralPath (Join-Path $scriptRoot 'sandglass_log.py') -PathType Leaf)) { throw 'ISOLATED_MEMORY_RUNTIME_COPY_INCOMPLETE: sandglass_log.py is required by write-memory.ps1.' }
+  New-Item -ItemType Directory -Force -Path $memoryRoot | Out-Null
   [IO.File]::WriteAllText((Join-Path $memoryRoot 'sandglass.txt'), '', [Text.UTF8Encoding]::new($false))
   . (Join-Path $root 'scripts\common.ps1')
   [void](Write-SuperBrainSharingPolicy -Root $root -Mode 'shared' -ActiveRoot $memoryRoot)

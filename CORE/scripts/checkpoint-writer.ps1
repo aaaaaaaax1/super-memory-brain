@@ -453,7 +453,15 @@ switch ($Action) {
     $compatibilityCheckpoint = Read-JsonFile $path
     if (-not $compatibilityCheckpoint -or [string]$compatibilityCheckpoint.taskId -ne $TaskId -or -not (Test-SuperBrainWorkspaceKey ([string]$compatibilityCheckpoint.workspaceKey) $WorkspaceKey)) {
       $pointerAction = if ($pointerMaterialization) { [string]$pointerMaterialization.action } else { 'not_materialized' }
-      throw "CHECKPOINT_COMPATIBILITY_POINTER_NOT_CURRENT taskId=$TaskId action=$pointerAction"
+      # ``active-checkpoint.json`` is a legacy compatibility projection, not
+      # the task-state authority.  A different workspace may already own the
+      # single projection while this task is safely committed in its scoped
+      # checkpoint/task-card paths.  Preserve that foreign pointer and report
+      # the scoped start as successful; completion will remove or replace the
+      # pointer only when its identity is an exact same-workspace match.
+      if ($pointerAction -ne 'foreign_pointer_preserved') {
+        throw "CHECKPOINT_COMPATIBILITY_POINTER_NOT_CURRENT taskId=$TaskId action=$pointerAction"
+      }
     }
     $taskCardPath = Write-SharedTaskIdentity $checkpoint 'Start' -MaintenanceOverride:$MaintenanceOverride -MaintenanceReason $MaintenanceReason -SkipTaskCardState
     $checkpoint | Add-Member -NotePropertyName scopedPath -NotePropertyValue $scopedPath -Force

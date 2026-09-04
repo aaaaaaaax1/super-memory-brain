@@ -1058,32 +1058,86 @@ class ScopeBroker:
         with self._memory_lock:
             expired = self._expire_bindings(current_time)
             self._expire_pairing_requests(current_time)
-            if channel not in self._channels:
-                return self._failure("H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED", "withheld")
-            if channel in expired:
-                return ScopeBrokerResult(
-                    False,
-                    "H7_SCOPE_CHANNEL_LEASE_EXPIRED",
-                    "unbound",
-                    pairing_request_ref=self._ensure_pairing_request_locked(channel, now=current_time),
-                )
-            binding = self._bindings.get(channel)
-            if binding is None:
-                pairing_ref = self._ensure_pairing_request_locked(channel, now=current_time)
-                return ScopeBrokerResult(
-                    True,
-                    "H7_SCOPE_CHANNEL_UNBOUND",
-                    "unbound",
-                    pairing_request_ref=pairing_ref,
-                )
+            return self._channel_status_locked(
+                channel,
+                now=current_time,
+                expired=expired,
+                include_pairing_request_ref=True,
+            )
+
+    def _channel_status_locked(
+        self,
+        channel: str,
+        *,
+        now: datetime,
+        expired: set[str],
+        include_pairing_request_ref: bool,
+    ) -> ScopeBrokerResult:
+        """Build one channel status while ``_memory_lock`` is held."""
+
+        if channel not in self._channels:
+            return self._failure("H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED", "withheld")
+        if channel in expired:
+            pairing_ref = (
+                self._ensure_pairing_request_locked(channel, now=now)
+                if include_pairing_request_ref
+                else ""
+            )
+            return ScopeBrokerResult(
+                False,
+                "H7_SCOPE_CHANNEL_LEASE_EXPIRED",
+                "unbound",
+                pairing_request_ref=pairing_ref,
+            )
+        binding = self._bindings.get(channel)
+        if binding is None:
+            pairing_ref = (
+                self._ensure_pairing_request_locked(channel, now=now)
+                if include_pairing_request_ref
+                else ""
+            )
             return ScopeBrokerResult(
                 True,
-                "H7_SCOPE_CHANNEL_BOUND",
-                "bound",
-                context=binding.context,
-                access_mode=binding.access_mode,
-                lease_id=binding.lease_id,
-                lease_expires_at=_timestamp(binding.lease_expires_at),
+                "H7_SCOPE_CHANNEL_UNBOUND",
+                "unbound",
+                pairing_request_ref=pairing_ref,
+            )
+        return ScopeBrokerResult(
+            True,
+            "H7_SCOPE_CHANNEL_BOUND",
+            "bound",
+            context=binding.context,
+            access_mode=binding.access_mode,
+            lease_id=binding.lease_id,
+            lease_expires_at=_timestamp(binding.lease_expires_at),
+        )
+
+    def list_channel_statuses(self, *, now: datetime | None = None) -> tuple[tuple[str, ScopeBrokerResult], ...]:
+        """Snapshot every channel's safe status under one expiry pass.
+
+        This is an internal control-plane primitive for IPC discovery.  It
+        deliberately does not mint pairing-request references: those are
+        connection-private capabilities and list callers never receive them.
+        The returned ``ScopeBrokerResult`` objects are immutable snapshots, so
+        the IPC layer can remove private fields after releasing its binding
+        guard instead of holding that guard through response construction.
+        """
+
+        current_time = _utc_now(now)
+        with self._memory_lock:
+            expired = self._expire_bindings(current_time)
+            self._expire_pairing_requests(current_time)
+            return tuple(
+                (
+                    channel,
+                    self._channel_status_locked(
+                        channel,
+                        now=current_time,
+                        expired=expired,
+                        include_pairing_request_ref=False,
+                    ),
+                )
+                for channel in sorted(self._channels)
             )
 
     def authorize(

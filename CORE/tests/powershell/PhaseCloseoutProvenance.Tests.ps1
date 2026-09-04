@@ -142,22 +142,22 @@ function ConvertTo-PhaseCloseoutBase64([object]$Value) {
   return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($Value | ConvertTo-Json -Depth 8 -Compress)))
 }
 
-function Invoke-CreatePhaseCloseout([object]$Fixture,[object]$Projection=(New-HostReadbackProjection),[string[]]$ExtraArguments=@()) {
+function Invoke-CreatePhaseCloseout([object]$Fixture,[string[]]$ExtraArguments=@()) {
   $args = @(
     '-Action','CreatePhaseCloseout','-TaskId',$Fixture.taskId,'-WorkspaceKey',$Fixture.workspaceKey,'-SessionKey',$Fixture.sessionKey,
-    '-ProjectRoot',$Fixture.hostRoot,'-ExpectedRevision',[string]$Fixture.contract.revision,
+    '-ProjectRoot',$Fixture.projectRoot,'-ExpectedRevision',[string]$Fixture.contract.revision,
     '-ExpectedPlanFingerprint',[string]$Fixture.contract.planReceipt.planFingerprint,
-    '-HostReadbackProjectionBase64',(ConvertTo-PhaseCloseoutBase64 $Projection),'-StateRoot',$Fixture.stateRoot,'-Json'
+    '-StateRoot',$Fixture.stateRoot,'-Json'
   )
   if ($ExtraArguments) { $args += @($ExtraArguments) }
-  return Invoke-PhaseCloseoutContract $Fixture.hostRoot $args
+  return Invoke-PhaseCloseoutContract $Fixture.projectRoot $args
 }
 
-function New-H7CloseoutReceipt([object]$Fixture,[object]$Evidence,[switch]$TamperEntryHash,[switch]$OmitHostStageReceipt,[switch]$TamperVisibleProgressHash) {
+function New-H7CloseoutReceipt([object]$Fixture,[object]$Evidence,[switch]$TamperEntryHash,[switch]$OmitH7Binding,[switch]$TamperVisibleProgressHash) {
   $entryHash = [string]$Evidence.value.entry.receipt.receiptHash
   if ($TamperEntryHash) { $entryHash = ('0' * 64) }
   $receipt = [ordered]@{
-    schema='super-brain.phase-closeout-receipt.v3'
+    schema='super-brain.phase-closeout-receipt.v4'
     taskId=[string]$Fixture.contract.taskId
     workspaceKey=[string]$Fixture.contract.workspaceKey
     ownerSessionKey=[string]$Fixture.contract.ownerSessionKey
@@ -179,7 +179,8 @@ function New-H7CloseoutReceipt([object]$Fixture,[object]$Evidence,[switch]$Tampe
     rawPromptStored=$false
     rawTranscriptStored=$false
   }
-  if (-not $OmitHostStageReceipt) { $receipt.hostStageReceipt = New-HostStageReceipt $Fixture $Evidence -TamperVisibleProgressHash:$TamperVisibleProgressHash }
+  if ($TamperVisibleProgressHash) { $receipt.h7.visibleProgressPayloadHash = ('0' * 64) }
+  if ($OmitH7Binding) { $receipt.Remove('h7') }
   return $receipt
 }
 
@@ -193,12 +194,12 @@ function Invoke-H7PhaseAdvance([object]$Fixture,[string]$ReceiptPath='',[string]
   $args = @(
     '-Action','Set','-TaskId',$Fixture.taskId,'-WorkspaceKey',$Fixture.workspaceKey,'-SessionKey',$Fixture.sessionKey,
     '-FocusId','main-line','-InstructionMode',$InstructionMode,'-CurrentPhase',$NextPhase,'-CurrentStep',$NextStep,'-NextAction',$NextStep,
-    '-ProjectRoot',$Fixture.hostRoot,'-ExpectedRevision',[string]$Fixture.contract.revision,
+    '-ProjectRoot',$Fixture.projectRoot,'-ExpectedRevision',[string]$Fixture.contract.revision,
     '-ExpectedPlanFingerprint',[string]$Fixture.contract.planReceipt.planFingerprint,'-TransitionId','h7-phase-advance',
     '-StateRoot',$Fixture.stateRoot,'-Json'
   )
   if ($ReceiptPath) { $args += @('-PhaseCloseoutPath',$ReceiptPath) }
-  return Invoke-PhaseCloseoutContract $Fixture.hostRoot $args
+  return Invoke-PhaseCloseoutContract $Fixture.projectRoot $args
 }
 
 Describe 'H7-only phase closeout evidence' {
@@ -257,14 +258,14 @@ Describe 'H7-only phase closeout evidence' {
     $advanced.value.currentPhase | Should Be 'R5 Stage 10'
     $advanced.value.phaseCloseouts[-1].phase | Should Be 'R5-STAGE9'
     $advanced.value.phaseCloseouts[-1].nextPhase | Should Be 'R5-STAGE10'
-    $advanced.value.phaseCloseouts[-1].hostStageReceipt.observationSource | Should Be 'codex_app_read_thread'
+    $advanced.value.phaseCloseouts[-1].schema | Should Be 'super-brain.phase-closeout.v4'
   }
 
-  It 'creates an H7-only v3 closeout from a body-free Host readback without advancing the contract' {
+  It 'creates an H7-only v4 closeout from current local H7 evidence without advancing the contract' {
     $fixture = New-PhaseCloseoutFixture -ActivateH7 -Phase 'R5 Stage 9' -Step 'finish Stage 9' -NextAction 'enter Stage 10'
     $created = Invoke-CreatePhaseCloseout $fixture
     $receipt = if ($created.exitCode -eq 0) { Get-Content -LiteralPath $created.value.receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
-    $beforeAdvance = Invoke-PhaseCloseoutContract $fixture.hostRoot @('-Action','Get','-TaskId',$fixture.taskId,'-WorkspaceKey',$fixture.workspaceKey,'-SessionKey',$fixture.sessionKey,'-StateRoot',$fixture.stateRoot,'-Json')
+    $beforeAdvance = Invoke-PhaseCloseoutContract $fixture.projectRoot @('-Action','Get','-TaskId',$fixture.taskId,'-WorkspaceKey',$fixture.workspaceKey,'-SessionKey',$fixture.sessionKey,'-StateRoot',$fixture.stateRoot,'-Json')
     $advanced = if ($created.exitCode -eq 0) { Invoke-H7PhaseAdvance $fixture $created.value.receiptPath 'R5 Stage 10' 'start Stage 10' } else { $null }
 
     $created.exitCode | Should Be 0
@@ -274,9 +275,8 @@ Describe 'H7-only phase closeout evidence' {
     $created.value.revision | Should Be $fixture.contract.revision
     $created.value.receiptSha256 | Should Match '^[a-f0-9]{64}$'
     (Test-SuperBrainPhaseCloseoutChildPath (Join-Path $fixture.stateRoot 'workspace\runtime-state\phase-evidence') $created.value.receiptPath) | Should Be $true
-    $receipt.schema | Should Be 'super-brain.phase-closeout-receipt.v3'
+    $receipt.schema | Should Be 'super-brain.phase-closeout-receipt.v4'
     $receipt.h7.visibleProgressPayloadHash | Should Be $fixture.evidence.value.visibleProgress.payloadHash
-    $receipt.hostStageReceipt.observationSource | Should Be 'codex_app_read_thread'
     $receipt.rawPromptStored | Should Be $false
     $receipt.rawTranscriptStored | Should Be $false
     $beforeAdvance.exitCode | Should Be 0
@@ -286,18 +286,13 @@ Describe 'H7-only phase closeout evidence' {
     $advanced.value.currentPhase | Should Be 'R5 Stage 10'
   }
 
-  It 'accepts the prompt-injected current-tail readback as the same bounded H7 source' {
+  It 'rejects the retired prompt-injected current-tail transport' {
     $fixture = New-PhaseCloseoutFixture -ActivateH7 -Phase 'R5 Stage 9' -Step 'finish Stage 9' -NextAction 'enter Stage 10'
-    $created = Invoke-CreatePhaseCloseout $fixture (New-HostReadbackProjection 'codex_visible_context')
-    $advanced = if ($created.exitCode -eq 0) { Invoke-H7PhaseAdvance $fixture $created.value.receiptPath 'R5 Stage 10' 'start Stage 10' } else { $null }
+    $projection = ConvertTo-PhaseCloseoutBase64 (New-HostReadbackProjection 'codex_visible_context')
+    $created = Invoke-CreatePhaseCloseout $fixture @('-HostReadbackProjectionBase64',$projection)
 
-    $created.exitCode | Should Be 0
-    $created.value.code | Should Be 'EXECUTION_CONTRACT_PHASE_CLOSEOUT_CREATED'
-    $receipt = Get-Content -LiteralPath $created.value.receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $receipt.hostStageReceipt.observationSource | Should Be 'codex_visible_context'
-    $advanced.exitCode | Should Be 0
-    $advanced.value.currentPhase | Should Be 'R5 Stage 10'
-    $advanced.value.phaseCloseouts[-1].hostStageReceipt.observationSource | Should Be 'codex_visible_context'
+    $created.exitCode | Should Be 1
+    $created.value.code | Should Be 'H7_HOST_TRANSPORT_RETIRED'
   }
 
   It 'replays the same issued closeout path without creating a second receipt or changing the contract' {
@@ -317,22 +312,24 @@ Describe 'H7-only phase closeout evidence' {
   It 'rejects Host readback bodies that try to supply H7 scope or hash material' {
     foreach ($source in @('codex_app_read_thread','codex_visible_context')) {
       $fixture = New-PhaseCloseoutFixture -ActivateH7
-      $blocked = Invoke-CreatePhaseCloseout $fixture (New-HostReadbackProjection $source -AddForbiddenHash)
+      $projection = ConvertTo-PhaseCloseoutBase64 (New-HostReadbackProjection $source -AddForbiddenHash)
+      $blocked = Invoke-CreatePhaseCloseout $fixture @('-HostReadbackProjectionBase64',$projection)
       $evidenceRoot = Join-Path $fixture.stateRoot 'workspace\runtime-state\phase-evidence'
 
       $blocked.exitCode | Should Be 1
-      $blocked.value.code | Should Be 'EXECUTION_CONTRACT_PHASE_CLOSEOUT_HOST_READBACK_FIELDS_INVALID'
+      $blocked.value.code | Should Be 'H7_HOST_TRANSPORT_RETIRED'
       (Test-Path -LiteralPath $evidenceRoot) | Should Be $false
     }
   }
 
   It 'rejects closeout authority inputs outside its bounded Host projection and CAS scope' {
     $fixture = New-PhaseCloseoutFixture -ActivateH7
-    $blocked = Invoke-CreatePhaseCloseout $fixture (New-HostReadbackProjection) @('-LatestUserInstruction','raw caller text')
+    $projection = ConvertTo-PhaseCloseoutBase64 (New-HostReadbackProjection)
+    $blocked = Invoke-CreatePhaseCloseout $fixture @('-HostReadbackProjectionBase64',$projection,'-LatestUserInstruction','raw caller text')
     $evidenceRoot = Join-Path $fixture.stateRoot 'workspace\runtime-state\phase-evidence'
 
     $blocked.exitCode | Should Be 1
-    $blocked.value.code | Should Be 'EXECUTION_CONTRACT_PHASE_CLOSEOUT_INPUT_FORBIDDEN'
+    $blocked.value.code | Should Be 'H7_HOST_TRANSPORT_RETIRED'
     (Test-Path -LiteralPath $evidenceRoot) | Should Be $false
   }
 
@@ -347,25 +344,25 @@ Describe 'H7-only phase closeout evidence' {
     (Test-Path -LiteralPath $evidenceRoot) | Should Be $false
   }
 
-  It 'blocks an R5 Stage 9-to-Stage 10 transition when H7 closeout lacks a host readback stage receipt' {
+  It 'blocks an R5 Stage 9-to-Stage 10 transition when H7 closeout lacks its binding' {
     $fixture = New-PhaseCloseoutFixture -ActivateH7 -Phase 'R5 Stage 9' -Step 'finish Stage 9' -NextAction 'enter Stage 10'
-    $receiptPath = Write-H7CloseoutReceipt $fixture (New-H7CloseoutReceipt $fixture $fixture.evidence -OmitHostStageReceipt)
+    $receiptPath = Write-H7CloseoutReceipt $fixture (New-H7CloseoutReceipt $fixture $fixture.evidence -OmitH7Binding)
     $blocked = Invoke-H7PhaseAdvance $fixture $receiptPath 'R5 Stage 10' 'start Stage 10'
 
     $blocked.exitCode | Should Be 1
-    $blocked.value.code | Should Be 'EXECUTION_CONTRACT_PHASE_CLOSEOUT_HOST_STAGE_RECEIPT_REQUIRED'
+    $blocked.value.code | Should Be 'EXECUTION_CONTRACT_PHASE_CLOSEOUT_H7_BINDING_REQUIRED'
   }
 
-  It 'blocks an R5 Stage 9-to-Stage 10 transition when host readback does not match current visible progress' {
+  It 'blocks an R5 Stage 9-to-Stage 10 transition when H7 binding does not match current visible progress' {
     $fixture = New-PhaseCloseoutFixture -ActivateH7 -Phase 'R5 Stage 9' -Step 'finish Stage 9' -NextAction 'enter Stage 10'
     $receiptPath = Write-H7CloseoutReceipt $fixture (New-H7CloseoutReceipt $fixture $fixture.evidence -TamperVisibleProgressHash)
     $blocked = Invoke-H7PhaseAdvance $fixture $receiptPath 'R5 Stage 10' 'start Stage 10'
 
     $blocked.exitCode | Should Be 1
-    $blocked.value.code | Should Be 'EXECUTION_CONTRACT_PHASE_CLOSEOUT_HOST_STAGE_RECEIPT_MISMATCH'
+    $blocked.value.code | Should Be 'EXECUTION_CONTRACT_PHASE_CLOSEOUT_H7_BINDING_MISMATCH'
   }
 
-  It 'fails closed when a v2 receipt is supplied without current H7 evidence' {
+  It 'fails closed when a v4 receipt is supplied without current H7 evidence' {
     $fixture = New-PhaseCloseoutFixture
     $fakeEvidence = [pscustomobject]@{ value=[pscustomobject]@{
       scope=[pscustomobject]@{scopeRef=('a' * 64);contractHash=('b' * 64)}
@@ -423,7 +420,7 @@ Describe 'H7-only phase closeout evidence' {
 
     $advanced.exitCode | Should Be 0
     $advanced.value.currentPhase | Should Be 'P8'
-    $advanced.value.phaseCloseouts[-1].schema | Should Be 'super-brain.phase-closeout.v3'
+    $advanced.value.phaseCloseouts[-1].schema | Should Be 'super-brain.phase-closeout.v4'
     $advanced.value.phaseCloseouts[-1].phaseEvidencePolicy | Should Be 'h7_current'
     $advanced.value.phaseCloseouts[-1].h7.mode | Should Be 'hookless_turn_runtime'
     $advanced.value.phaseCloseouts[-1].h7.entryReceiptHash | Should Be $fixture.evidence.value.entry.receipt.receiptHash
@@ -441,13 +438,13 @@ Describe 'H7-only phase closeout evidence' {
   It 'revalidates the recorded closeout against current H7 evidence, not any Hook artifact' {
     $fixture = New-PhaseCloseoutFixture -ActivateH7
     $receiptPath = Write-H7CloseoutReceipt $fixture (New-H7CloseoutReceipt $fixture $fixture.evidence)
-    $resolution = Resolve-SuperBrainPhaseCloseouts $fixture.contract 'P8' 'main-line' 'continue' $receiptPath (Join-Path $fixture.stateRoot 'workspace') ([string]$fixture.contract.packageVersion) $root $fixture.stateRoot $fixture.hostRoot
+    $resolution = Resolve-SuperBrainPhaseCloseouts $fixture.contract 'P8' 'main-line' 'continue' $receiptPath (Join-Path $fixture.stateRoot 'workspace') ([string]$fixture.contract.packageVersion) $root $fixture.stateRoot $fixture.projectRoot
     $candidate = $fixture.contract | ConvertTo-Json -Depth 32 | ConvertFrom-Json
     $candidate.currentPhase = 'P8'
     $candidate.phaseCloseouts = @($resolution.closeout)
     $legacyHookPath = Join-Path $fixture.stateRoot 'workspace\runtime-state\prompt-hook-telemetry\legacy.json'
     Write-PhaseCloseoutJson $legacyHookPath ([ordered]@{schema='super-brain.codex-user-prompt-hook.v1';rawPromptStored=$false;rawSessionIdStored=$false;tampered=$true})
-    $current = Assert-SuperBrainPhaseCloseoutTransition $fixture.contract $candidate (Join-Path $fixture.stateRoot 'workspace') ([string]$fixture.contract.packageVersion) $root $fixture.stateRoot $fixture.hostRoot
+    $current = Assert-SuperBrainPhaseCloseoutTransition $fixture.contract $candidate (Join-Path $fixture.stateRoot 'workspace') ([string]$fixture.contract.packageVersion) $root $fixture.stateRoot $fixture.projectRoot
 
     $resolution.ok | Should Be $true
     $current.ok | Should Be $true
@@ -457,7 +454,7 @@ Describe 'H7-only phase closeout evidence' {
     $raw = Get-Content -LiteralPath $openReceipt -Raw -Encoding UTF8 | ConvertFrom-Json
     $raw.receiptHash = ('0' * 64)
     Write-PhaseCloseoutJson $openReceipt $raw
-    $stale = Assert-SuperBrainPhaseCloseoutTransition $fixture.contract $candidate (Join-Path $fixture.stateRoot 'workspace') ([string]$fixture.contract.packageVersion) $root $fixture.stateRoot $fixture.hostRoot
+    $stale = Assert-SuperBrainPhaseCloseoutTransition $fixture.contract $candidate (Join-Path $fixture.stateRoot 'workspace') ([string]$fixture.contract.packageVersion) $root $fixture.stateRoot $fixture.projectRoot
 
     $stale.ok | Should Be $false
     $stale.code | Should Be 'PHASE_CLOSEOUT_H7_EVIDENCE_NOT_CURRENT'

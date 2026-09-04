@@ -20,38 +20,27 @@ Lifecycle ownership:
 - `hot-refresh-skills.ps1` synchronizes already installed package-owned skill copies; it does not replace installation.
 - `doctor.ps1` and `verify-package.ps1` diagnose and verify; they do not install or refresh.
 
-Codex UserPromptSubmit lifecycle:
-- `hooks.json` points only to the fixed dispatcher under
-  `<CODEX_HOME>\hooks\super-memory-brain`; `command` and `commandWindows`
-  use the same direct Python dispatcher command. Neither command may point
-  directly into a movable package tree. The sibling stable `.cmd` launcher is
-  retained only as a compatibility shim for an already-cached legacy Host. A
-  verified managed `.cmd` cache can run the current dispatcher without forcing
-  a Desktop restart; it still requires one real submit before it is accepted.
-- The dispatcher resolves the installed `package-root.txt` marker on every
-  invocation, computes the current Handler generation, and delegates to the
-  bounded native launcher. It writes a canonical entry receipt only after the
-  child succeeds with valid hook JSON and the observed Windows command chain is
-  either `ChatGPT -> codex -> launcher -> dispatcher` (the app-server hook
-  runner) or `ChatGPT -> codex -> codex-code-mode-host -> launcher ->
-  dispatcher` (the Code Mode runner). A PowerShell relay below the owner, a
-  synthetic CLI call, or a child failure cannot validate a Host.
-- Cached pre-dispatcher PowerShell, Python, native, or launcher commands may
-  hot-handoff to the fixed dispatcher, but their compatibility files remain
-  until a real generation-matched Desktop event has been accepted. The stable
-  entry receipt records the active Desktop ancestor rather than requiring the
-  immediate parent to be the Host, so compatibility shims remain attestable.
-- `configurationOk` proves only installed files, command shape, discovery, and
-  trust. `liveHostValidated` requires a current-generation v2 entry receipt
-  with `desktopCommandChainVerified=true`, source
-  `desktop_windows_command_chain`, and a live `codex` app-server or
-  `codex-code-mode-host` process. Legacy ancestry-only receipts are evidence of
-  neither dispatch nor recovery.
-  `restartRequired` is true only when an older active Host has not demonstrated
-  the stable entrypoint.
-- P7 real-user evidence and governed native learning reject missing, unmanaged,
-  or mismatched Handler generations; synthetic CLI evidence remains explicitly
-  labeled and cannot stand in for the real Desktop path.
+Hookless H7/MCP lifecycle:
+- `brain_turn` is the only normal lifecycle authority. UserPromptSubmit,
+  Stop, P7, and Host readback are retired compatibility surfaces and never
+  provide continuation proof or authorization.
+- `install-runtime.ps1` registers one static `local_mcp_launcher.py` entry for
+  discovery and health. It deliberately starts without a local session id, so
+  `H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED`/`withheld` and zero Broker
+  channels are the expected static result.
+- A real host-neutral embedding adapter must launch one process per local
+  project scope with the actual project cwd and a strict
+  `SUPER_BRAIN_LOCAL_SESSION_ID` in the child environment. The package-owned
+  contract and lifecycle helper are documented in
+  `references/local-mcp-adapter.md`; the SID never belongs in argv, MCP
+  arguments, persistent config, or visible output.
+- H7 resolves the current execution contract and live project proof before the
+  Broker bind. Changing cwd, SID, or Broker instance requires a fresh launcher
+  process; a new SID uses explicit local rebind issue → consume → finalize.
+- `brain_cli.py` remains an equivalent local H7 fallback for compatibility,
+  but its legacy environment provider intentionally preserves historical SID
+  normalization. It is not a substitute for the strict host-neutral MCP
+  adapter.
 
 One-click transaction:
 - `bootstrap.ps1` performs a read-only preflight before host writes, snapshots only package-owned skills and memory-runtime metadata, then installs skills, startup routing, the hook, MCP, and self-tests in that order.

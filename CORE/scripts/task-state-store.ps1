@@ -587,6 +587,13 @@ function Materialize-Payload([string]$Payload,[string]$Target,[string]$Transacti
   }
 }
 
+function Test-TaskStateMaterializationFaultInjected([string]$ErrorMessage) {
+  # FaultAfterMaterialization is an intentional crash simulation, not a
+  # materializer validation failure.  Keep the marker centralized so every
+  # transaction entry point preserves its prepared WAL for explicit replay.
+  return ([string]$ErrorMessage -like 'TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZATION*')
+}
+
 function Get-TaskMaterializationRollbackRoot([string]$Id,[string]$TransactionId) {
   $token = Get-SuperBrainCanonicalTaskToken $Id
   $root = Join-Path (Join-Path $stagingRoot $token) ('rollback-' + (Get-SuperBrainStableHash $TransactionId 24))
@@ -1111,8 +1118,10 @@ function Commit-ProjectionPathRebindTask([object]$TaskPlan,[string]$PlanFingerpr
       Remove-TaskCompletionStaging @() '' $materialization
       return [pscustomobject]@{ ok=$true; taskId=$id; transactionId=$transactionId; revision=$nextRevision; previousRevision=$previousRevision; entityCount=$rebindRecords.Count; materializedCount=$materialization.Count; records=@($rebindRecords); materialization=@($materialization); authorityMode=if($authority){'sqlite'}else{'deferred_until_task_authority'}; authorityRevision=if($authority){[int]$authority.revision}else{0}; projectionPath=Get-ProjectionPath $id; eventPath=Get-EventPath $id; guard='All eligible entity pointers for this task were rebound in one recoverable transaction. Existing SQLite authority commits first; missing canonical targets are copied from hash-verified files before outbox acknowledgement.' }
     } catch {
-      $rollback = if (-not $durableCommit) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error='durable_commit_present' } }
-      if (-not $rollback.verified -and $rollback.attempted) { throw "TASK_STATE_REBIND_ROLLBACK_FAILED error=$($rollback.error) original=$($_.Exception.Message)" }
+      $originalError = $_.Exception.Message
+      $preserveForRecovery = Test-TaskStateMaterializationFaultInjected $originalError
+      $rollback = if (-not $durableCommit -and -not $preserveForRecovery) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'} } }
+      if (-not $rollback.verified -and $rollback.attempted) { throw "TASK_STATE_REBIND_ROLLBACK_FAILED error=$($rollback.error) original=$originalError" }
       throw
     }
   }
@@ -2128,14 +2137,20 @@ function Invoke-TaskCompletionMaterialization([object[]]$Commands,[string]$Id,[s
       $record | Add-Member -NotePropertyName expectedAfterHash -NotePropertyValue $observedHash -Force
       if ($observedExists) { $record | Add-Member -NotePropertyName afterHash -NotePropertyValue $observedHash -Force }
       $record | Add-Member -NotePropertyName postStateKnown -NotePropertyValue $true -Force
-      if ($FaultAfter -gt 0 -and $index -eq $FaultAfter) { throw "TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZATION boundary=$index" }
+      if ($FaultAfter -gt 0 -and $index -eq $FaultAfter) {
+        # This is an intentional crash point used by the transaction recovery
+        # regression.  Preserve the already-materialized prefix and prepared
+        # WAL so explicit Reconcile can replay the same command list.  A real
+        # materializer exception below still follows the normal rollback path.
+        throw "TASK_STATE_FAULT_INJECTED_AFTER_MATERIALIZATION boundary=$index"
+      }
     }
   } catch {
     # A genuine materialization/validation failure must not leave a partially
-    # replaced contract, context, checkpoint, or pointer.  Fault injection is
-    # deliberately thrown after this function returns and is therefore left
-    # recoverable through the prepared transaction path.
-    if ($results.Count -gt 0) { Restore-TaskMaterialization $results }
+    # replaced contract, context, checkpoint, or pointer.  The intentional
+    # FaultAfterMaterialization marker is the one exception: it preserves the
+    # already-materialized prefix for explicit prepared-WAL reconciliation.
+    if (-not (Test-TaskStateMaterializationFaultInjected $_.Exception.Message) -and $results.Count -gt 0) { Restore-TaskMaterialization $results }
     throw
   }
   return @($results)
@@ -2326,7 +2341,7 @@ function Complete-TaskState([string]$Id,[string]$ManifestPath,[int]$Expected,[st
       return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; revision=$nextRevision; previousRevision=$actualRevision; lifecycleStatus='completed'; transactionId=$transactionId; commandCount=$commands.Count; activeStateCount=0; authorityAggregateId=[string]$authority.aggregateId; authorityRevision=[int]$authority.revision; authorityStateHash=[string]$authority.stateHash; intentFulfillmentFingerprint=[string]$intentCompletion.fulfillmentFingerprint; terminalPlanSealPath=if($terminalPlanSealCommand){[string]$terminalPlanSealCommand.targetPath}else{''}; terminalPlanSealHash=if($terminalPlanSealCommand){[string]$terminalPlanSealCommand.payloadHash}else{''}; completionReceiptPath=[string]$completionReceiptCommand.targetPath; completionReceiptHash=[string]$completionReceiptCommand.payloadHash; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; maintenanceOverride=[bool]$Override }
     } catch {
       $originalError = $_.Exception.Message
-      $preserveForRecovery = ($FaultPoint -eq 'after_materialize')
+      $preserveForRecovery = ($FaultPoint -eq 'after_materialize' -or (Test-TaskStateMaterializationFaultInjected $originalError))
       $rollback = if (-not $durableCommit -and -not $preserveForRecovery) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'} } }
       if ($rollback.attempted -and -not $rollback.verified) { throw "TASK_STATE_COMPLETION_ROLLBACK_FAILED error=$($rollback.error) original=$originalError" }
       throw
@@ -2703,10 +2718,9 @@ function Commit-ContractContinuity([string]$Id,[string]$ManifestPath,[string]$Wr
     $authority = Apply-TaskAuthorityTransition $Id $validated.contract $projection $entities $lifecycle @($validated.commands) $actualRevision $Writer 'contract_continuity' ([string]$manifest.hash) $null $taskSessionRebind
     if (-not $authority.ok) {
       # Authority is the owner/session source of truth. If it rejects the CAS
-      # after file materialization, restore every replaced target before
-      # surfacing the failure; the prepared event remains available for an
-      # explicit reconcile/replay and no stale new-owner projection leaks out.
-      if ($materialization.Count -gt 0) { Restore-TaskMaterialization $materialization }
+      # after file materialization, the enclosing transaction catch restores
+      # every replaced target exactly once before surfacing the failure; the
+      # prepared event remains available for explicit reconcile/replay.
       throw ('TASK_STATE_SQLITE_AUTHORITY_APPLY_FAILED code=' + [string]$authority.code + ' error=' + (Limit-Text ([string]$authority.error) 240))
     }
     $continuity | Add-Member -NotePropertyName authorityState -NotePropertyValue 'applied' -Force
@@ -2727,7 +2741,7 @@ function Commit-ContractContinuity([string]$Id,[string]$ManifestPath,[string]$Wr
     return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; transactionId=$transactionId; revision=$nextRevision; previousRevision=$actualRevision; bootstrapContext=$bootstrapContext; planCheckpointRequired=$planCheckpointRequired; checkpointProjectionIncluded=$checkpointProjectionIncluded; contractRevision=[int]$validated.contract.revision; planFingerprint=[string]$validated.contract.planReceipt.planFingerprint; authorityAggregateId=[string]$authority.aggregateId; authorityRevision=[int]$authority.revision; authorityStateHash=[string]$authority.stateHash; contextPath=[string]$continuity.contextPath; checkpointPath=[string]$continuity.checkpointPath; taskCardPath=[string]$continuity.taskCardPath; routePath=[string]$continuity.routePath; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; guard=if($checkpointProjectionIncluded){'SQLite task authority committed contract, bound context, active checkpoint, active task card, routes, and compatibility pointers through one recoverable transaction.'}else{'SQLite task authority committed contract, bound context, active task card, routes, and compatibility pointers through one recoverable transaction; no active checkpoint was present.'} }
     } catch {
       $originalError = $_.Exception.Message
-      $preserveForRecovery = ($FaultPoint -eq 'after_materialize')
+      $preserveForRecovery = ($FaultPoint -eq 'after_materialize' -or (Test-TaskStateMaterializationFaultInjected $originalError))
       $rollback = if (-not $durableCommit -and -not $preserveForRecovery) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'} } }
       if ($rollback.attempted -and -not $rollback.verified) { throw "TASK_STATE_CONTINUITY_ROLLBACK_FAILED error=$($rollback.error) original=$originalError" }
       throw
@@ -2797,6 +2811,27 @@ function Complete-PreparedContractContinuity([object]$Prepare) {
           ok=$true; aggregateId=[string]$snapshots[0].aggregateId; revision=[int]$snapshots[0].revision;
           stateHash=[string]$snapshots[0].payload.stateHash; outboxEventId=[string]$snapshots[0].eventId; idempotent=$true
         }
+      } elseif (
+        [int]$authorityRead.expectedRevision -eq 0 -and
+        [int]$Prepare.previousRevision -gt 0 -and
+        $null -eq $authorityRead.state
+      ) {
+        # A first bound-context transaction can legitimately prepare its file
+        # projection before SQLite has ever seen this task.  The projection
+        # revision is still the scoped source of truth for the bootstrap: it
+        # was validated from the prepared manifest, task instance, workspace,
+        # owner session, package version, and exact file hashes above.  Import
+        # that one prior revision, then apply the prepared transition through
+        # the normal CAS path.  Never import when an authority state exists or
+        # when the observed revision is anything other than the empty store;
+        # those cases remain conflicts and fail closed.
+        $seed = Ensure-TaskAuthorityAggregate $id $validated.contract $projection ([int]$Prepare.previousRevision) ([string]$Prepare.source) $taskSessionRebind
+        if (-not $seed.ok) {
+          throw ('TASK_STATE_AUTHORITY_BOOTSTRAP_FAILED code=' + [string]$seed.code + ' error=' + (Limit-Text ([string]$seed.error) 240))
+        }
+        $authority = Apply-TaskAuthorityTransition $id $validated.contract $projection $Prepare.entities $Prepare.lifecycle @($validated.commands) ([int]$Prepare.previousRevision) ([string]$Prepare.source) 'contract_continuity' ([string]$manifestRecord.hash) $null $taskSessionRebind
+        if (-not $authority.ok) { throw ('TASK_STATE_AUTHORITY_APPLY_FAILED code=' + [string]$authority.code + ' error=' + [string]$authority.error) }
+        $authorityCommitted = $true
       } elseif ([int]$authorityRead.expectedRevision -eq [int]$Prepare.previousRevision) {
         $authority = Apply-TaskAuthorityTransition $id $validated.contract $projection $Prepare.entities $Prepare.lifecycle @($validated.commands) ([int]$Prepare.previousRevision) ([string]$Prepare.source) 'contract_continuity' ([string]$manifestRecord.hash) $null $taskSessionRebind
         if (-not $authority.ok) { throw ('TASK_STATE_AUTHORITY_APPLY_FAILED code=' + [string]$authority.code + ' error=' + [string]$authority.error) }
@@ -3000,7 +3035,7 @@ function Commit-ActiveTaskBundle([string]$Id,[string]$ManifestPath,[string]$Writ
     return [pscustomobject]@{ ok=$true; changed=$true; taskId=$Id; transactionId=$transactionId; revision=$nextRevision; previousRevision=$actualRevision; authorityMode=if($authority){'sqlite'}else{'deferred_until_task_authority'}; authorityRevision=if($authority){[int]$authority.revision}else{0}; checkpointPath=$bundle.checkpointPath; taskCardPath=$bundle.taskCardPath; projectionPath=Get-ProjectionPath $Id; eventPath=Get-EventPath $Id; materialization=@($materialization); maintenanceOverride=[bool]$MaintenanceOverride; maintenanceReason=if($maintenance){[string]$maintenance.reason}else{''}; guard=if($authority){'Existing SQLite task authority committed first; active checkpoint and task-card compatibility projections were then materialized and acknowledged.'}else{'No SQLite task aggregate exists yet. The recoverable file transaction remains a compatibility bootstrap and will be imported when a task-scoped contract establishes canonical authority.'} }
     } catch {
       $originalError = $_.Exception.Message
-      $preserveForRecovery = ($FaultPoint -eq 'after_materialize')
+      $preserveForRecovery = ($FaultPoint -eq 'after_materialize' -or (Test-TaskStateMaterializationFaultInjected $originalError))
       $rollback = if (-not $durableCommit -and -not $preserveForRecovery) { Restore-TaskMaterializationSafely $materialization } else { [pscustomobject]@{ attempted=$false; verified=$false; error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'} } }
       if ($rollback.attempted -and -not $rollback.verified) { throw "TASK_STATE_ACTIVE_BUNDLE_ROLLBACK_FAILED error=$($rollback.error) original=$originalError" }
       throw
@@ -3542,7 +3577,7 @@ function Invoke-AmbiguousStateQuarantine([object]$Preflight,[string]$Writer) {
      return [pscustomobject]@{ok=$true;taskId=$id;classification=$candidate.classification;revision=$nextRevision;previousRevision=$actualRevision;transactionId=$transactionId;manifestPath=$manifestTargetPath;manifestHash=$manifestHash;sourceCount=$candidate.sourceCount;wakeReferenceCount=0;lifecycleStatus='quarantined'}
     } catch {
       $originalError=$_.Exception.Message
-      $preserveForRecovery=($FaultPoint -eq 'after_materialize')
+      $preserveForRecovery=($FaultPoint -eq 'after_materialize' -or (Test-TaskStateMaterializationFaultInjected $originalError))
       $rollback=if(-not$durableCommit -and -not$preserveForRecovery){Restore-TaskMaterializationSafely $materialization}else{[pscustomobject]@{attempted=$false;verified=$false;error=if($durableCommit){'durable_commit_present'}else{'fault_injection_preserved'}}}
       if($rollback.attempted-and-not$rollback.verified){throw "TASK_STATE_QUARANTINE_ROLLBACK_FAILED error=$($rollback.error) original=$originalError"}
       throw

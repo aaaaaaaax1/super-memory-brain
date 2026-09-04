@@ -83,9 +83,13 @@ function Get-SuperBrainPesterSuiteTimeout([string]$RequestedTier,[int]$Requested
     }
     default {
       # Measured on 2026-07-29: ExecutionContract has 68 isolated behavioral
-      # paths and completes in about 480 seconds. Keep every other Full suite
-      # at the normal six-minute ceiling instead of globally inflating timeouts.
+      # paths and completes in about 480 seconds. TaskCompletionTransaction
+      # has a similarly long, process-heavy recovery matrix (about 466
+      # seconds alone), so give both suites a bounded ten-minute ceiling.
+      # Keep every other Full suite at the normal six-minute ceiling instead
+      # of globally inflating timeouts.
       if ($SuiteName -eq 'ExecutionContract.Tests.ps1') { return 540 }
+      if ($SuiteName -eq 'TaskCompletionTransaction.Tests.ps1') { return 600 }
       return 360
     }
   }
@@ -277,7 +281,7 @@ try {
   $suiteTimeoutPolicy = if ($SuiteTimeoutSeconds -gt 0) {
     'uniform=' + $suiteTimeout
   } elseif ($Tier -eq 'Full') {
-    'default=360;ExecutionContract.Tests.ps1=540'
+    'default=360;ExecutionContract.Tests.ps1=540;TaskCompletionTransaction.Tests.ps1=600'
   } elseif ($Tier -eq 'Core') {
     'default=90;CanonicalPlanContinuity.Tests.ps1=105'
   } else {
@@ -391,7 +395,7 @@ $report = [pscustomobject]@{
   suiteTimeoutPolicy = if ($SuiteTimeoutSeconds -gt 0) {
     'uniform=' + $suiteTimeout
   } elseif ($Tier -eq 'Full') {
-    'default=360;ExecutionContract.Tests.ps1=540'
+    'default=360;ExecutionContract.Tests.ps1=540;TaskCompletionTransaction.Tests.ps1=600'
   } elseif ($Tier -eq 'Core') {
     'default=90;CanonicalPlanContinuity.Tests.ps1=105'
   } else {

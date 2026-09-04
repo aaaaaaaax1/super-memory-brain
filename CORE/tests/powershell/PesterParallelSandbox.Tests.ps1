@@ -7,7 +7,13 @@ Describe 'Super Memory Brain bounded Pester sandbox pool' {
     $markerRoot = Join-Path $fixtureRoot 'markers'
     $fixtureRunner = Join-Path $fixtureScripts 'test-pester.ps1'
     $emittedReportPath = ''
-    $fixtureNames = @('Ci.Tests.ps1','Common.Tests.ps1','Manifest.Tests.ps1','RouteRegression.Tests.ps1','TestPesterTiers.Tests.ps1')
+    # Keep the synthetic fixture aligned with the package's current Fast tier;
+    # the tier now includes the MCP/registration/version guard suites as well.
+    $fixtureNames = @(
+      'Ci.Tests.ps1','Common.Tests.ps1','Manifest.Tests.ps1','McpProcessAudit.Tests.ps1',
+      'RouteRegression.Tests.ps1','TestPesterTiers.Tests.ps1','VersionBumpPrivacy.Tests.ps1',
+      'PackageVersionRebind.Tests.ps1','McpRegistrationSafety.Tests.ps1'
+    )
     try {
       New-Item -ItemType Directory -Force -Path $fixtureScripts,$fixtureTests,$markerRoot | Out-Null
       Copy-Item -LiteralPath (Join-Path $root 'scripts\common.ps1') -Destination (Join-Path $fixtureScripts 'common.ps1') -Force

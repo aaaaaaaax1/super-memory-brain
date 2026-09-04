@@ -61,7 +61,7 @@ if ($PackageOnly -and -not $Worker) {
   $checkDefinitions = @(
     # Compile in memory. ``py_compile`` writes __pycache__ even with -B,
     # which is unnecessary package churn and a shared-tree race under workers.
-  [pscustomobject]@{ name='python runtime compile'; executable='python'; arguments=@('-B','-c','import sys,pathlib; [compile(pathlib.Path(p).read_text(encoding=''utf-8''),p,''exec'') for p in sys.argv[1:]]','runtime\brain_core.py','runtime\execution_assist.py','runtime\capability_source_registry.py','runtime\capability_shadow_eval.py','runtime\agent_asset_loadout.py','runtime\work_dag.py','runtime\project_knowledge.py','runtime\run_observability.py','runtime\turn_runtime.py','runtime\brain_mcp.py','runtime\brain_cli.py','runtime\turn_close_dispatcher.py','runtime\scope_broker.py','runtime\scope_provider.py','runtime\scope_broker_ipc.py','runtime\local_scope_bootstrap.py','runtime\local_mcp_launcher.py','runtime\mcp_transport_health.py') }
+  [pscustomobject]@{ name='python runtime compile'; executable='python'; arguments=@('-B','-c','import sys,pathlib; [compile(pathlib.Path(p).read_text(encoding=''utf-8''),p,''exec'') for p in sys.argv[1:]]','runtime\brain_core.py','runtime\execution_assist.py','runtime\capability_source_registry.py','runtime\capability_shadow_eval.py','runtime\agent_asset_loadout.py','runtime\work_dag.py','runtime\project_knowledge.py','runtime\run_observability.py','runtime\turn_runtime.py','runtime\brain_mcp.py','runtime\brain_cli.py','runtime\turn_close_dispatcher.py','runtime\scope_broker.py','runtime\scope_provider.py','runtime\scope_broker_ipc.py','runtime\local_scope_bootstrap.py','runtime\local_mcp_launcher.py','runtime\local_scope_adapter.py','runtime\mcp_transport_health.py') }
     [pscustomobject]@{ name='core rule registry regression'; executable='python'; arguments=@('tests\runtime_core_rule_registry_regression.py') }
     [pscustomobject]@{ name='execution assist regression'; executable='python'; arguments=@('tests\runtime_execution_assist_regression.py') }
     [pscustomobject]@{ name='capability source registry regression'; executable='python'; arguments=@('tests\runtime_capability_source_registry_regression.py') }
@@ -79,6 +79,7 @@ if ($PackageOnly -and -not $Worker) {
     [pscustomobject]@{ name='scope broker IPC regression'; executable='python'; arguments=@('tests\runtime_scope_broker_ipc_regression.py') }
     [pscustomobject]@{ name='CLI scope repair regression'; executable='python'; arguments=@('tests\runtime_cli_scope_repair_regression.py') }
     [pscustomobject]@{ name='MCP scope broker integration regression'; executable='python'; arguments=@('tests\runtime_mcp_scope_broker_integration_regression.py') }
+    [pscustomobject]@{ name='local scope adapter regression'; executable='python'; arguments=@('tests\runtime_local_scope_adapter_regression.py') }
     [pscustomobject]@{ name='turn scope authorization regression'; executable='python'; arguments=@('tests\runtime_turn_scope_authorization_regression.py') }
     # These checks exercise the canonical repository state root and mutate
     # scoped contracts during their fixtures. Run them in an exclusive slot
@@ -386,18 +387,18 @@ function Test-ContainsAll([string]$Text, [string[]]$Markers) {
 }
 
 $required = @(
-  'README.md','QUICK_START.md','COMMANDS.md','START_HERE.md','install.bat','manifest.json','super-brain-rules.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','maintenance-policy.json','intelligence-policy.json','objective-benchmark-policy.json','route-map.json','capabilities.json','capability-shadow-fixtures.json','capability-shadow-evaluation.json','runtime-layout.example.json','references\index.md','references\runtime-control-plane.md','references\engineering-judgment.md','references\technology-decision.md','references\technology-catalog.json','references\objective-evaluation.md','references\phase6-memory-evaluation.md','references\four-layer-runtime-layout.md','references\skill-capability-map.seed.json',
+  'README.md','QUICK_START.md','COMMANDS.md','START_HERE.md','install.bat','manifest.json','super-brain-rules.json','CHANGELOG.md','CURRENT_BASELINE.md','BASELINE_HISTORY.md','memory-policy.json','maintenance-policy.json','intelligence-policy.json','objective-benchmark-policy.json','route-map.json','capabilities.json','capability-shadow-fixtures.json','capability-shadow-evaluation.json','runtime-layout.example.json','references\index.md','references\runtime-control-plane.md','references\engineering-judgment.md','references\technology-decision.md','references\technology-catalog.json','references\objective-evaluation.md','references\phase6-memory-evaluation.md','references\four-layer-runtime-layout.md','references\local-mcp-adapter.md','references\skill-capability-map.seed.json',
   'super-memory-brain\SKILL.md',
   'modules\skill-orchestrator\SKILL.md',
   'modules\plusunm-g1\SKILL.md',
   'modules\nexsandglass-dedicated-memory\SKILL.md',
   'runtime\brain_core.py','runtime\core_rule_registry.py','runtime\turn_intent.py','runtime\brain_context.py','runtime\brain_control.py','runtime\brain_cli.py','runtime\brain_mcp.py','runtime\brain_eval.py','runtime\phase6_memory_eval.py','runtime\continuation_policy.py','runtime\turn_close_dispatcher.py','runtime\capability_shadow_eval.py','runtime\work_dag.py','runtime\project_knowledge.py','runtime\run_observability.py','runtime\codex_prompt_hook.py','runtime\codex_prompt_hook_launcher.py','runtime\codex_prompt_hook_dispatcher.py','runtime\codex_stop_hook.py','runtime\codex_stop_hook_dispatcher.py','runtime\instruction_anchor_store.py','runtime\memory_consolidation.py',
-  'runtime\scope_broker.py','runtime\scope_provider.py','runtime\scope_broker_ipc.py','runtime\local_scope_bootstrap.py','runtime\local_mcp_launcher.py','runtime\mcp_transport_health.py',
+  'runtime\scope_broker.py','runtime\scope_provider.py','runtime\scope_broker_ipc.py','runtime\local_scope_bootstrap.py','runtime\local_mcp_launcher.py','runtime\local_scope_adapter.py','runtime\mcp_transport_health.py',
   'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_log.py',
   'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_lock.py',
   'vendor\NexSandglass-Agent-DedicatedMemory\sandglass_sqlite.py',
   'tests\memory-recall-tests.json','tests\memory-eval-tests.json','tests\runtime_core_rule_registry_regression.py','tests\runtime_turn_intent_regression.py','tests\runtime_brain_regression.py','tests\runtime_brain_control_regression.py','tests\runtime_native_memory_prompt_hook_regression.py','tests\runtime_brain_ui_server_regression.py','tests\runtime_migration_launcher_regression.py','tests\runtime_index_regression.py','tests\runtime_index_cache_regression.py','tests\runtime_sqlite_resource_regression.py','tests\runtime_capability_shadow_eval_regression.py','tests\runtime_work_dag_regression.py','tests\runtime_project_knowledge_regression.py','tests\runtime_run_observability_regression.py','tests\runtime_verify_package_layers_regression.py','tests\recall_quality_diagnostic.py','tests\phase6_memory_eval_regression.py','tests\powershell\TurnCloseContinuation.Tests.ps1','tests\powershell\NoHookTurnCloseDispatcher.Tests.ps1','tests\powershell\RecoveryCheckpointFreshness.Tests.ps1','tests\powershell\CrossSessionRecoveryMatrix.Tests.ps1','tests\powershell\Phase6AnswerArtifactGenerator.Tests.ps1','tests\powershell\ObjectiveAnswerArtifactGenerator.Tests.ps1','tests\powershell\ObjectiveBenchmarkRunner.Tests.ps1','tests\powershell\SelfImprovementQueue.Tests.ps1','tests\powershell\SkillEvolution.Tests.ps1','tests\powershell\BootstrapTransaction.Tests.ps1','tests\powershell\IntentContract.Tests.ps1','tests\powershell\ColdStartCapabilityMap.Tests.ps1',
-  'tests\runtime_scope_broker_regression.py','tests\runtime_scope_provider_regression.py','tests\runtime_scope_broker_ipc_regression.py','tests\runtime_cli_scope_repair_regression.py','tests\runtime_mcp_scope_broker_integration_regression.py','tests\runtime_turn_scope_authorization_regression.py',
+  'tests\runtime_scope_broker_regression.py','tests\runtime_scope_provider_regression.py','tests\runtime_scope_broker_ipc_regression.py','tests\runtime_cli_scope_repair_regression.py','tests\runtime_mcp_scope_broker_integration_regression.py','tests\runtime_local_scope_adapter_regression.py','tests\runtime_turn_scope_authorization_regression.py',
   'tests\powershell\AbsorbedCapabilityRouting.Tests.ps1','tests\powershell\H7RuntimeWakeControlPlane.Tests.ps1','tests\powershell\McpProcessAudit.Tests.ps1',
   'scripts\workspace-lifecycle-manager.ps1','scripts\auto-hygiene-runner.ps1','scripts\post-task-maintenance.ps1','scripts\self-model.ps1','scripts\self-improvement-queue.ps1',
   'scripts\install.ps1','scripts\install.bat','scripts\install-ui.ps1','scripts\install-ui.vbs','scripts\brain.bat','scripts\brain-ui.vbs','scripts\check-install-ui-paths.ps1','scripts\status.ps1','scripts\doctor.ps1','scripts\maintain.ps1','scripts\summary.ps1','scripts\script-tiers.ps1','scripts\memory-health.ps1','scripts\write-memory.ps1','scripts\write-experience.ps1','scripts\audit-memory.ps1',
@@ -581,6 +582,21 @@ foreach ($nativeRuntimeFile in $nativeRuntimeFiles) {
   $nativePath = Join-Path $Root ([string]$nativeRuntimeFile)
   if (Test-Path -LiteralPath $nativePath) { Mark-Ok "native runtime file $nativeRuntimeFile" } else { Mark-Fail "native runtime file missing $nativeRuntimeFile" }
 }
+try {
+  $localAdapter = $manifest.localMcpAdapter
+  if (
+    $localAdapter.path -eq 'runtime/local_scope_adapter.py' -and
+    $localAdapter.schema -eq 'super-brain.local-mcp-adapter.v1' -and
+    $localAdapter.sessionEnvironment -eq 'SUPER_BRAIN_LOCAL_SESSION_ID' -and
+    $localAdapter.sessionPattern -eq '^sid-[a-f0-9]{16,64}$' -and
+    $localAdapter.memoryRootRequired -eq $true -and
+    @($localAdapter.scopeInputs) -contains 'processCwd' -and
+    @($localAdapter.scopeInputs) -contains 'sessionEnvironment' -and
+    $localAdapter.requiresFreshProcessOnScopeChange -eq $true
+  ) { Mark-Ok 'host-neutral local MCP adapter manifest contract' } else { Mark-Fail 'host-neutral local MCP adapter manifest contract invalid' }
+} catch {
+  Mark-Fail "host-neutral local MCP adapter manifest contract parse $($_.Exception.Message)"
+}
 $legacyCompatibilityDuplicates = @($legacyCompatibilityFiles | Group-Object | Where-Object { $_.Count -gt 1 })
 if ($legacyCompatibilityDuplicates.Count -eq 0 -and $legacyCompatibilityFiles.Count -gt 0) { Mark-Ok 'retired compatibility inventory present' } else { Mark-Fail 'retired compatibility inventory missing or duplicated' }
 foreach ($legacyCompatibilityFile in $legacyCompatibilityFiles) {
@@ -711,14 +727,21 @@ ${scopeProviderRuntimeText} = Read-Utf8 'runtime\scope_provider.py'
 ${scopeBrokerIpcRuntimeText} = Read-Utf8 'runtime\scope_broker_ipc.py'
 ${localScopeBootstrapText} = Read-Utf8 'runtime\local_scope_bootstrap.py'
 ${localMcpLauncherText} = Read-Utf8 'runtime\local_mcp_launcher.py'
+${localScopeAdapterText} = Read-Utf8 'runtime\local_scope_adapter.py'
+${startupCheckMcpText} = Read-Utf8 'scripts\startup-check.ps1'
 if (
-  (Test-ContainsAll $selfModelRuntimeText @('MCP_RUNTIME_MODE_STDIO','def mcp_transport_status','def _mcp_adapter_binding_status','deploymentAdapter','H7_MCP_LOCAL_STDIO_CURRENT')) -and
+  (Test-ContainsAll $selfModelRuntimeText @('MCP_RUNTIME_MODE_STDIO','def mcp_transport_status','def _mcp_adapter_binding_status','deploymentAdapter')) -and
   (Test-ContainsAll ${mcpTransportHealthText} @('LocalBrokerStdioTransportHealth','local_scope_broker_stdio','H7_MCP_LOCAL_STDIO_CURRENT','super-brain.mcp-live-handshake.v2')) -and
   (Test-ContainsAll ${scopeBrokerRuntimeText} @('class ScopeBroker','H7_SCOPE_CHANNEL_UNBOUND','H7_SCOPE_WRITE_LEASE_REQUIRED','open_channel_with_ref','pair_request','pairing_request_ref')) -and
   (Test-ContainsAll ${scopeProviderRuntimeText} @('class BrokerScopeProvider','H7_SCOPE_BROKER_CONTEXT_INVALID','scope_broker_channel')) -and
-  (Test-ContainsAll ${scopeBrokerIpcRuntimeText} @('class ScopeBrokerServer','H7_SCOPE_BROKER_NOT_IDLE','shutdown_if_idle','bootstrap_bound_channel','H7_SCOPE_PAIRING_CONTROL_RETIRED')) -and
-  (Test-ContainsAll ${localScopeBootstrapText} @('bootstrap_local_scope','bootstrap_local_mcp_channel','SUPER_BRAIN_LOCAL_SESSION_ID','bootstrap_bound_channel','H7_SCOPE_BOOTSTRAP_BOUND')) -and
-  (Test-ContainsAll ${localMcpLauncherText} @('SUPER_BRAIN_LOCAL_SESSION_ID','local_mcp_launcher','--local-launcher','brain_mcp.main'))
+  (Test-ContainsAll ${scopeBrokerIpcRuntimeText} @('class ScopeBrokerServer','H7_SCOPE_BROKER_NOT_IDLE','shutdown_if_idle','bootstrap_bound_channel','bootstrapOperationId','finalize_bootstrap','cancel_bootstrap','_reap_bootstrap_operations','H7_SCOPE_BOOTSTRAP_CANCELLED','H7_SCOPE_PAIRING_CONTROL_RETIRED')) -and
+  # The bootstrap receives the already-normalized local session as an
+  # argument; the launcher imports the shared adapter constants.  Assert the
+  # current interface rather than retired implementation-local literals.
+  (Test-ContainsAll ${localScopeBootstrapText} @('bootstrap_local_scope','bootstrap_local_mcp_channel','local_session','_SESSION_RE','bootstrap_bound_channel','H7_SCOPE_BOOTSTRAP_BOUND')) -and
+  (Test-ContainsAll ${localMcpLauncherText} @('local_scope_adapter','LOCAL_SESSION_ENV','--local-launcher','brain_mcp.main')) -and
+  (Test-ContainsAll ${localScopeAdapterText} @('super-brain.local-mcp-adapter.v1','generate_session_id','validate_session_id','build_launch_spec','requires_fresh_process','H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED','WORKER_ENV_KEYS')) -and
+  (Test-ContainsAll ${startupCheckMcpText} @('local_mcp_launcher.py','launcherMatches','legacyBrainMcpMatches'))
 ) { Mark-Ok 'platform-neutral local MCP scope-broker transport guard' } else { Mark-Fail 'platform-neutral local MCP scope-broker transport guard missing' }
 if ($selfModelRuntimeText -like '*def _self_model_candidates*' -and $selfModelRuntimeText -like '*snapshotStatus*' -and $selfModelRuntimeText -like '*verificationStatus*' -and $selfModelRuntimeText -like '*rawPromptStored*' -and $selfModelRuntimeText -like '*KNOWN_LIMITATION*' -and $selfModelRuntimeText -like '*if verification_status == "verified"*') { Mark-Ok 'native runtime self-model evidence and degradation guard' } else { Mark-Fail 'native runtime self-model evidence and degradation guard missing' }
 if ($selfModelRuntimeText -like '*def _retrieval_output_policy*' -and $selfModelRuntimeText -like '*summary_confidence*' -and $selfModelRuntimeText -like '*inject_confidence*' -and $selfModelRuntimeText -like '*recallDisposition*' -and $selfModelRuntimeText -like '*injectReady*') { Mark-Ok 'native runtime retrieval policy parity guard' } else { Mark-Fail 'native runtime retrieval policy parity guard missing' }
@@ -805,6 +828,9 @@ if ($LASTEXITCODE -eq 0 -and $phase6RegressionText -like '*PHASE6_MEMORY_EVAL_RE
 $responsesClientRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_responses_api_client_regression.py') 2>&1)
 $responsesClientRegressionText = ($responsesClientRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
 if ($LASTEXITCODE -eq 0 -and $responsesClientRegressionText -like '*runtime_responses_api_client_regression: PASS*') { Mark-Ok 'Responses transport selection and fail-closed regression' } else { Mark-Fail "Responses transport selection and fail-closed regression $responsesClientRegressionText" }
+$localScopeAdapterRegressionOutput = @(& python (Join-Path $Root 'tests\runtime_local_scope_adapter_regression.py') 2>&1)
+$localScopeAdapterRegressionText = ($localScopeAdapterRegressionOutput | ForEach-Object { [string]$_ }) -join "`n"
+if ($LASTEXITCODE -eq 0 -and $localScopeAdapterRegressionText -like '*runtime_local_scope_adapter_regression: PASS*') { Mark-Ok 'host-neutral local MCP adapter regression' } else { Mark-Fail "host-neutral local MCP adapter regression $localScopeAdapterRegressionText" }
 $evaluationLearningBridgeText = Read-Utf8 'scripts\evaluation-learning-bridge.ps1'
 $skillEvolutionText = Read-Utf8 'scripts\skill-evolution.ps1'
 if ($evaluationLearningBridgeText -like '*super-brain.evaluation-learning-bridge.v1*' -and $evaluationLearningBridgeText -like '*AGGREGATE_STALE*' -and $evaluationLearningBridgeText -like '*staged_only*' -and $evaluationLearningBridgeText -like '*noAutomaticRuleMutation*' -and $skillEvolutionText -like '*VALIDATION_ARTIFACT_REQUIRED*' -and $skillEvolutionText -like '*WorkspaceRoot*' -and $skillEvolutionText -like '*PROPOSAL_ID_COLLISION*') { Mark-Ok 'evaluation learning bridge and evidence-bound validation guards' } else { Mark-Fail 'evaluation learning bridge or evidence-bound validation guards missing' }

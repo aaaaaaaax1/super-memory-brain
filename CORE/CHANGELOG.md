@@ -3,6 +3,11 @@
 ## 0.6.0
 
 - Complete CORE layout migration with explicit H7 package-version rebind and source-only release boundaries.
+- Added the host-neutral local MCP scope adapter: one real project cwd plus a
+  strict process-only local session id, with static discovery remaining inert.
+- Hardened Broker teardown with mandatory instance CAS and per-client channel
+  ownership, preventing read-only clients and stale channels from stopping a
+  replacement instance.
 
 ## 0.5.98 — 2026-08-13
 

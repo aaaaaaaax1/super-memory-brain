@@ -49,8 +49,13 @@ Describe 'Subagent lifecycle auto-close rule' {
 
   It 'requires closeout before parent resume and keeps the short router bounded' {
     $workflowText.IndexOf('close/interrupt the child runtime immediately') -lt $workflowText.IndexOf('ResumeParent') | Should Be $true
-    $commonText.Contains('Guard: delete/archive/unpin/clean/overwrite deny unless exact action/target/impact user-approved or approved-plan-listed') | Should Be $true
-    $startupBlock.Contains('Guard: delete/archive/unpin/clean/overwrite deny unless exact action/target/impact user-approved or approved-plan-listed') | Should Be $true
+    # Destructive-mutation policy is authoritative in the versioned registry
+    # and the full Super Brain adapter/workflow, not duplicated in the tiny
+    # generated bootstrap.  Keep the bootstrap bounded while asserting that
+    # its generator remains the single source for the H7 retirement boundary.
+    $commonText.Contains('function Get-SuperBrainGlobalStartupBlock') | Should Be $true
+    $startupBlock.Contains('H7_HOST_TRANSPORT_RETIRED') | Should Be $true
+    $startupBlock.Contains('Guard: delete/archive/unpin/clean/overwrite deny unless exact action/target/impact user-approved or approved-plan-listed') | Should Be $false
     ($startupBlock.Length -lt 1900) | Should Be $true
   }
 

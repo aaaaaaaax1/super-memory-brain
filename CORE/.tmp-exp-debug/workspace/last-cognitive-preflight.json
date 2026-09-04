@@ -1,0 +1,344 @@
+{
+  "ok": true,
+  "checkedAt": "2026-09-02 06:54:24",
+  "schema": "super-brain.cognitive-preflight.v1",
+  "version": "0.6.0",
+  "query": "fix cache regression",
+  "intent": "fix_bug",
+  "intentResolutionCandidate": {
+    "schema": "super-brain.intent-contract-candidate.v1",
+    "required": false,
+    "authorizing": false,
+    "source": "cognitive-preflight.ps1",
+    "literalRequestDigest": "fix cache regression",
+    "requiredFields": [
+      "resolvedOutcome",
+      "productRole",
+      "integrationObligations",
+      "preservedCapabilities",
+      "acceptanceCriteria",
+      "autonomyTier"
+    ],
+    "guard": "No product-intent receipt is inferred for this direct request.",
+    "rawTranscriptStored": false
+  },
+  "cognitiveMode": "memory_driven_execution_control",
+  "required": true,
+  "cards": [
+    {
+      "kind": "engineering_judgment",
+      "claim": "Separate FACT, INFERENCE, and UNKNOWN. Every fact requires named current evidence; memory and plausible explanations remain inference until verified.",
+      "source": "references/engineering-judgment.md",
+      "confidence": 0.99,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "engineering_judgment",
+      "claim": "Label root cause as verified, hypothesis, or unknown. Hypotheses and unknown causes require the cheapest discriminating test before causal certainty.",
+      "source": "references/engineering-judgment.md",
+      "confidence": 0.99,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "engineering_judgment",
+      "claim": "Do not claim best or optimal without an objective, constraints, alternatives, tradeoffs, criteria, evidence-backed facts, and resolution evidence for decision-changing unknowns.",
+      "source": "references/engineering-judgment.md",
+      "confidence": 0.99,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "engineering_judgment",
+      "claim": "Execute in dependency order; each step must define input, output, acceptance, and stop conditions, and a failed acceptance stops the old plan.",
+      "source": "references/engineering-judgment.md",
+      "confidence": 0.98,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "similar_experience",
+      "claim": "A retained prior experience may be relevant. Treat it only as an advisory hypothesis; current independent evidence must confirm it before reuse.",
+      "source": "experience-index retained lesson metadata",
+      "confidence": 0.78,
+      "hard": false,
+      "advisory": true,
+      "requiresCurrentIndependentEvidence": true,
+      "reuseStatus": "insufficient",
+      "lessonId": "cache-regression"
+    },
+    {
+      "kind": "user_hard_rule",
+      "claim": "Use only tools that the current host actually exposes. TodoWrite is an optional host-specific tool: do not invoke, simulate, or require it when absent; when present, use it only if the user explicitly requests it or the active host workflow requires it.",
+      "source": "user feedback / host tool boundary",
+      "confidence": 0.99,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "user_hard_rule",
+      "claim": "Do not make the user repeatedly remind the agent; repeated feedback must become a proactive execution constraint.",
+      "source": "user feedback: do not repeatedly remind me",
+      "confidence": 0.99,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "user_hard_rule",
+      "claim": "When a multi-layer or long-running task is unfinished, report only progress/process summary, remaining steps, blockers, and next action; never word a partial layer as if the whole task is complete.",
+      "source": "user feedback: unfinished tasks must not look completed",
+      "confidence": 0.99,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "user_hard_rule",
+      "claim": "After completing one line of a multi-line task, list the main line, the line completed now, unfinished lines, and the next line; follow the latest explicit user priority, otherwise resume the suspended parent.",
+      "source": "user feedback: multi-line task closeout and priority",
+      "confidence": 0.99,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "user_correction_learning",
+      "claim": "Treat every direct user correction as a governed learning transaction: repair the current task, classify it as task_memory, experience, execution_rule, user_preference, or system_rule, deduplicate it by a compact verified problem key, verify the real user path...",
+      "source": "user feedback: corrections must become reusable learning",
+      "confidence": 0.99,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "cognitive_control",
+      "claim": "Before executing, recall relevant decisions, accepted constraints, similar experiences, and known failure modes; treat retrieved experience as a current-evidence-checked hypothesis, never as policy or fact.",
+      "source": "0.5.70 cognitive execution loop",
+      "confidence": 0.98,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "cognitive_control",
+      "claim": "Use memory types deliberately: semantic memory for stable facts, episodic memory for prior task traces/failures, procedural memory for reusable workflows/checklists, and working memory for current task state.",
+      "source": "0.5.70 cognitive execution loop / CoALA-LangChain-style memory separation",
+      "confidence": 0.92,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "cognitive_control",
+      "claim": "Ground retrieved memories in current repo, task type, timestamp, confidence, and live evidence; current tool/file evidence overrides stale assumptions.",
+      "source": "0.5.70 cognitive execution loop / ReAct-MemGPT-style grounding",
+      "confidence": 0.92,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "cognitive_control",
+      "claim": "After significant failures, user corrections, verification results, or completed fixes, reflect and promote reusable lessons into procedural memory or experience index instead of leaving them as raw storage.",
+      "source": "0.5.70 cognitive execution loop / Reflexion-style learning",
+      "confidence": 0.92,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "rule_skill_fusion",
+      "claim": "Apply the absorbed Ponytail capability before normal implementation: skip speculative work, prefer deletion/stdlib/native/existing dependency, then the smallest safe diff; never cut validation, privacy, error handling, tests, rollback, or explicit user require...",
+      "source": "absorbed capability source: ponytail",
+      "confidence": 0.94,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    },
+    {
+      "kind": "rule_skill_fusion",
+      "claim": "Apply the absorbed Grill Me capability before committing to substantial plans: challenge weak assumptions, unresolved requirements, counterexamples, acceptance evidence, non-goals, and dependencies; explore local evidence instead of asking when code can answer...",
+      "source": "absorbed capability source: grill-me",
+      "confidence": 0.94,
+      "hard": true,
+      "advisory": false,
+      "requiresCurrentIndependentEvidence": false,
+      "reuseStatus": ""
+    }
+  ],
+  "mustPreserve": [
+    "Separate FACT, INFERENCE, and UNKNOWN. Every fact requires named current evidence; memory and plausible explanations remain inference until verified.",
+    "Label root cause as verified, hypothesis, or unknown. Hypotheses and unknown causes require the cheapest discriminating test before causal certainty.",
+    "Do not claim best or optimal without an objective, constraints, alternatives, tradeoffs, criteria, evidence-backed facts, and resolution evidence for decision-changing unknowns.",
+    "Execute in dependency order; each step must define input, output, acceptance, and stop conditions, and a failed acceptance stops the old plan.",
+    "Use only tools that the current host actually exposes. TodoWrite is an optional host-specific tool: do not invoke, simulate, or require it when absent; when present, use it only if the user explicitly requests it or the active host workflow requires it.",
+    "Do not make the user repeatedly remind the agent; repeated feedback must become a proactive execution constraint.",
+    "When a multi-layer or long-running task is unfinished, report only progress/process summary, remaining steps, blockers, and next action; never word a partial layer as if the whole task is complete.",
+    "After completing one line of a multi-line task, list the main line, the line completed now, unfinished lines, and the next line; follow the latest explicit user priority, otherwise resume the suspended parent."
+  ],
+  "shouldRecall": [
+    "A retained prior experience may be relevant. Treat it only as an advisory hypothesis; current independent evidence must confirm it before reuse.",
+    "Super Brain capability engineering evidence grounding role=evidence_grounding category=decision_quality",
+    "Super Brain capability tdd / vitest / testing-setup role=test_strategy category=verification",
+    "Super Brain capability tdd role=test_strategy category=engineering",
+    "Super Brain capability review / chinese-code-review role=review_verifier category=rule"
+  ],
+  "driftGuards": [
+    "partial_progress_reported_as_final_completion",
+    "multi_line_closeout_or_priority_lost",
+    "user_correction_not_classified",
+    "verified_correction_left_as_generic_reminder",
+    "overengineering_without_ponytail_check",
+    "plan_without_grill_me_challenge",
+    "challenge_gate_not_applied",
+    "pre_action_constraint_not_applied",
+    "review_verifier_skipped_before_completion",
+    "unsupported_fact",
+    "fact_without_evidence",
+    "inference_as_fact",
+    "unclassified_root_cause",
+    "untested_root_cause_hypothesis",
+    "untested_critical_unknown",
+    "unsupported_optimal_claim",
+    "execution_step_without_contract",
+    "continuing_after_failed_acceptance",
+    "acting_without_recalling_constraints",
+    "ignoring_user_hard_rules",
+    "changing_accepted_decision_without_approval",
+    "using_stale_memory_over_live_evidence",
+    "mixing_raw_observation_with_conclusion",
+    "skipping_reflection_after_user_correction",
+    "continuing_after_detected_drift"
+  ],
+  "procedureExpectations": [
+    {
+      "cardId": "rule-skill-fusion",
+      "source": "absorbed-capability-map.ps1:ponytail+grill-me",
+      "stepFlow": [
+        "apply Ponytail minimal-safe-change ladder before code",
+        "apply Grill Me challenge against assumptions/non-goals/acceptance evidence before committing",
+        "carry accepted answers into mustPreserve/driftGuards",
+        "verify real user path before completion"
+      ],
+      "verificationChecklist": [
+        "no speculative scaffolding",
+        "requirements and non-goals challenged",
+        "acceptance evidence named",
+        "compact report shape preserved"
+      ],
+      "driftGuards": [
+        "overengineering_without_ponytail_check",
+        "plan_without_grill_me_challenge"
+      ]
+    },
+    {
+      "cardId": "dynamic-rule-skill-fusion-strategy",
+      "source": "skill-capability-map.ps1 -Category rule",
+      "stepFlow": [
+        "select mapped rule skills by trigger/category/role",
+        "apply pre_action_constraint before mutation",
+        "apply challenge_gate before plan commitment",
+        "apply review_verifier after mutation and before completion",
+        "record stopCondition when a rule does not apply"
+      ],
+      "verificationChecklist": [
+        "dynamic_rule_skill_selection recorded",
+        "rules_as_execution_constraints_not_menu_calls",
+        "review verifier considered before completion"
+      ],
+      "driftGuards": [
+        "pre_action_constraint_not_applied",
+        "challenge_gate_not_applied",
+        "review_verifier_skipped_before_completion"
+      ]
+    }
+  ],
+  "userAdaptation": {
+    "ok": true,
+    "action": "Packet",
+    "enabled": true,
+    "applies": false,
+    "context": "debugging",
+    "directiveCount": 0,
+    "tokenEstimate": 0,
+    "directives": [],
+    "preferences": [],
+    "rawPromptStored": false,
+    "guard": "Current explicit user instruction always wins; adaptation may shape collaboration defaults but never facts, safety, permissions, or authorization."
+  },
+  "engineeringJudgment": {
+    "required": true,
+    "activationReasons": [
+      "fix",
+      "regression"
+    ],
+    "epistemicClasses": [
+      "FACT",
+      "INFERENCE",
+      "UNKNOWN"
+    ],
+    "rootCauseStatuses": [
+      "verified",
+      "hypothesis",
+      "unknown"
+    ],
+    "decisionGate": "engineering-decision-gate.ps1",
+    "method": "references/engineering-judgment.md",
+    "outputContract": [
+      "Judgment",
+      "Evidence",
+      "Best option",
+      "Execution chain",
+      "Acceptance/Risk"
+    ],
+    "guard": "Facts require evidence; critical unknowns require discriminating tests; optimality and execution claims must pass the engineering decision gate."
+  },
+  "structuralThinking": {
+    "frame": "pain point -> FACT / INFERENCE / UNKNOWN -> root cause and constraints -> objective -> options and tradeoffs -> decision -> execution contracts -> acceptance and residual risk",
+    "researchPatterns": [
+      "root cause analysis: separate symptoms from causes and prevent recurrence",
+      "theory of change: map desired outcome backward through causal assumptions and indicators",
+      "systems thinking: check feedback loops, leverage points, interactions, and unintended consequences"
+    ],
+    "guard": "Do not change scattered parts without explaining what caused the problem, what result the change should produce, what is already known from previous changes, and how the new change preserves the accepted route.",
+    "planScript": "causal-change-plan.ps1",
+    "decisionGateScript": "engineering-decision-gate.ps1"
+  },
+  "executionGate": {
+    "canProceed": true,
+    "beforeAct": "Apply mustPreserve constraints and driftGuards before tool/code actions; maintain compact working memory with goal, constraints, current evidence, assumptions, and next action. A similar experience is advisory only; without independent current evidence its reuse status remains insufficient.",
+    "onDrift": "Stop, report DRIFT_DETECTED, return to accepted constraints, then continue only after correction.",
+    "afterAct": "Reflect after significant outcomes; extract reusable lessons for similar future tasks and promote repeated episodes into procedural memory/experience index."
+  },
+  "outputDiscipline": {
+    "noRawLongMemory": true,
+    "compactCardFirst": true,
+    "hostToolBoundary": {
+      "optionalToolsMustBePresent": true,
+      "todoWrite": "optional_host_tool",
+      "absentToolBehavior": "do_not_invoke_simulate_or_require"
+    }
+  },
+  "path": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\.tmp-exp-debug\\workspace\\last-cognitive-preflight.json"
+}

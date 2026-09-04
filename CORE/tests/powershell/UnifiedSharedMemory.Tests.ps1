@@ -14,7 +14,7 @@ Describe 'Super Brain unified memory and absorbed capability sources' {
     $previousStateRoot = $env:SUPER_BRAIN_STATE_ROOT
     try {
       $env:SUPER_BRAIN_STATE_ROOT = $stateRoot
-      $installOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $install -ZCodeSkills $zcodeSkills -CodexSkills $codexSkills -Neurobase $sharedRoot -SkipRuntime -SkipHealthCheck -NoBackup 2>&1)
+      $installOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $install -ZCodeSkills $zcodeSkills -CodexSkills $codexSkills -Neurobase $sharedRoot -IncludeZCode -SkipRuntime -SkipHealthCheck -NoBackup 2>&1)
       $LASTEXITCODE | Should Be 0
       foreach ($path in @(
         (Join-Path $zcodeSkills 'super-memory-brain\SKILL.md'),

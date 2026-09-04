@@ -1,20 +1,19 @@
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $contractScript = Join-Path $root 'scripts\execution-contract.ps1'
 $nativeHook = Join-Path $root 'runtime\codex_prompt_hook.py'
+$fixtureScript = Join-Path $PSScriptRoot 'H7TestFixture.ps1'
+. $fixtureScript
 
 function Invoke-MergeContract([string[]]$Arguments) {
-  $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $contractScript @Arguments 2>$null)
-  $exitCode = $LASTEXITCODE
-  $text = ($raw | ForEach-Object { [string]$_ }) -join "`n"
-  return [pscustomobject]@{
-    exitCode = $exitCode
-    value = if ([string]::IsNullOrWhiteSpace($text)) { $null } else { $text | ConvertFrom-Json }
-    text = $text
-  }
+  # Keep direct merge-dossier calls on the same H7 test path as the rest of
+  # the execution-contract suite.  The fixture adds only a scoped visible
+  # progress checkpoint and live project proof; production validation remains
+  # unchanged and still withholds missing evidence.
+  return Invoke-H7FixtureContractScript -ContractScript $contractScript -Root $root -Arguments $Arguments
 }
 
 Describe 'Merge dossier runtime handoff' {
-  It 'wakes a unique retained branch into merge review without loading its full dossier into the hot path' {
+  It 'retains a unique branch for H7 merge preparation without loading its full dossier into the hot path' {
     $stateRoot = Join-Path $TestDrive 'merge-dossier-runtime'
     $workspaceKey = 'ws-fa1010101010101010101010'
     $sessionKey = 'sid-fa1010101010101010101010'
@@ -34,16 +33,20 @@ Describe 'Merge dossier runtime handoff' {
       $hook = (($hookRaw -join "`n") | ConvertFrom-Json)
       $context = [string]$hook.hookSpecificOutput.additionalContext
       $intentPattern = [regex]::Escape([string]$intent.mergeIntentId)
-      $context.Length | Should BeLessThan 3500
-      $context | Should Match 'PrepareMerge-before-integration'
-      $context | Should Match $intentPattern
+      # The legacy prompt hook is permanently retired.  Merge review is
+      # driven by the H7 execution contract below, never by prompt-hook
+      # context injection or a stale cached dossier.
+      $context | Should Be ''
+      $context | Should Not Match 'PrepareMerge-before-integration'
+      $context | Should Not Match $intentPattern
       $context | Should Not Match 'prototype/ui.html'
 
       $observed = Invoke-MergeContract @('-Action','Get','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-StateRoot',$stateRoot,'-Json')
       $observed.exitCode | Should Be 0
-      $observed.value.latestMessageClassification.recommendedInstructionMode | Should Be 'merge_review'
-      $observed.value.latestMessageClassification.mergeIntentId | Should Be $intent.mergeIntentId
-      $observed.value.needsReconciliation | Should Be $true
+      $observed.value.workLineStatus.pendingMergeIntentCount | Should Be 1
+      $observed.value.workLineStatus.pendingMergeIntents[0].mergeIntentId | Should Be $intent.mergeIntentId
+      $observed.value.workLineStatus.pendingMergeIntents[0].readyForCurrentLine | Should Be $true
+      $observed.value.needsReconciliation | Should Be $false
 
       $reconciled = Invoke-MergeContract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-InstructionMode','continue','-FocusId','main-line','-NextAction','prepare the retained branch merge','-StateRoot',$stateRoot,'-Json')
       $reconciled.exitCode | Should Be 0

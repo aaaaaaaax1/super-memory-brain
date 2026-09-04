@@ -18,15 +18,14 @@ Describe 'Autonomous executor end-to-end user path' {
       'p0-side-branch-keeps-canonical-a-through-i-visible',
       'p0-return-to-parent-restores-canonical-main',
       'p0-compatibility-completion-keeps-workspaces-isolated',
-      'p0-native-hook-observes-current-plan',
-      'p0-current-plan-hook-never-promotes-local-work-package',
+      'p0-h7-runtime-observes-current-plan',
+      'p0-h7-runtime-never-promotes-local-work-package',
       'p0-formal-phase-rejects-static-only-advance',
-      'p0-hash-only-evidence-is-rejected',
-      'p0-tampered-behavior-evidence-blocks-advance',
-      'p0-formal-phase-requires-real-path-and-counterexample',
+      'p0-legacy-closeout-schema-is-rejected',
+      'p0-h7-closeout-binding-mismatch-is-rejected',
       'p0-missing-full-plan-stops-at-admission-gate',
       'p0-reconciliation-conflict-blocks-local-execution',
-      'phase-closeout-generalizes-beyond-p0'
+      'phase-closeout-generalizes-h7-current-policy-beyond-p0'
     )){
       $check = @($result.checks | Where-Object { $_.name -eq $name })
       $check.Count | Should Be 1

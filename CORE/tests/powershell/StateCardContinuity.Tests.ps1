@@ -1,12 +1,14 @@
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $contractScript = Join-Path $root 'scripts\execution-contract.ps1'
 $sessionRestoreScript = Join-Path $root 'scripts\session-restore.ps1'
+. (Join-Path $PSScriptRoot 'H7TestFixture.ps1')
 
 function Invoke-StateCardContract([string[]]$Arguments) {
-  $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $contractScript @Arguments 2>$null)
-  $exitCode = $LASTEXITCODE
-  $text = ($raw -join "`n")
-  return [pscustomobject]@{ exitCode=$exitCode; value=if($text){$text|ConvertFrom-Json}else{$null}; text=$text }
+  # State-card continuity now follows the same H7-native proof path as the
+  # production runtime.  The fixture helper creates a bounded local project
+  # proof and visible-progress receipt for synthetic Set calls, so ResumeParent
+  # exercises the real guarded path instead of relying on a legacy card alone.
+  return Invoke-H7FixtureContractScript $contractScript $root $Arguments
 }
 
 function Invoke-StateCardRestore([string]$StateRoot,[string[]]$Arguments) {
@@ -70,7 +72,8 @@ Describe 'Whole-line continuity state card' {
     $resumed.value.continuityStateCard.currentStep | Should Be 'parent-step'
     @($resumed.value.continuityStateCard.completedSteps) | Should Be @('parent-done')
     @($resumed.value.continuityStateCard.pendingSteps) | Should Be @('parent-pending')
-    @($resumed.value.continuityStateCard.evidence) | Should Be @('parent-evidence')
+    @($resumed.value.continuityStateCard.evidence) -contains 'parent-evidence' | Should Be $true
+    @($resumed.value.continuityStateCard.evidence | Where-Object { [string]$_ -like 'project:file:*@sha256:*' }).Count | Should BeGreaterThan 0
     $resumed.value.completedSideBranchFocusId | Should Be 'side-line'
   }
 

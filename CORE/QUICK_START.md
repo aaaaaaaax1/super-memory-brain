@@ -10,8 +10,11 @@ scripts\bootstrap.ps1
 scripts\first-load-bootstrap.ps1 -Json
 ```
 
-After installation, open a new Codex task so the single `super-memory-brain`
-MCP entry is discovered.
+After installation, the single static `super-memory-brain` MCP entry can be
+discovered for health checks, but it intentionally has no user scope. A host
+that needs governed local work must launch one process per project scope with
+the package adapter in `references/local-mcp-adapter.md`; never put a session
+id in MCP arguments or persistent configuration.
 
 ## Daily checks
 

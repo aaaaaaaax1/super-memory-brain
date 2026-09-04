@@ -1,0 +1,421 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="72" errors="0" failures="46" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2026-09-02" time="22:23:22">
+  <environment cwd="G:\Ai\Zcode项目\super-memory-brain-package\CORE" user="MSJ" clr-version="" user-domain="DESKTOP-JRSAHPG" platform="" machine-name="DESKTOP-JRSAHPG" nunit-version="2.5.8.0" os-version="" />
+  <culture-info current-culture="zh-CN" current-uiculture="zh-CN" />
+  <test-suite type="Powershell" name="Pester" executed="True" result="Failure" success="False" time="78.6321" asserts="0">
+    <results>
+      <test-suite type="TestFixture" name="Execution contract continuity" executed="True" result="Failure" success="False" time="54.8854" asserts="0" description="Execution contract continuity">
+        <results>
+          <test-case description="writes contract, transition, and continuation timestamps in UTC" name="Execution contract continuity.writes contract, transition, and continuation timestamps in UTC" time="2.0003" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {480}</message>
+              <stack-trace>at line: 61 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+61:     ([DateTimeOffset]::Parse([string]$set.value.updatedAt)).Offset.TotalMinutes | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="prefers visible conversation over contract and checkpoint state" name="Execution contract continuity.prefers visible conversation over contract and checkpoint state" time="0.1364" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 74 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+74:     $set.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="requires reconciliation for a visible user instruction without a commitment and preserves parent return state" name="Execution contract continuity.requires reconciliation for a visible user instruction without a commitment and preserves parent return state" time="0.0623" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 86 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+86:     (Invoke-Contract @('-Action','Set','-TaskId','task-visible-pending','-WorkspaceKey',$workspaceKey,'-FocusId','parent-focus','-NextAction','finish the parent','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="uses a newer task execution contract before an older checkpoint" name="Execution contract continuity.uses a newer task execution contract before an older checkpoint" time="0.0641" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 115 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+115:     $set.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="preserves omitted contract lists while allowing explicitly bound empty lists to clear them" name="Execution contract continuity.preserves omitted contract lists while allowing explicitly bound empty lists to clear them" time="0.057" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 127 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+127:     (Invoke-Contract @('-Action','Set','-TaskId','task-list-preserve','-WorkspaceKey',$workspaceKey,'-FocusId','list-focus','-Constraints','preserve user data','-AcceptanceCriteria','regression passes','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="preserves current progress and the last confirmed receipt when only next action changes" name="Execution contract continuity.preserves current progress and the last confirmed receipt when only next action changes" time="0.0641" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 160 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+160:     $initial.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="treats a serialized empty return stack as empty on the next mutation" name="Execution contract continuity.treats a serialized empty return stack as empty on the next mutation" time="0.0659" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 193 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+193:     $initial.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="keeps singleton evidence and checklist entries inside the durable continuation receipt" name="Execution contract continuity.keeps singleton evidence and checklist entries inside the durable continuation receipt" time="1.481" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {fixture:singleton-proof}
+But was:  {project:file:h7-fixture-evidence-b5d2d28771f53270.txt@sha256:b5d2d28771f532706ae25021280bbf6e4798083721ed0d3191e42a15cea1e43d}</message>
+              <stack-trace>at line: 236 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+236:     @($receipt.receipt.state.evidence) | Should Be @('fixture:singleton-proof')</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="keeps an additive active checklist complete across continuation, compaction, and parent return" name="Execution contract continuity.keeps an additive active checklist complete across continuation, compaction, and parent return" time="6.1334" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 269 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+269:     $side.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="does not let a caller-requested checklist replace erase accepted main-line work" name="Execution contract continuity.does not let a caller-requested checklist replace erase accepted main-line work" time="2.0197" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="preserves the matching assistant progress receipt when a newer instruction blocks restore" name="Execution contract continuity.preserves the matching assistant progress receipt when a newer instruction blocks restore" time="3.0827" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 333 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+333:     $observed.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="does not fabricate a pending step for an explicit no-automatic-action closure" name="Execution contract continuity.does not fabricate a pending step for an explicit no-automatic-action closure" time="1.8525" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="blocks superseded work before another mutation" name="Execution contract continuity.blocks superseded work before another mutation" time="0.0347" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 387 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+387:     $set.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="returns unknown after compaction when neither visible tail nor a current contract exists" name="Execution contract continuity.returns unknown after compaction when neither visible tail nor a current contract exists" time="0.0362" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="keeps a newly observed user instruction pending until commitment reconciliation" name="Execution contract continuity.keeps a newly observed user instruction pending until commitment reconciliation" time="0.0397" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 417 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+417:     (Invoke-Contract @('-Action','Set','-TaskId','task-pending','-WorkspaceKey',$workspaceKey,'-FocusId','old-work','-NextAction','continue old work','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="integrates a newer contract ahead of an older checkpoint in auto continuation" name="Execution contract continuity.integrates a newer contract ahead of an older checkpoint in auto continuation" time="0.0533" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 439 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+439:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','latest-contract','-NextAction','resume latest behavior contract','-InvalidatedWorkItems','old-phase-step','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="does not authorize a checkpoint action when compression removed the tail and contract" name="Execution contract continuity.does not authorize a checkpoint action when compression removed the tail and contract" time="0.8164" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="blocks an unreconciled contract through the real before-mutation gate" name="Execution contract continuity.blocks an unreconciled contract through the real before-mutation gate" time="0.0367" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 487 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+487:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','old-work','-NextAction','continue old work','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="runs the execution-contract guard for a parent return before mutation" name="Execution contract continuity.runs the execution-contract guard for a parent return before mutation" time="0.0347" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 513 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+513:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','parent-focus','-NextAction','continue the parent','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="preserves the parent task when a new focus becomes a side branch" name="Execution contract continuity.preserves the parent task when a new focus becomes a side branch" time="0.0382" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 538 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+538:     (Invoke-Contract @('-Action','Set','-TaskId','task-side','-WorkspaceKey',$workspaceKey,'-FocusId','parent-focus','-NextAction','resume the original build','-AssistantCommitment','finish the original build','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="restores every approved root item after a side branch instead of collapsing the mainline to P7" name="Execution contract continuity.restores every approved root item after a side branch instead of collapsing the mainline to P7" time="1.691" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>A positional parameter cannot be found that accepts argument '-Action'.</message>
+              <stack-trace>at line: 632 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="preserves a root-to-current hierarchy for nested branches and resumes one parent at a time" name="Execution contract continuity.preserves a root-to-current hierarchy for nested branches and resumes one parent at a time" time="0.0437" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 666 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+666:     (Invoke-Contract @('-Action','Set','-TaskId','task-nested','-WorkspaceKey',$workspaceKey,'-FocusId','root-main','-FocusLabel','Root main','-NextAction','continue root plan','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="requires a current plan receipt after a newer observed instruction" name="Execution contract continuity.requires a current plan receipt after a newer observed instruction" time="0.0382" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 714 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+714:     $set.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="removes an explicit active focus from stale invalidation history" name="Execution contract continuity.removes an explicit active focus from stale invalidation history" time="0.0723" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 753 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+753:     $revived.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="keeps a resumed branch unfinished unless completion evidence is declared" name="Execution contract continuity.keeps a resumed branch unfinished unless completion evidence is declared" time="0.045" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 761 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+761:     (Invoke-Contract @('-Action','Set','-TaskId','task-partial','-WorkspaceKey',$workspaceKey,'-FocusId','parent-focus','-NextAction','finish parent work','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="rejects a new side branch when the bounded return stack is full" name="Execution contract continuity.rejects a new side branch when the bounded return stack is full" time="0.039" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 783 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+783:     (Invoke-Contract @('-Action','Set','-TaskId','task-stack-full','-WorkspaceKey',$workspaceKey,'-FocusId','parent-0','-NextAction','start parent work','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="keeps recovered next action while blockers disable mutation and exposes unfinished lines" name="Execution contract continuity.keeps recovered next action while blockers disable mutation and exposes unfinished lines" time="0.0426" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 804 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+804:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','parent-focus','-NextAction','resume the parent work','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="requires explicit replacement before discarding a parent task" name="Execution contract continuity.requires explicit replacement before discarding a parent task" time="0.0414" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 832 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+832:     (Invoke-Contract @('-Action','Set','-TaskId','task-replace','-WorkspaceKey',$workspaceKey,'-FocusId','parent-focus','-NextAction','continue parent','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="preserves concrete plans and classifies the latest message against active and suspended lines" name="Execution contract continuity.preserves concrete plans and classifies the latest message against active and suspended lines" time="0.0368" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 845 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+845:     (Invoke-Contract @('-Action','Set','-TaskId','task-topic-lines','-WorkspaceKey',$workspaceKey,'-FocusId','recall-main','-FocusLabel','Recall quality main line','-TopicKeys','objective-judge','-PrioritySource','explicit_user','-PriorityReason','user selected objective scoring','-NextAction','run the objective judge','-AssistantCommitment','finish objective scoring','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="fails closed when topic affinity is ambiguous" name="Execution contract continuity.fails closed when topic affinity is ambiguous" time="0.0421" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 870 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+870:     (Invoke-Contract @('-Action','Set','-TaskId','task-topic-ambiguous','-WorkspaceKey',$workspaceKey,'-FocusId','main-line','-TopicKeys','shared-anchor','-NextAction','finish main','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="keeps direct Set unresolved for unknown or ambiguous affinity until an explicit plan mapping" name="Execution contract continuity.keeps direct Set unresolved for unknown or ambiguous affinity until an explicit plan mapping" time="0.0411" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 888 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+888:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','main-line','-TopicKeys','shared-anchor','-NextAction','DIRECT_MAIN_ACTION_SENTINEL','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="keeps a partial branch plan recoverable and restores it when reopened" name="Execution contract continuity.keeps a partial branch plan recoverable and restores it when reopened" time="0.0345" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 915 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+915:     (Invoke-Contract @('-Action','Set','-TaskId','task-partial-plan','-WorkspaceKey',$workspaceKey,'-FocusId','main-line','-FocusLabel','Main line','-TopicKeys','main-anchor','-NextAction','finish main action','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="preserves the real active line when visible conversation wins" name="Execution contract continuity.preserves the real active line when visible conversation wins" time="0.0396" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 935 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+935:     (Invoke-Contract @('-Action','Set','-TaskId','task-visible-line','-WorkspaceKey',$workspaceKey,'-FocusId','real-active-line','-FocusLabel','Real active line','-TopicKeys','active-anchor','-NextAction','continue real action','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="blocks parent resumption when the bound parent plan is missing" name="Execution contract continuity.blocks parent resumption when the bound parent plan is missing" time="0.0412" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 951 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+951:     (Invoke-Contract @('-Action','Set','-TaskId','task-missing-parent','-WorkspaceKey',$workspaceKey,'-FocusId','parent-line','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="hash-isolates colliding task ids and refuses an ambiguous implicit task" name="Execution contract continuity.hash-isolates colliding task ids and refuses an ambiguous implicit task" time="0.1345" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 969 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+969:     $first.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="isolates the same task id across workspaces for set get resolve and clear" name="Execution contract continuity.isolates the same task id across workspaces for set get resolve and clear" time="0.0729" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 987 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+987:     $setA.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="reads and migrates a task-only contract only for its exact workspace" name="Execution contract continuity.reads and migrates a task-only contract only for its exact workspace" time="1.1901" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="assigns explicit Chinese and English continuation lines before binding bare continue" name="Execution contract continuity.assigns explicit Chinese and English continuation lines before binding bare continue" time="0.035" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1044 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1044:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','objective-main','-FocusLabel','Objective judge main line','-TopicKeys','objective-judge','-NextAction','finish objective judge','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="matches Latin topic keys on token boundaries" name="Execution contract continuity.matches Latin topic keys on token boundaries" time="0.0754" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1078 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1078:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','short-key-main','-TopicKeys','ai','-NextAction','finish AI line','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="isolates automatic prompt observation by root Codex session and requires explicit rebind" name="Execution contract continuity.isolates automatic prompt observation by root Codex session and requires explicit rebind" time="2.3991" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="projects an unbound legacy contract without executable actions and blocks mutation" name="Execution contract continuity.projects an unbound legacy contract without executable actions and blocks mutation" time="1.1122" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="bounds partial unfinished plans to the twelve most recent branches and caps contract size" name="Execution contract continuity.bounds partial unfinished plans to the twelve most recent branches and caps contract size" time="0.0357" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1184 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1184:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','main-line','-NextAction','finish main','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="orders unfinished branches after the active line and nearest suspended parent in the user view" name="Execution contract continuity.orders unfinished branches after the active line and nearest suspended parent in the user view" time="0.0396" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1204 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1204:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','main-line','-FocusLabel','Main line','-NextAction','finish main','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="keeps contract plans canonical across dashboard snapshot restore and smart-next" name="Execution contract continuity.keeps contract plans canonical across dashboard snapshot restore and smart-next" time="0.0432" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1231 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1231:     (Invoke-Contract @('-Action','Set','-TaskId','task-consumers','-WorkspaceKey',$workspaceKey,'-FocusId','main-line','-FocusLabel','Main line','-TopicKeys','main-anchor','-NextAction','main exact action','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="rejects foreign generic status memory when a task-scoped plan is missing" name="Execution contract continuity.rejects foreign generic status memory when a task-scoped plan is missing" time="0.0355" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1284 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1284:     (Invoke-Contract @('-Action','Set','-TaskId','task-plan-missing','-WorkspaceKey',$workspaceKey,'-FocusId','missing-plan-line','-TopicKeys','missing-anchor','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="does not let visible commitments bypass foreign unbound or missing session ownership" name="Execution contract continuity.does not let visible commitments bypass foreign unbound or missing session ownership" time="0.9973" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="requires concrete bound focus and action values to clear reconciliation" name="Execution contract continuity.requires concrete bound focus and action values to clear reconciliation" time="1.5727" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="does not resume a parent through an unresolved active branch" name="Execution contract continuity.does not resume a parent through an unresolved active branch" time="2.2424" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="treats visible context as non-authorizing for missing contracts and blocks invalid contracts" name="Execution contract continuity.treats visible context as non-authorizing for missing contracts and blocks invalid contracts" time="0.9186" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="does not resume a parent from a missing classification or blank instruction" name="Execution contract continuity.does not resume a parent from a missing classification or blank instruction" time="1.9905" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="requires the owner session before clearing a legacy task-only contract" name="Execution contract continuity.requires the owner session before clearing a legacy task-only contract" time="0.9289" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="requires the owner session before clearing a pointer-only contract" name="Execution contract continuity.requires the owner session before clearing a pointer-only contract" time="0.916" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="ignores a foreign current-context pointer during implicit observation" name="Execution contract continuity.ignores a foreign current-context pointer during implicit observation" time="1.1042" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="treats a successful implicit no-contract resolution as nonblocking and non-authorizing" name="Execution contract continuity.treats a successful implicit no-contract resolution as nonblocking and non-authorizing" time="0.0536" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="does not let continue change focus or jump to an ancestor" name="Execution contract continuity.does not let continue change focus or jump to an ancestor" time="0.0435" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1484 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1484:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','root-line','-NextAction','finish root','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="recomputes the current plan fingerprint before authorizing mutation" name="Execution contract continuity.recomputes the current plan fingerprint before authorizing mutation" time="0.0385" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Cannot bind argument to parameter 'LiteralPath' because it is null.</message>
+              <stack-trace>at line: 1498 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="rejects a modified parent return card before resuming it" name="Execution contract continuity.rejects a modified parent return card before resuming it" time="0.0365" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1511 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1511:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','parent-line','-NextAction','verified parent action','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="does not let a visible commitment bypass pending reconciliation" name="Execution contract continuity.does not let a visible commitment bypass pending reconciliation" time="1.6708" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="does not project foreign-session work-line counts or ancestry" name="Execution contract continuity.does not project foreign-session work-line counts or ancestry" time="1.8461" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="replays a ResumeParent transition id without popping another level" name="Execution contract continuity.replays a ResumeParent transition id without popping another level" time="0.0378" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1556 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1556:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','root-line','-NextAction','finish root','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="binds mutation guards to the caller observed revision and plan fingerprint" name="Execution contract continuity.binds mutation guards to the caller observed revision and plan fingerprint" time="0.0411" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1579 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1579:     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-FocusId','bound-line','-NextAction','first action','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="enforces caller-bound revision and plan fingerprint on Set when supplied" name="Execution contract continuity.enforces caller-bound revision and plan fingerprint on Set when supplied" time="0.1533" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {0}
+But was:  {1}</message>
+              <stack-trace>at line: 1598 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1598:     $first.exitCode | Should Be 0</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="requires structural CAS and transition identity after a contract opts into guarded mutations" name="Execution contract continuity.requires structural CAS and transition identity after a contract opts into guarded mutations" time="3.9409" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="rejects a structural retry with stale CAS after its bounded receipt is evicted" name="Execution contract continuity.rejects a structural retry with stale CAS after its bounded receipt is evicted" time="10.8217" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="Formal phase closeout labels" executed="True" result="Success" success="True" time="2.4454" asserts="0" description="Formal phase closeout labels">
+        <results>
+          <test-case description="blocks a descriptive P4-to-P5 transition until a closeout receipt exists" name="Formal phase closeout labels.blocks a descriptive P4-to-P5 transition until a closeout receipt exists" time="2.4454" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="Merge dossier contract" executed="True" result="Failure" success="False" time="13.5755" asserts="0" description="Merge dossier contract">
+        <results>
+          <test-case description="retains a completed branch as a verified merge dossier and records one bounded integration" name="Merge dossier contract.retains a completed branch as a verified merge dossier and records one bounded integration" time="3.3851" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="refuses a retained branch merge with incomplete evidence instead of recreating it" name="Merge dossier contract.refuses a retained branch merge with incomplete evidence instead of recreating it" time="2.4943" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {1}
+But was:  {0}</message>
+              <stack-trace>at line: 1761 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1761:     $prepared.exitCode | Should Be 1</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="removes a stale merge intent when its source branch is reopened" name="Merge dossier contract.removes a stale merge intent when its source branch is reopened" time="3.2729" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="does not choose among multiple retained merge dossiers from a generic merge request" name="Merge dossier contract.does not choose among multiple retained merge dossiers from a generic merge request" time="4.4231" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="Project progress truth proof" executed="True" result="Failure" success="False" time="1.9735" asserts="0" description="Project progress truth proof">
+        <results>
+          <test-case description="binds phase, completed item, live file hash, passed verification, and next action as one proof" name="Project progress truth proof.binds phase, completed item, live file hash, passed verification, and next action as one proof" time="1.9735" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected string length 8 but was 7. Strings differ at index 0.
+Expected: {withheld}
+But was:  {current}
+-----------^</message>
+              <stack-trace>at line: 1701 in G:\Ai\Zcode项目\super-memory-brain-package\CORE\tests\powershell\ExecutionContract.Tests.ps1
+1701:     $replayed.value.projectProgressProof.state | Should Be 'withheld'</stack-trace>
+            </failure>
+          </test-case>
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="Return-card fingerprint evolution" executed="True" result="Success" success="True" time="5.7523" asserts="0" description="Return-card fingerprint evolution">
+        <results>
+          <test-case description="accepts verified v1 cards and upgrades them to v6 while resuming the immediate parent" name="Return-card fingerprint evolution.accepts verified v1 cards and upgrades them to v6 while resuming the immediate parent" time="3.9881" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="rejects merge data that an authenticated v1 card could not have covered" name="Return-card fingerprint evolution.rejects merge data that an authenticated v1 card could not have covered" time="1.7641" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>

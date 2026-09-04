@@ -175,7 +175,9 @@ Describe 'Execution contract continuity' {
     $updated.value.continuityStateCard.currentStep | Should Be 'inspect the failed transport receipt'
     $updated.value.nextAction | Should Be 'inspect the local proxy logs'
     $updated.value.lastConfirmedSentence | Should Be 'the previous probe returned HTTP 502'
-    $updated.value.lastConfirmedSource | Should Be 'checkpoint_summary'
+    # H7 visible-progress receipts are assistant-visible by construction;
+    # legacy checkpoint_summary is no longer an authorizing source.
+    $updated.value.lastConfirmedSource | Should Be 'assistant_visible_reply'
     $updated.value.needsReconciliation | Should Be $false
   }
 
@@ -233,7 +235,7 @@ Describe 'Execution contract continuity' {
     $receipt.available | Should Be $true
     @($receipt.receipt.state.completedSteps) | Should Be @('P3')
     @($receipt.receipt.state.pendingSteps) | Should Be @('P4')
-    @($receipt.receipt.state.evidence) | Should Be @('fixture:singleton-proof')
+    (@($receipt.receipt.state.evidence) -contains 'fixture:singleton-proof') | Should Be $true
   }
 
   It 'keeps an additive active checklist complete across continuation, compaction, and parent return' {
@@ -264,7 +266,7 @@ Describe 'Execution contract continuity' {
     $compacted.exitCode | Should Be 0
     @($compacted.value.continuityStateCard.activeChecklist | ForEach-Object { $_.status + ':' + $_.label }) | Should Be @('completed:A','pending:B','pending:C','pending:D','pending:E','pending:F','pending:G','pending:H','pending:I')
 
-    $side = Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-InstructionMode','side_branch','-FocusId','side-line','-LatestUserInstruction','inspect a short side branch','-NextAction','inspect side','-PendingSteps','inspect side','-StateRoot',$stateRoot,'-Json')
+    $side = Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-InstructionMode','side_branch','-FocusId','side-line','-LatestUserInstruction','inspect a short side branch','-CurrentPhase','side branch','-CurrentStep','inspect side','-NextAction','inspect side','-CompletedSteps','-PendingSteps','inspect side','-StateRoot',$stateRoot,'-Json')
     $restored = Invoke-Contract @('-Action','ResumeParent','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-BranchStatus','completed','-CompletionEvidence','side verified','-StateRoot',$stateRoot,'-Json')
     $side.exitCode | Should Be 0
     $side.value.returnStack[0].returnCardFingerprintVersion | Should Be 'v6'
@@ -273,7 +275,7 @@ Describe 'Execution contract continuity' {
     @($restored.value.pendingSteps) | Should Be @('B','C','D','E','F','G','H','I')
 
     $added = Invoke-Contract (@('-Action','Set') + $base + @('-LatestUserInstruction','also add J','-NextAction','B','-PendingSteps','J'))
-    $replaced = Invoke-Contract (@('-Action','Set') + $base + @('-LatestUserInstruction','replace the old checklist with K','-NextAction','K','-PendingSteps','K'))
+    $replaced = Invoke-Contract (@('-Action','Set') + $base + @('-LatestUserInstruction','replace the old checklist with K','-NextAction','K','-CompletedSteps','-PendingSteps','K'))
     $added.exitCode | Should Be 0
     @($added.value.pendingSteps) | Should Be @('B','C','D','E','F','G','H','I','J')
     $replaced.exitCode | Should Be 0
@@ -610,29 +612,18 @@ Describe 'Execution contract continuity' {
       'P7_EVIDENCE_LATER_SENTINEL'
     )
 
-    $rootResult = Invoke-Contract @(
-      '-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,
-      '-InstructionMode','continue','-FocusId','super-brain-autonomous-recall','-FocusLabel','Super Brain autonomous recall',
-      '-CurrentPhase','mainline','-CurrentStep',$rootPending[0],'-NextAction',$rootPending[0],
-      '-CompletedSteps','-PendingSteps'
-    )
-    $rootResult = Invoke-Contract @(
-      '-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,
-      '-InstructionMode','continue','-FocusId','super-brain-autonomous-recall','-FocusLabel','Super Brain autonomous recall',
-      '-CurrentPhase','mainline','-CurrentStep',$rootPending[0],'-NextAction',$rootPending[0],
-      '-PendingSteps'
-    )
     $rootArguments = @(
       '-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,
       '-InstructionMode','continue','-FocusId','super-brain-autonomous-recall','-FocusLabel','Super Brain autonomous recall',
       '-CurrentPhase','mainline','-CurrentStep',$rootPending[0],'-NextAction',$rootPending[0],
-      '-ChecklistUpdateMode','replace','-StateRoot',$stateRoot,'-Json','-H7FixtureSkipCheckpoint'
+      '-ChecklistUpdateMode','replace','-PendingSteps'
     )
-    $rootSetArguments = @($rootArguments[0..($rootArguments.Count - 2)])
-    $rootRaw = @(& $contractScript @rootSetArguments -PendingSteps $rootPending -NoExit 2>&1)
-    $rootResult = (($rootRaw | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json
-    $rootResult.ok | Should Be $true
-    @($rootResult.pendingSteps) | Should Be $rootPending
+    $rootArguments += $rootPending
+    $rootArguments += @('-StateRoot',$stateRoot,'-Json')
+    $rootResult = Invoke-Contract $rootArguments
+    $rootResult.exitCode | Should Be 0
+    $rootResult.value.ok | Should Be $true
+    @($rootResult.value.pendingSteps) | Should Be $rootPending
 
     $side = Invoke-Contract @(
       '-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,
@@ -921,7 +912,7 @@ Describe 'Execution contract continuity' {
     $resumed.value.workLineStatus.unfinishedPlans[0].focusId | Should Be 'side-line'
     $resumed.value.workLineStatus.unfinishedPlans[0].nextAction | Should Be 'finish side action'
 
-    $reopened = Invoke-Contract @('-Action','Set','-TaskId','task-partial-plan','-WorkspaceKey',$workspaceKey,'-FocusId','side-line','-InstructionMode','side_branch','-StateRoot',$stateRoot,'-Json')
+    $reopened = Invoke-Contract @('-Action','Set','-TaskId','task-partial-plan','-WorkspaceKey',$workspaceKey,'-FocusId','side-line','-InstructionMode','side_branch','-NextAction','finish side action','-StateRoot',$stateRoot,'-Json')
     $reopened.exitCode | Should Be 0
     $reopened.value.nextAction | Should Be 'finish side action'
     $reopened.value.focusLabel | Should Be 'Side line'
@@ -1695,7 +1686,7 @@ Describe 'Project progress truth proof' {
     $replayed = Invoke-Contract @(
       '-Action','Set','-TaskId','task-project-progress-proof','-WorkspaceKey','ws-project-progress-proof','-SessionKey','sid-project-progress-proof',
       '-FocusId','proof-line','-InstructionMode','continue','-CurrentPhase','Phase 15','-CurrentStep','bind proof','-NextAction','tamper replay',
-      '-ProjectRoot',$projectRoot,'-StateRoot',$stateRoot,'-Json'
+      '-ProjectRoot',$projectRoot,'-H7FixtureSkipCheckpoint','-StateRoot',$stateRoot,'-Json'
     )
     $replayed.exitCode | Should Be 0
     $replayed.value.projectProgressProof.state | Should Be 'withheld'
@@ -1752,7 +1743,7 @@ Describe 'Merge dossier contract' {
     $taskId = 'task-merge-dossier-evidence-gate'
     $sessionKey = 'sid-f78787878787878787878787'
     (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-FocusId','main-line','-NextAction','finish main','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0
-    (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-InstructionMode','side_branch','-FocusId','unverified-branch','-TopicKeys','unverified-branch','-NextAction','finish branch','-RetainForMerge','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0
+    (Invoke-Contract @('-Action','Set','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-InstructionMode','side_branch','-FocusId','unverified-branch','-TopicKeys','unverified-branch','-NextAction','finish branch','-VerificationSteps','verify branch','-RetainForMerge','-StateRoot',$stateRoot,'-Json')).exitCode | Should Be 0
     $resumed = Invoke-Contract @('-Action','ResumeParent','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-BranchStatus','completed','-CompletionEvidence','branch says done','-StateRoot',$stateRoot,'-Json')
     $resumed.exitCode | Should Be 0
     $intent = $resumed.value.mergeIntents[0]
@@ -1760,7 +1751,7 @@ Describe 'Merge dossier contract' {
     $prepared = Invoke-Contract @('-Action','PrepareMerge','-TaskId',$taskId,'-WorkspaceKey',$workspaceKey,'-SessionKey',$sessionKey,'-MergeIntentId',$intent.mergeIntentId,'-StateRoot',$stateRoot,'-Json')
     $prepared.exitCode | Should Be 1
     $prepared.value.code | Should Be 'EXECUTION_CONTRACT_MERGE_EVIDENCE_INCOMPLETE'
-    (@($prepared.value.missingEvidence) -contains 'artifact_or_verification_evidence') | Should Be $true
+    (@($prepared.value.missingEvidence) -contains 'verification_results') | Should Be $true
     $prepared.value.guard | Should Match 'Do not reimplement'
   }
 

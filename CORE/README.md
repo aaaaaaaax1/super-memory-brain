@@ -2,9 +2,11 @@
 
 Version: 0.6.0
 
-Super Memory Brain is an independent control-plane agent for Codex. H7
+Super Memory Brain is a host-neutral independent control-plane agent. H7
 `brain_turn` owns lifecycle, continuity, task state, project proof, and
-verification. The installed skill is only a thin entry adapter.
+verification. The installed skill is only a thin entry adapter; a local MCP
+host uses `runtime/local_scope_adapter.py` to inject the project cwd and one
+strict local session without relying on Host or platform thread metadata.
 
 `CORE/` is the single source tree. Its parent is the direct Git working tree
 and intentionally exposes only `CORE/` plus the two numbered VBS launchers.
@@ -32,7 +34,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\release-readiness
 
 Install or refresh only the single `super-memory-brain` host entry. Bundled
 capabilities are absorbed into Super Brain and routed semantically; they are
-not installed as independent host skills.
+not installed as independent host skills. For a non-Codex local MCP embedding,
+follow `references/local-mcp-adapter.md`.
 
 ## Git privacy
 

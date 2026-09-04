@@ -1,0 +1,72 @@
+{
+  "ok": true,
+  "action": "install",
+  "checkedAt": "2026-09-02 05:21:26",
+  "version": "0.6.0",
+  "mcpName": "super-memory-brain",
+  "codexCli": "C:\\Users\\MSJ\\AppData\\Local\\OpenAI\\Codex\\bin\\b99306303521e97e\\codex.exe",
+  "packageRoot": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE",
+  "memoryRoot": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\.tmp-debug-install\\state\\shared",
+  "runtimeIdentity": "eee321b0cd8e4b4b417403b4f87f954ac39af64c6e64d448b7a63f64878ca353",
+  "registrationEpochHash": "8bdd9402e8d4183069c407bc9f81bd6d197c54f96e98372aee8de39c1d2568e8",
+  "configurationState": "configuration_applied",
+  "configurationScope": "codex-home:g:\\ai\\zcode项目\\super-memory-brain-package\\.tmp-debug-install",
+  "configurationAuthority": "explicit_codex_home",
+  "liveTransportState": "runtime_probe_required",
+  "restartRequired": false,
+  "fullRuntimeReady": false,
+  "runtime": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\runtime\\local_mcp_launcher.py",
+  "tools": [
+    "brain_recall",
+    "brain_status",
+    "brain_turn",
+    "brain_recent"
+  ],
+  "evaluationMode": "offline_replay_only",
+  "offlineReplay": {
+    "mode": "portable-contract-and-mcp",
+    "total": 0,
+    "passed": 0,
+    "p50Ms": 0.0,
+    "p95Ms": 0.0
+  },
+  "contract": {
+    "total": 0,
+    "passed": 0,
+    "p50Ms": 0.0,
+    "p95Ms": 0.0
+  },
+  "configBackup": "",
+  "previousMcpReplaced": false,
+  "registered": {
+    "name": "super-memory-brain",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\runtime\\local_mcp_launcher.py",
+        "--package-root",
+        "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE",
+        "--memory-root",
+        "G:\\Ai\\Zcode项目\\super-memory-brain-package\\.tmp-debug-install\\state\\shared"
+      ],
+      "env": {
+        "SUPER_BRAIN_PACKAGE_ROOT": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE",
+        "SUPER_BRAIN_RUNTIME_IDENTITY": "eee321b0cd8e4b4b417403b4f87f954ac39af64c6e64d448b7a63f64878ca353",
+        "SUPER_BRAIN_MCP_TRANSPORT": "codex_registered_v1",
+        "SUPER_BRAIN_MCP_REGISTRATION_SCHEMA": "super-brain.codex-mcp.v2",
+        "NEXSANDBASE_HOME": "G:\\Ai\\Zcode项目\\super-memory-brain-package\\.tmp-debug-install\\state\\shared",
+        "SUPER_BRAIN_MCP_REGISTRATION_EPOCH": "ff1080f8701f48c0b70697a962781df5"
+      },
+      "env_vars": [],
+      "cwd": null
+    },
+    "enabled_tools": null,
+    "disabled_tools": null,
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null
+  },
+  "rollback": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"G:\\Ai\\Zcode项目\\super-memory-brain-package\\CORE\\scripts\\install-runtime.ps1\" -Remove"
+}

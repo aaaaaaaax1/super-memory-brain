@@ -36,80 +36,180 @@ function Start-Phase6AnswerSseServer([string]$Model='gpt-5.6-terra',[string]$Tex
   $port = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
   $portProbe.Stop()
   $prefix = "http://127.0.0.1:$port/"
-  $readyPath = Join-Path $TestDrive "phase6-answer-$port.ready"
-  $job = Start-Job -ScriptBlock {
-    param($Prefix,$ReadyPath,$Model,$Text,$RequestCount,$RequestCaptureRoot,$ResponseTextsJson,$ResponseStatusCodesJson)
-    $listener = [Net.HttpListener]::new()
-    $listener.Prefixes.Add($Prefix)
-    try {
-      $listener.Start()
-      [IO.File]::WriteAllText($ReadyPath,'ready',[Text.UTF8Encoding]::new($false))
-      if (-not [string]::IsNullOrWhiteSpace($RequestCaptureRoot)) { New-Item -ItemType Directory -Force -Path $RequestCaptureRoot | Out-Null }
-      $responseTexts = if ([string]::IsNullOrWhiteSpace($ResponseTextsJson)) { @() } else { @($ResponseTextsJson | ConvertFrom-Json) }
-      $responseStatusCodes = if ([string]::IsNullOrWhiteSpace($ResponseStatusCodesJson)) { @() } else { @($ResponseStatusCodesJson | ConvertFrom-Json) }
-      for ($requestIndex = 1; $requestIndex -le $RequestCount; $requestIndex++) {
-        $context = $listener.GetContext()
-        if (-not [string]::IsNullOrWhiteSpace($RequestCaptureRoot)) {
-          $capture = [IO.MemoryStream]::new()
-          try {
-            $context.Request.InputStream.CopyTo($capture)
-            [IO.File]::WriteAllBytes((Join-Path $RequestCaptureRoot ("request-$requestIndex.json")),$capture.ToArray())
-          } finally {
-            $capture.Dispose()
-          }
-        }
-        $statusCode = if ($requestIndex -le $responseStatusCodes.Count) { [int]$responseStatusCodes[$requestIndex - 1] } else { 200 }
-        if ($statusCode -ne 200) {
-          $errorBytes = [Text.Encoding]::UTF8.GetBytes('{"error":"synthetic transport failure"}')
-          $context.Response.StatusCode = $statusCode
-          $context.Response.ContentType = 'application/json; charset=utf-8'
-          $context.Response.ContentEncoding = [Text.Encoding]::UTF8
-          $context.Response.ContentLength64 = $errorBytes.Length
-          $context.Response.OutputStream.Write($errorBytes,0,$errorBytes.Length)
-          $context.Response.Close()
-          continue
-        }
-        $responseText = if ($requestIndex -le $responseTexts.Count) { [string]$responseTexts[$requestIndex - 1] } else { $Text }
-        $payload = [pscustomobject]@{
-          type = 'response.completed'
-          response = [pscustomobject]@{
-            id = "phase6-response-test-$requestIndex"
-            object = 'response'
-            model = $Model
-            status = 'completed'
-            output = @([pscustomobject]@{ type='message'; content=@([pscustomobject]@{ type='output_text'; text=$responseText }) })
-          }
-        } | ConvertTo-Json -Depth 12 -Compress
-        $bytes = [Text.Encoding]::UTF8.GetBytes("event: response.completed`n" + "data: $payload`n`n")
-        $context.Response.StatusCode = 200
-        $context.Response.ContentType = 'text/event-stream; charset=utf-8'
-        $context.Response.ContentEncoding = [Text.Encoding]::UTF8
-        $context.Response.ContentLength64 = $bytes.Length
-        $context.Response.Headers['Cache-Control'] = 'no-cache'
-        $context.Response.OutputStream.Write($bytes,0,$bytes.Length)
-        $context.Response.Close()
-      }
-    } finally {
-      if ($listener.IsListening) { $listener.Stop() }
-      $listener.Close()
-    }
-  } -ArgumentList $prefix,$readyPath,$Model,$Text,$RequestCount,$RequestCaptureRoot,$ResponseTextsJson,$ResponseStatusCodesJson
-  $deadline = (Get-Date).AddSeconds(10)
-  while (-not (Test-Path -LiteralPath $readyPath) -and (Get-Date) -lt $deadline -and $job.State -notin @('Failed','Completed','Stopped')) { Start-Sleep -Milliseconds 50 }
-  if (-not (Test-Path -LiteralPath $readyPath)) {
-    $details = Receive-Job -Job $job -Keep -ErrorAction SilentlyContinue | Out-String
-    Stop-Job -Job $job -ErrorAction SilentlyContinue
-    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-    throw "Phase 6 test SSE server failed to start: $details"
+  $testDrivePath = (Get-Item -LiteralPath $TestDrive).FullName
+  $readyPath = Join-Path $testDrivePath "phase6-answer-$port.ready"
+  $stopPath = Join-Path $testDrivePath "phase6-answer-$port.stop"
+  $errorPath = Join-Path $testDrivePath "phase6-answer-$port.error.txt"
+  $requestCapturePath = ''
+  if (-not [string]::IsNullOrWhiteSpace($RequestCaptureRoot)) {
+    New-Item -ItemType Directory -Force -Path $RequestCaptureRoot | Out-Null
+    $requestCapturePath = (Get-Item -LiteralPath $RequestCaptureRoot).FullName
   }
-  return [pscustomobject]@{ job=$job; url=$prefix; requestCaptureRoot=$RequestCaptureRoot }
+  Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
+  # HttpListener is unavailable in this host's PowerShell job runtime. Keep
+  # this test-only Responses fixture on loopback with Python's stdlib server.
+  $serverConfig = [pscustomobject]@{
+    port=$port; readyPath=$readyPath; stopPath=$stopPath; errorPath=$errorPath
+    model=$Model; text=$Text; requestCount=$RequestCount; requestCaptureRoot=$requestCapturePath
+    responseTextsJson=$ResponseTextsJson; responseStatusCodesJson=$ResponseStatusCodesJson
+  } | ConvertTo-Json -Compress
+  $configEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($serverConfig))
+  $serverScript = @'
+import base64
+import json
+import os
+import traceback
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+config = json.loads(base64.b64decode("__PHASE6_SERVER_CONFIG__").decode("utf-8"))
+
+def parse_json_list(value):
+    if not value:
+        return []
+    parsed = json.loads(value)
+    if isinstance(parsed, list):
+        return parsed
+    return [parsed]
+
+class Phase6Handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return
+
+    def do_POST(self):
+        request_index = self.server.handled + 1
+        content_length = int(self.headers.get("Content-Length", "0"))
+        request_bytes = self.rfile.read(content_length) if content_length else b""
+        capture_root = config.get("requestCaptureRoot") or ""
+        if capture_root:
+            os.makedirs(capture_root, exist_ok=True)
+            with open(os.path.join(capture_root, "request-{}.json".format(request_index)), "wb") as handle:
+                handle.write(request_bytes)
+
+        status_codes = self.server.response_status_codes
+        status_code = int(status_codes[request_index - 1]) if request_index <= len(status_codes) else 200
+        if status_code != 200:
+            error_bytes = b'{"error":"synthetic transport failure"}'
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(error_bytes)))
+            self.end_headers()
+            self.wfile.write(error_bytes)
+            self.wfile.flush()
+            self.server.handled += 1
+            return
+
+        response_texts = self.server.response_texts
+        response_text = str(response_texts[request_index - 1]) if request_index <= len(response_texts) else str(config["text"])
+        payload = {
+            "type": "response.completed",
+            "response": {
+                "id": "phase6-response-test-{}".format(request_index),
+                "object": "response",
+                "model": config["model"],
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": response_text}]}],
+            },
+        }
+        response_bytes = ("event: response.completed\n" + "data: " + json.dumps(payload, separators=(",", ":")) + "\n\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(response_bytes)))
+        self.end_headers()
+        self.wfile.write(response_bytes)
+        self.wfile.flush()
+        self.server.handled += 1
+
+class Phase6Server(HTTPServer):
+    def handle_error(self, request, client_address):
+        with open(config["errorPath"], "w", encoding="utf-8", newline="") as handle:
+            traceback.print_exc(file=handle)
+
+server = None
+try:
+    server = Phase6Server(("127.0.0.1", int(config["port"])), Phase6Handler)
+    server.timeout = 0.05
+    server.handled = 0
+    server.response_texts = parse_json_list(config.get("responseTextsJson", ""))
+    server.response_status_codes = parse_json_list(config.get("responseStatusCodesJson", ""))
+    with open(config["readyPath"], "w", encoding="utf-8", newline="") as handle:
+        handle.write("ready")
+    while server.handled < int(config["requestCount"]) and not os.path.exists(config["stopPath"]):
+        server.handle_request()
+except Exception:
+    with open(config["errorPath"], "w", encoding="utf-8", newline="") as handle:
+        traceback.print_exc(file=handle)
+    raise
+finally:
+    if server is not None:
+        server.server_close()
+'@
+  $scriptEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($serverScript.Replace('__PHASE6_SERVER_CONFIG__', $configEncoded)))
+  $python = Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = [string]$python.Source
+  $startInfo.Arguments = '-c "import base64;exec(compile(base64.b64decode(''' + $scriptEncoded + '''),''<phase6-answer-sse-server>'',''exec''))"'
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  if (-not $process.Start()) { throw 'Phase 6 test SSE server process did not start.' }
+  $deadline = (Get-Date).AddSeconds(10)
+  while (-not (Test-Path -LiteralPath $readyPath) -and (Get-Date) -lt $deadline -and -not $process.HasExited) { Start-Sleep -Milliseconds 50 }
+  if (-not (Test-Path -LiteralPath $readyPath)) {
+    if (-not $process.HasExited) { try { $process.Kill() } catch {} }
+    $process.WaitForExit()
+    $details = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+    if (Test-Path -LiteralPath $errorPath) { $details += [IO.File]::ReadAllText($errorPath, [Text.Encoding]::UTF8) }
+    $exitCode = $process.ExitCode
+    $process.Dispose()
+    throw "Phase 6 test SSE server failed to start: exitCode=$exitCode details=$details"
+  }
+  return [pscustomobject]@{ process=$process; url=$prefix; readyPath=$readyPath; stopPath=$stopPath; errorPath=$errorPath; requestCaptureRoot=$requestCapturePath }
 }
 
 function Stop-Phase6AnswerSseServer($Server) {
   if ($null -eq $Server) { return }
+  if ($Server.PSObject.Properties['stopPath']) {
+    try { [IO.File]::WriteAllText([string]$Server.stopPath,'stop',[Text.UTF8Encoding]::new($false)) } catch {}
+  }
+  if ($Server.PSObject.Properties['process'] -and $null -ne $Server.process) {
+    try {
+      if (-not $Server.process.HasExited -and -not $Server.process.WaitForExit(5000)) { $Server.process.Kill(); $Server.process.WaitForExit() }
+      if ($Server.process.ExitCode -ne 0) {
+        $details = $Server.process.StandardOutput.ReadToEnd() + $Server.process.StandardError.ReadToEnd()
+        throw "Phase 6 test SSE server failed: exitCode=$($Server.process.ExitCode) details=$details"
+      }
+    } finally {
+      $Server.process.Dispose()
+    }
+    if ($Server.PSObject.Properties['errorPath'] -and (Test-Path -LiteralPath $Server.errorPath)) {
+      throw "Phase 6 test SSE server failed: $([IO.File]::ReadAllText([string]$Server.errorPath, [Text.Encoding]::UTF8))"
+    }
+    return
+  }
   Wait-Job -Job $Server.job -Timeout 5 | Out-Null
   Stop-Job -Job $Server.job -ErrorAction SilentlyContinue
   Remove-Job -Job $Server.job -Force -ErrorAction SilentlyContinue
+}
+
+function Wait-Phase6AnswerSseServer($Server,[int]$TimeoutSeconds=5) {
+  if ($null -eq $Server -or -not $Server.PSObject.Properties['process'] -or $null -eq $Server.process) { return 'Missing' }
+  if (-not $Server.process.WaitForExit($TimeoutSeconds * 1000)) { return 'Running' }
+  if ($Server.process.ExitCode -ne 0) {
+    $details = $Server.process.StandardOutput.ReadToEnd() + $Server.process.StandardError.ReadToEnd()
+    if ($Server.PSObject.Properties['errorPath'] -and (Test-Path -LiteralPath $Server.errorPath)) {
+      $details += [IO.File]::ReadAllText([string]$Server.errorPath, [Text.Encoding]::UTF8)
+    }
+    throw "Phase 6 test SSE server failed: exitCode=$($Server.process.ExitCode) details=$details"
+  }
+  if ($Server.PSObject.Properties['errorPath'] -and (Test-Path -LiteralPath $Server.errorPath)) {
+    throw "Phase 6 test SSE server failed: $([IO.File]::ReadAllText([string]$Server.errorPath, [Text.Encoding]::UTF8))"
+  }
+  return 'Completed'
 }
 
 function New-Phase6CheckpointTestInput([string]$RunRoot) {
@@ -340,8 +440,7 @@ wire_api = "responses"
       $probe.value.transportRetryCount | Should Be 1
       $probe.value.transportProbeReceiptSha256 | Should Match '^[0-9a-f]{64}$'
       @(Get-ChildItem -LiteralPath $requestCaptureRoot -Filter 'request-*.json').Count | Should Be 2
-      Wait-Job -Job $server.job -Timeout 3 | Out-Null
-      $server.job.State | Should Be 'Completed'
+      (Wait-Phase6AnswerSseServer $server 3) | Should Be 'Completed'
     } finally {
       Remove-Item Env:\SUPER_BRAIN_TEST_ANSWER_KEY -ErrorAction SilentlyContinue
       Stop-Phase6AnswerSseServer $server
@@ -389,8 +488,7 @@ wire_api = "responses"
       (Get-Content -LiteralPath (Join-Path $requestCaptureRoot 'request-3.json') -Raw -Encoding UTF8) | Should Match 'Case id: unknown-case'
       (Get-Content -LiteralPath (Join-Path $requestCaptureRoot 'request-3.json') -Raw -Encoding UTF8) | Should Not Match 'Case id: known-case'
       @(Get-ChildItem -LiteralPath $requestCaptureRoot -Filter 'request-*.json').Count | Should Be 3
-      Wait-Job -Job $server.job -Timeout 3 | Out-Null
-      $server.job.State | Should Be 'Completed'
+      (Wait-Phase6AnswerSseServer $server 3) | Should Be 'Completed'
     } finally {
       Remove-Item Env:\SUPER_BRAIN_TEST_ANSWER_KEY -ErrorAction SilentlyContinue
       Stop-Phase6AnswerSseServer $server
@@ -422,8 +520,7 @@ wire_api = "responses"
       $resume.exitCode | Should Be 1
       $resume.value.code | Should Be 'PHASE6_CHECKPOINT_INDETERMINATE'
       Test-Path -LiteralPath $outputPath | Should Be $false
-      Wait-Job -Job $server.job -Timeout 3 | Out-Null
-      $server.job.State | Should Be 'Completed'
+      (Wait-Phase6AnswerSseServer $server 3) | Should Be 'Completed'
     } finally {
       Remove-Item Env:\SUPER_BRAIN_TEST_ANSWER_KEY -ErrorAction SilentlyContinue
       Stop-Phase6AnswerSseServer $server

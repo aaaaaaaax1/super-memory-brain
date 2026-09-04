@@ -67,34 +67,52 @@ Describe 'Engineering behavior holdout' {
   }
 
   It 'selects Playwright normally and browser-act only for explicit fallback' {
-    $normal = Invoke-Hook (U @(25171,24320,32593,39029,26816,26597,26412,22320,39029,38754,26377,27809,26377,24067,23616,38169,20301))
-    $playwright = Invoke-Hook (U @(29992,32,80,108,97,121,119,114,105,103,104,116,32,39564,35777,36825,20010,30331,24405,27969,31243))
-    $fallback = Invoke-Hook (U @(80,108,97,121,119,114,105,103,104,116,32,20570,19981,20102,36825,20010,39564,35777,30721,65292,25913,29992,32,98,114,111,119,115,101,114,45,97,99,116))
-    $explicit = Invoke-Hook (U @(35831,30452,25509,20351,29992,32,98,114,111,119,115,101,114,45,97,99,116,32,26816,26597,24050,30331,24405,27983,35272,22120,29366,24577))
-    $period = Invoke-Hook 'Inspect the rendered invoice page in the browser.'
+    $normalPrompt = U @(25171,24320,32593,39029,26816,26597,26412,22320,39029,38754,26377,27809,26377,24067,23616,38169,20301)
+    $playwrightPrompt = 'Use Playwright to inspect this browser flow.'
+    $fallbackPrompt = U @(80,108,97,121,119,114,105,103,104,116,32,20570,19981,20102,36825,20010,39564,35777,30721,65292,25913,29992,32,98,114,111,119,115,101,114,45,97,99,116)
+    $explicitPrompt = U @(35831,30452,25509,20351,29992,32,98,114,111,119,115,101,114,45,97,99,116,32,26816,26597,24050,30331,24405,27983,35272,22120,29366,24577)
+    $normal = Invoke-JsonScript (Join-Path $root 'scripts\intent-router.ps1') @('-Text',$normalPrompt,'-Json')
+    $playwright = Invoke-JsonScript (Join-Path $root 'scripts\intent-router.ps1') @('-Text',$playwrightPrompt,'-Json')
+    $fallback = Invoke-JsonScript (Join-Path $root 'scripts\intent-router.ps1') @('-Text',$fallbackPrompt,'-Json')
+    $explicit = Invoke-JsonScript (Join-Path $root 'scripts\intent-router.ps1') @('-Text',$explicitPrompt,'-Json')
+    $period = Invoke-JsonScript (Join-Path $root 'scripts\intent-router.ps1') @('-Text','Inspect the rendered invoice page in the browser.','-Json')
 
-    $normal.Contains('BROWSER_ROUTE selected=playwright') | Should Be $true
-    $normal.Contains('fallback=browser-act') | Should Be $true
-    $normal.Contains('fallbackAllowed=false') | Should Be $true
-    $normal.Contains('name=browser-act') | Should Be $false
-    $playwright.Contains('BROWSER_ROUTE selected=playwright') | Should Be $true
-    $playwright.Contains('name=playwright') | Should Be $true
-    $fallback.Contains('BROWSER_ROUTE selected=browser-act') | Should Be $true
-    $fallback.Contains('reason=playwright_unreliable') | Should Be $true
-    $fallback.Contains('name=browser-act') | Should Be $true
-    $explicit.Contains('BROWSER_ROUTE selected=browser-act') | Should Be $true
-    $explicit.Contains('reason=user_requested') | Should Be $true
-    $period.Contains('BROWSER_ROUTE selected=playwright') | Should Be $true
+    # Prompt hooks are intentionally inert; routing is an H7 intent-router responsibility.
+    (Invoke-Hook $normalPrompt) | Should Be ''
+    $normal.browserRoute | Should Be 'playwright'
+    $normal.browserRouteReason | Should Be 'default'
+    $normal.browserFallbackAllowed | Should Be $false
+    @($normal.commands) -contains 'skills\playwright\SKILL.md' | Should Be $true
+    @($normal.commands) -contains 'skills\browser-act\SKILL.md' | Should Be $false
+    $playwright.browserRoute | Should Be 'playwright'
+    $playwright.browserRouteReason | Should Be 'default'
+    $playwright.browserFallbackAllowed | Should Be $false
+    @($playwright.commands) -contains 'skills\playwright\SKILL.md' | Should Be $true
+    $fallback.browserRoute | Should Be 'browser-act'
+    $fallback.browserRouteReason | Should Be 'playwright_unreliable'
+    $fallback.browserFallbackAllowed | Should Be $true
+    @($fallback.commands) -contains 'skills\browser-act\SKILL.md' | Should Be $true
+    @($fallback.commands) -contains 'skills\playwright\SKILL.md' | Should Be $false
+    $explicit.browserRoute | Should Be 'browser-act'
+    $explicit.browserRouteReason | Should Be 'user_requested'
+    $explicit.browserFallbackAllowed | Should Be $true
+    @($explicit.commands) -contains 'skills\browser-act\SKILL.md' | Should Be $true
+    $period.browserRoute | Should Be 'playwright'
+    $period.browserRouteReason | Should Be 'default'
+    $period.browserFallbackAllowed | Should Be $false
   }
 
   It 'generalizes feature flow and browser fallback wording' {
     $featurePrompt = U @(25226,30331,24405,24341,23548,20018,36827,29992,25143,27969,31243,65292,19981,33021,20570,25104,23396,31435,24377,31383,12290)
     $feature = Invoke-JsonScript (Join-Path $root 'scripts\intent-router.ps1') @('-Text',$featurePrompt,'-Json')
-    $fallback = Invoke-Hook "Playwright cannot reliably finish this browser check; fall back to browser-act."
+    $fallback = Invoke-JsonScript (Join-Path $root 'scripts\intent-router.ps1') @('-Text','Playwright cannot reliably finish this browser check; fall back to browser-act.','-Json')
     $feature.intent | Should Be 'add_or_optimize_feature'
     @($feature.dispatchHints) -contains 'product_coherence_gate' | Should Be $true
-    $fallback.Contains('BROWSER_ROUTE selected=browser-act') | Should Be $true
-    $fallback.Contains('reason=playwright_unreliable') | Should Be $true
+    $fallback.intent | Should Be 'browser_automation'
+    $fallback.browserRoute | Should Be 'browser-act'
+    $fallback.browserRouteReason | Should Be 'playwright_unreliable'
+    $fallback.browserFallbackAllowed | Should Be $true
+    @($fallback.commands) -contains 'skills\browser-act\SKILL.md' | Should Be $true
   }
 
   It 'shares product flow semantics between intent and collaboration planning' {

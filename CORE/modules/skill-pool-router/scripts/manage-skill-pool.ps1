@@ -17,6 +17,27 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 . (Join-Path $PSScriptRoot 'skill-catalog.ps1')
 
+function Get-SkillPoolFileHash([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+  $stream = $null
+  $sha = $null
+  try {
+    $stream = [IO.File]::Open(
+      [IO.Path]::GetFullPath($Path),
+      [IO.FileMode]::Open,
+      [IO.FileAccess]::Read,
+      [IO.FileShare]::ReadWrite
+    )
+    $sha = [Security.Cryptography.SHA256]::Create()
+    return -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+  } catch {
+    return ''
+  } finally {
+    if ($null -ne $sha) { $sha.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
+  }
+}
+
 $freeImageFolder = -join (@(20813,36153,29983,22270) | ForEach-Object { [char]$_ })
 $hotFolders = @(
   '.system','super-memory-brain',
@@ -151,7 +172,7 @@ function Read-Metadata([string]$Folder) {
   if([string]::IsNullOrWhiteSpace($description)) {
     $description = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_ -notmatch '^---$' -and $_ -notmatch '^#' -and $_ -notmatch '^[A-Za-z0-9_.-]+:\s*' } | Select-Object -First 2 | ForEach-Object { $_.Trim('`',' ') }) -join ' '
   }
-  return [pscustomobject]@{ name=$name; description=$description; skillFile=$file.FullName; sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash; disableModelInvocation=$disableModelInvocation; delegatesTo=$delegatesTo }
+  return [pscustomobject]@{ name=$name; description=$description; skillFile=$file.FullName; sha256=Get-SkillPoolFileHash $file.FullName; disableModelInvocation=$disableModelInvocation; delegatesTo=$delegatesTo }
 }
 
 function Get-Stats([string]$Root) {
@@ -215,7 +236,7 @@ function Test-IndexedEntry([object]$Entry) {
   if([string]::IsNullOrWhiteSpace($skillFile)-or-not(Test-Path -LiteralPath $skillFile)){throw "SKILL_POOL_INDEXED_FILE_MISSING: $skillFile"}
   Assert-Child $cold $skillFile 'indexed skill file'
   Assert-SkillContentHealthy (Split-Path -Parent $skillFile)
-  $actualHash=(Get-FileHash -LiteralPath $skillFile -Algorithm SHA256).Hash
+  $actualHash=Get-SkillPoolFileHash $skillFile
   if($actualHash -ne $expectedHash){throw "SKILL_POOL_HASH_MISMATCH: $skillFile; run Reindex after reviewing the change"}
   return [pscustomobject]@{
     folder=[string](Get-Value $Entry 'folder');name=[string](Get-Value $Entry 'name');description=[string](Get-Value $Entry 'description')
@@ -228,7 +249,7 @@ function Test-ActiveEntry([object]$Entry) {
   if([string]::IsNullOrWhiteSpace($skillFile)-or-not(Test-Path -LiteralPath $skillFile)){throw "SKILL_POOL_ACTIVE_FILE_MISSING: $skillFile"}
   Assert-Child $active $skillFile 'active skill file'
   Assert-SkillContentHealthy (Split-Path -Parent $skillFile)
-  $actualHash=(Get-FileHash -LiteralPath $skillFile -Algorithm SHA256).Hash
+  $actualHash=Get-SkillPoolFileHash $skillFile
   return [pscustomobject]@{
     source='active';folder=[string](Get-Value $Entry 'folder');name=[string](Get-Value $Entry 'name');description=[string](Get-Value $Entry 'description')
     skillFile=$skillFile;sha256=$actualHash;verified=$true;loadInPlace=$true;requiresActivation=$false;requiresRestart=$false

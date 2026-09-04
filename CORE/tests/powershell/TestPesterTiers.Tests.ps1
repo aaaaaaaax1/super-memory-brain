@@ -16,11 +16,13 @@ Describe 'Super Memory Brain tiered Pester runner' {
     $runner.Contains("return 90") | Should Be $true
     $runner.Contains("default=90;CanonicalPlanContinuity.Tests.ps1=105") | Should Be $true
     $runner.Contains("if (`$SuiteName -eq 'ExecutionContract.Tests.ps1') { return 540 }") | Should Be $true
+    $runner.Contains("if (`$SuiteName -eq 'TaskCompletionTransaction.Tests.ps1') { return 600 }") | Should Be $true
     $runner.Contains("return 360") | Should Be $true
     $runner.Contains('Get-SuperBrainPesterTierBudgetMs') | Should Be $true
     $runner.Contains('default { return 3600000 }') | Should Be $true
     $runner.Contains('Get-SuperBrainPesterSuiteTimeout $Tier $SuiteTimeoutSeconds $file.Name') | Should Be $true
     $runner.Contains('suiteTimeoutPolicy') | Should Be $true
+    $runner.Contains('default=360;ExecutionContract.Tests.ps1=540;TaskCompletionTransaction.Tests.ps1=600') | Should Be $true
     $runner.Contains('PESTER_TIER_BUDGET_EXCEEDED') | Should Be $true
     $runner.Contains('tierBudgetMs = $tierBudgetMs') | Should Be $true
     $runner.Contains('[ValidateRange(0,12)][int]$MaxParallelSuites = 0') | Should Be $true

@@ -25,6 +25,9 @@ It is not public source and must never be staged.
 - The installed `super-memory-brain` skill is the single host entry.
 - Package capabilities are absorbed Super Brain procedures, not independent
   host skills.
+- A non-Codex local MCP host uses `runtime/local_scope_adapter.py`; only the
+  real project cwd and `SUPER_BRAIN_LOCAL_SESSION_ID` cross the process
+  boundary, and every scope change requires a fresh launcher process.
 
 ## Current verification
 

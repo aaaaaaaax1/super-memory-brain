@@ -362,6 +362,35 @@ function ConvertTo-TaskSessionRebindResponseReceipt([object]$Receipt) {
   }
 }
 
+function ConvertTo-IntentSessionRebindResponseReceipt([object]$Receipt) {
+  # Keep the v18 local transaction receipt as persisted authority evidence,
+  # while preserving the intent rebind response contract used by the
+  # continuity projection and older callers.  This is response-only: the
+  # staged execution contract must continue to carry the full local ledger
+  # receipt so H7 can verify its status, ref hash, and immutable proof fields.
+  if (-not $Receipt -or [string]$Receipt.schema -ne 'super-brain.local-session-rebind-result.v1' -or [string]$Receipt.aggregateKind -ne 'intent') {
+    return $Receipt
+  }
+  return [pscustomobject]@{
+    ok = if ($Receipt.PSObject.Properties['ok']) { [bool]$Receipt.ok } else { $true }
+    schema = 'super-brain.intent-session-rebind-result.v1'
+    rebindId = [string]$Receipt.rebindId
+    aggregateId = [string]$Receipt.aggregateId
+    taskId = [string]$Receipt.taskId
+    taskInstanceId = [string]$Receipt.taskInstanceId
+    workspaceKey = [string]$Receipt.workspaceKey
+    previousOwnerSessionKey = [string]$Receipt.previousOwnerSessionKey
+    newOwnerSessionKey = [string]$Receipt.newOwnerSessionKey
+    intentRevision = [int]$Receipt.expectedRevision
+    latestReceiptId = [string]$Receipt.previousReceiptId
+    latestReceiptPayloadHash = [string]$Receipt.previousReceiptHash
+    source = if ($Receipt.PSObject.Properties['source']) { [string]$Receipt.source } else { 'execution-contract.ps1:local-rebind' }
+    idempotent = if ($Receipt.PSObject.Properties['idempotent']) { [bool]$Receipt.idempotent } else { $false }
+    rawPromptStored = $false
+    rawTranscriptStored = $false
+  }
+}
+
 function Prepare-IntentResolution([string]$TaskIdValue,[string]$TaskInstanceIdValue,[string]$WorkspaceKeyValue,[string]$OwnerSessionKeyValue,[object]$IntentContractValue,[object]$SessionRebind=$null) {
   $normalized = ConvertTo-IntentResolutionContract $IntentContractValue -RequireCurrentSchema
   if (-not $normalized.ok) { return $normalized }

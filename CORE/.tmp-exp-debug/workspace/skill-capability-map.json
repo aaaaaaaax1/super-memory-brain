@@ -1,0 +1,612 @@
+{
+  "schema": "super-brain.skill-capability-map.v1",
+  "updatedAt": "2026-09-02 06:49:53",
+  "source": "package_public_seed",
+  "seedPath": "references/skill-capability-map.seed.json",
+  "guard": "Skills are internal capabilities selected by ORC as execution constraints, executors, references, verifiers, cache/version guards, or coordinators; use rules_as_execution_constraints_not_menu_calls and do not leave them as user-remembered menu items.",
+  "capabilities": [
+    {
+      "name": "ponytail",
+      "category": "rule",
+      "role": "pre_action_constraint",
+      "canDo": [
+        "anti-overengineering",
+        "minimal safe diff",
+        "delete/stdlib/native/existing dependency first"
+      ],
+      "cannotDo": [
+        "remove validation/privacy/error handling/tests/rollback/user requirements"
+      ],
+      "triggers": [
+        "code edit",
+        "bug fix",
+        "script change",
+        "refactor",
+        "dependency choice",
+        "optimize",
+        "feature"
+      ],
+      "applyAt": [
+        "preflight",
+        "before_mutation",
+        "route_review"
+      ],
+      "verification": [
+        "diff is smallest safe change",
+        "no speculative scaffolding"
+      ],
+      "stopCondition": "larger structure is explicitly required by requirements, security, migration, performance, or accepted architecture"
+    },
+    {
+      "name": "grill-me",
+      "category": "rule",
+      "role": "challenge_gate",
+      "canDo": [
+        "challenge assumptions",
+        "surface non-goals",
+        "find counterexamples",
+        "force acceptance evidence"
+      ],
+      "cannotDo": [
+        "replace local evidence exploration",
+        "ask broad questions when code can answer"
+      ],
+      "triggers": [
+        "plan",
+        "architecture",
+        "multi-step",
+        "unclear requirements",
+        "completion criteria",
+        "验收",
+        "方案"
+      ],
+      "applyAt": [
+        "preflight",
+        "before_plan_commit",
+        "before_completion"
+      ],
+      "verification": [
+        "requirements/non-goals challenged",
+        "acceptance evidence named"
+      ],
+      "stopCondition": "task is tiny, fully specified, and low risk"
+    },
+    {
+      "name": "review / chinese-code-review",
+      "category": "rule",
+      "role": "review_verifier",
+      "canDo": [
+        "find correctness, maintainability, security and regression risks",
+        "produce evidence-backed review findings"
+      ],
+      "cannotDo": [
+        "replace tests",
+        "approve unevidenced completion"
+      ],
+      "triggers": [
+        "review",
+        "PR",
+        "risk",
+        "完成前",
+        "代码审查",
+        "completion audit"
+      ],
+      "applyAt": [
+        "before_completion",
+        "after_mutation"
+      ],
+      "verification": [
+        "review findings resolved or explicitly accepted",
+        "completion audit includes review/verifier role"
+      ]
+    },
+    {
+      "name": "tdd / vitest / testing-setup",
+      "category": "verification",
+      "role": "test_strategy",
+      "canDo": [
+        "define regression tests",
+        "run JS/TS test workflows",
+        "protect behavior"
+      ],
+      "cannotDo": [
+        "prove untested user-facing paths"
+      ],
+      "triggers": [
+        "test",
+        "regression",
+        "bug",
+        "feature",
+        "CI",
+        "verify",
+        "completion audit"
+      ],
+      "applyAt": [
+        "planning",
+        "implementation",
+        "verification",
+        "before_completion"
+      ],
+      "verification": [
+        "targeted tests pass",
+        "failure mode covered"
+      ]
+    },
+    {
+      "name": "integration-parity-check / browser-act / emulator/simulator",
+      "category": "verification",
+      "role": "real_user_path_verifier",
+      "canDo": [
+        "separate module smoke, integration smoke, and user-facing acceptance",
+        "require concrete command/log/screenshot/UI path/actual output evidence",
+        "route browser/mobile/device paths to appropriate tool skills"
+      ],
+      "cannotDo": [
+        "treat unit/module smoke as user acceptance",
+        "accept vague success claims without concrete evidence"
+      ],
+      "triggers": [
+        "real user path",
+        "user-facing",
+        "acceptance",
+        "验收",
+        "UI path",
+        "screenshot",
+        "actual output",
+        "completion audit",
+        "verify"
+      ],
+      "applyAt": [
+        "verification",
+        "before_completion",
+        "acceptance"
+      ],
+      "verification": [
+        "realUserPathVerification flag true",
+        "concrete acceptance evidence present",
+        "module/integration/user acceptance layers remain separate"
+      ],
+      "stopCondition": "not applicable only for purely internal/docs-only changes, and the reason must be recorded"
+    },
+    {
+      "name": "version-bump / changelog / baseline history",
+      "category": "release_state",
+      "role": "version_record_keeper",
+      "canDo": [
+        "update manifest version",
+        "record changelog and CURRENT_BASELINE",
+        "preserve rollback notes through BASELINE_HISTORY and graph lineage"
+      ],
+      "cannotDo": [
+        "claim release/version completion with stale version files",
+        "skip changelog for package behavior changes"
+      ],
+      "triggers": [
+        "version",
+        "changelog",
+        "baseline",
+        "release",
+        "package update",
+        "completion audit"
+      ],
+      "applyAt": [
+        "after_mutation",
+        "before_completion",
+        "release_readiness"
+      ],
+      "verification": [
+        "manifest/CHANGELOG/CURRENT_BASELINE versions match",
+        "version-bump preview/apply evidence or manual equivalent recorded"
+      ]
+    },
+    {
+      "name": "host-cache-check / hot-refresh-skills",
+      "category": "startup_cache",
+      "role": "cache_freshness_checker",
+      "canDo": [
+        "detect installed skill copy freshness",
+        "surface current-session loaded-skill cache limitation",
+        "recommend hot refresh plus new session when needed"
+      ],
+      "cannotDo": [
+        "inspect already-loaded chat-session skill text",
+        "pretend hot-refresh updates the current in-memory skill body"
+      ],
+      "triggers": [
+        "cache",
+        "host cache",
+        "hot refresh",
+        "installed skill",
+        "new session",
+        "startup",
+        "completion audit"
+      ],
+      "applyAt": [
+        "after_mutation",
+        "before_completion",
+        "startup_verification"
+      ],
+      "verification": [
+        "last-host-cache-check.json reports installedFresh or staleHosts",
+        "user-facing cache hint present when session may be stale"
+      ]
+    },
+    {
+      "name": "current-task-context / goal-route-lock / route-checkpoint",
+      "category": "guard_state",
+      "role": "current_task_guard",
+      "canDo": [
+        "bind guard scripts to one current taskId",
+        "detect stale checkedAt/version-mismatched context",
+        "prevent global last-* evidence from satisfying a different task"
+      ],
+      "cannotDo": [
+        "reuse cleared/stale task context as proof",
+        "let unscoped global state pass completion"
+      ],
+      "triggers": [
+        "current task",
+        "task context",
+        "stale",
+        "route",
+        "guard",
+        "completion audit"
+      ],
+      "applyAt": [
+        "preflight",
+        "before_mutation",
+        "before_completion"
+      ],
+      "verification": [
+        "current-task-context Status ok=true and stale=false",
+        "TaskId passed into route/causal/integration/task-verification/completion-guard scripts"
+      ]
+    },
+    {
+      "name": "reflection-promotion / skill-evolution-loop / lesson-scope-gate",
+      "category": "self_improvement",
+      "role": "skill_gap_repair",
+      "canDo": [
+        "capture missing routed roles as skill gap candidates",
+        "record successful skill composition samples as proficiency evidence",
+        "gate reusable lessons by scope/evidence/confidence"
+      ],
+      "cannotDo": [
+        "mutate global skills without approval",
+        "promote unverified one-off noise",
+        "store raw transcripts or secrets"
+      ],
+      "triggers": [
+        "skill",
+        "proficiency",
+        "self learning",
+        "completion audit",
+        "missing role",
+        "repeated failure",
+        "规则失效",
+        "不要反复提醒"
+      ],
+      "applyAt": [
+        "reflection",
+        "post_verification",
+        "gap_repair",
+        "before_completion"
+      ],
+      "verification": [
+        "candidate first",
+        "validation gate",
+        "missing_skill_role or skill_proficiency_success_sample evidence",
+        "approval for mutation"
+      ]
+    },
+    {
+      "name": "engineering evidence grounding",
+      "category": "decision_quality",
+      "role": "evidence_grounding",
+      "canDo": [
+        "separate FACT, INFERENCE, and UNKNOWN",
+        "require named current evidence for facts",
+        "let live evidence override memory and assumptions"
+      ],
+      "cannotDo": [
+        "promote plausible explanations to facts",
+        "use stale memory as current proof",
+        "hide critical unknowns"
+      ],
+      "triggers": [
+        "fix",
+        "debug",
+        "repair",
+        "optimize",
+        "architecture",
+        "root cause",
+        "best option",
+        "optimal",
+        "performance",
+        "regression",
+        "修复",
+        "优化",
+        "架构",
+        "根因",
+        "最优",
+        "性能"
+      ],
+      "applyAt": [
+        "preflight",
+        "diagnosis",
+        "decision",
+        "before_mutation",
+        "before_completion"
+      ],
+      "verification": [
+        "every FACT has evidence",
+        "INFERENCE and UNKNOWN remain explicit",
+        "current evidence overrides stale memory"
+      ],
+      "stopCondition": "task is a greeting, acknowledgement, simple factual answer, or tiny fully specified low-risk action"
+    },
+    {
+      "name": "engineering-decision-gate",
+      "category": "planning",
+      "role": "engineering_decision",
+      "canDo": [
+        "define pain point, objective, and constraints",
+        "compare feasible options and tradeoffs",
+        "enforce dependency-ordered execution contracts and acceptance"
+      ],
+      "cannotDo": [
+        "claim universal optimality",
+        "select an option without alternatives and criteria",
+        "continue after failed step acceptance"
+      ],
+      "triggers": [
+        "fix",
+        "debug",
+        "repair",
+        "optimization",
+        "architecture",
+        "design decision",
+        "tradeoff",
+        "best option",
+        "optimal",
+        "migration",
+        "bottleneck",
+        "修复问题",
+        "优化方案",
+        "架构设计",
+        "最优方案"
+      ],
+      "applyAt": [
+        "decision",
+        "before_mutation",
+        "execution",
+        "before_completion"
+      ],
+      "verification": [
+        "engineering-decision-gate ok=true",
+        "root-cause status and discriminating test are explicit",
+        "each step has input/output/acceptance/stop conditions"
+      ],
+      "stopCondition": "engineering judgment is not required by task complexity, risk, or decision content"
+    },
+    {
+      "name": "spec-kit / world-model-method",
+      "category": "planning",
+      "role": "structured_decision",
+      "canDo": [
+        "turn vague ideas into spec/tasks",
+        "compare routes",
+        "preserve acceptance criteria"
+      ],
+      "cannotDo": [
+        "slow down tiny obvious fixes"
+      ],
+      "triggers": [
+        "ambiguous feature",
+        "product idea",
+        "architecture",
+        "multi-phase",
+        "需求"
+      ],
+      "applyAt": [
+        "planning",
+        "route_selection"
+      ],
+      "verification": [
+        "requirements have tasks or explicit non-goals"
+      ]
+    },
+    {
+      "name": "browser-act",
+      "category": "tool_execution",
+      "role": "browser_operator",
+      "canDo": [
+        "open pages",
+        "click/type/forms",
+        "screenshots",
+        "rendered page extraction",
+        "visible verification checkbox workflows"
+      ],
+      "cannotDo": [
+        "hidden captcha solving",
+        "credential/payment/sensitive submission without confirmation"
+      ],
+      "triggers": [
+        "browser",
+        "网页",
+        "点击",
+        "登录态",
+        "截图",
+        "Cloudflare",
+        "I am human",
+        "real user path"
+      ],
+      "applyAt": [
+        "execution",
+        "user_path_verification"
+      ],
+      "verification": [
+        "browser-act core skill loaded before first command",
+        "visible result or screenshot evidence"
+      ]
+    },
+    {
+      "name": "agent-bridge",
+      "category": "coordination",
+      "role": "controlled_agent_channel",
+      "canDo": [
+        "open/connect/send/wait channel",
+        "handoff compact task packets",
+        "failover/adopt advisory results"
+      ],
+      "cannotDo": [
+        "launch nested helper for target channel",
+        "treat idle wait or one reply as completion"
+      ],
+      "triggers": [
+        "agent bridge",
+        "subagent channel",
+        "agent通道",
+        "子agent通道"
+      ],
+      "applyAt": [
+        "coordination",
+        "handoff",
+        "multi_agent"
+      ],
+      "verification": [
+        "fresh channel unless explicit id",
+        "WaitConnect/WaitInbox semantics preserved"
+      ]
+    },
+    {
+      "name": "super-memory-brain / plusunm-g1 / nexsandglass",
+      "category": "memory_control",
+      "role": "continuity_governance",
+      "canDo": [
+        "recall accepted constraints",
+        "write governed memory",
+        "restore sessions",
+        "stabilize long tasks"
+      ],
+      "cannotDo": [
+        "store secrets/noise/raw long chat by default",
+        "override current visible instructions"
+      ],
+      "triggers": [
+        "继续",
+        "上次",
+        "记住",
+        "任务状态",
+        "超级大脑",
+        "另一个会话"
+      ],
+      "applyAt": [
+        "startup",
+        "preflight",
+        "resume",
+        "learning",
+        "status"
+      ],
+      "verification": [
+        "compact evidence cards",
+        "current state before old memory"
+      ]
+    },
+    {
+      "name": "frontend/design skills",
+      "category": "domain_execution",
+      "role": "ui_design_implementation",
+      "canDo": [
+        "frontend architecture",
+        "responsive layout",
+        "visual/design critique",
+        "Vue/Nuxt/Vite/GSAP guidance"
+      ],
+      "cannotDo": [
+        "replace project-specific live code verification"
+      ],
+      "triggers": [
+        "frontend",
+        "UI",
+        "design",
+        "Vue",
+        "Nuxt",
+        "Vite",
+        "GSAP",
+        "响应式"
+      ],
+      "applyAt": [
+        "planning",
+        "implementation",
+        "visual_verification"
+      ],
+      "verification": [
+        "rendered UI or targeted tests when available"
+      ]
+    },
+    {
+      "name": "mobile/flutter/android/ios skills",
+      "category": "domain_execution",
+      "role": "mobile_app_support",
+      "canDo": [
+        "Flutter layout/testing",
+        "Android/iOS emulator workflows",
+        "native route advice"
+      ],
+      "cannotDo": [
+        "skip device/simulator verification for user-visible behavior"
+      ],
+      "triggers": [
+        "Flutter",
+        "Android",
+        "iOS",
+        "mobile",
+        "emulator",
+        "simulator",
+        "布局",
+        "real user path"
+      ],
+      "applyAt": [
+        "planning",
+        "implementation",
+        "device_verification"
+      ],
+      "verification": [
+        "build/test/emulator or simulator evidence"
+      ]
+    },
+    {
+      "name": "doc/pdf/writing skills",
+      "category": "content_execution",
+      "role": "document_and_writing_support",
+      "canDo": [
+        "PDF/DOCX handling",
+        "article editing",
+        "documentation",
+        "writing structure"
+      ],
+      "cannotDo": [
+        "invent source content",
+        "ignore requested format"
+      ],
+      "triggers": [
+        "PDF",
+        "DOCX",
+        "文档",
+        "文章",
+        "documentation",
+        "写作"
+      ],
+      "applyAt": [
+        "analysis",
+        "generation",
+        "format_verification"
+      ],
+      "verification": [
+        "output file/path or requested text format"
+      ]
+    }
+  ],
+  "mode": "rules_as_execution_constraints_not_menu_calls"
+}

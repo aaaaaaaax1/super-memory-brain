@@ -597,8 +597,30 @@ function Test-ControlledMemoryPromotionCandidate($Item) {
   return ([string]$Item.source -eq 'reflection-promotion.ps1' -and [string]$Item.target -in @('experience','memory'))
 }
 
+function ConvertTo-QueueChildArguments([hashtable]$Parameters) {
+  $arguments = New-Object Collections.ArrayList
+  foreach ($entry in @($Parameters.GetEnumerator() | Sort-Object Name)) {
+    $name = [string]$entry.Key
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+    $value = $entry.Value
+    if ($null -eq $value) { continue }
+    if ($value -is [bool]) {
+      if ($value) { [void]$arguments.Add('-' + $name) }
+      continue
+    }
+    [void]$arguments.Add('-' + $name)
+    if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+      foreach ($item in @($value)) { if ($null -ne $item) { [void]$arguments.Add([string]$item) } }
+    } else {
+      [void]$arguments.Add([string]$value)
+    }
+  }
+  return @($arguments)
+}
+
 function Invoke-QueueChildJson([string]$ScriptPath, [hashtable]$Parameters) {
-  $raw = @(& $ScriptPath @Parameters 2>&1)
+  $childArguments = @(ConvertTo-QueueChildArguments $Parameters)
+  $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath @childArguments 2>&1)
   $exitCode = $LASTEXITCODE
   $text = ($raw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
   $value = $null
@@ -1048,7 +1070,7 @@ if ($Action -eq 'RecordVerification') {
   }
 }
 
-if ($Action -eq 'Collect' -or ($Action -eq 'Maintain' -and [string]::IsNullOrWhiteSpace($TaskId))) {
+if ($Action -eq 'Collect') {
   $hygiene = Read-JsonFile (Join-Path $workspace 'last-memory-hygiene.json')
   $lifecycle = Read-JsonFile (Join-Path $workspace 'last-workspace-lifecycle.json')
   $doctor = $null

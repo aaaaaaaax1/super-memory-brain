@@ -37,7 +37,7 @@
                                              "scripts/auto-continuation.ps1",
                                              "scripts/super-brain-dashboard.ps1"
                                          ],
-                             "defaultPolicy":  "Hookless Turn Runtime is the only Super Brain lifecycle path. Governed turns call brain_turn(open) before work and brain_turn(close) before terminal output; close decisions continue or ResumeParent without a background worker. H7 receipts bind real CODEX_THREAD_ID/cwd scope, activation, core-rule registry, typed-memory refs/hash, recovery, normalized turn intent, and bounded telemetry without raw prompts. Visible context and the execution contract outrank checkpoints and recall; greetings and independent direct work stay silent.",
+                             "defaultPolicy":  "Hookless Turn Runtime is the only Super Brain lifecycle path. Governed turns call brain_turn(open) before work and brain_turn(close) before terminal output; close decisions continue or ResumeParent without a background worker. H7 receipts bind the current cwd plus SUPER_BRAIN_LOCAL_SESSION_ID scope, activation, core-rule registry, typed-memory refs/hash, recovery, normalized turn intent, and bounded telemetry without raw prompts. Visible context and the execution contract outrank checkpoints and recall; greetings and independent direct work stay silent.",
                              "secondaryColdReferences":  [
                                                              "references/task-identity-index.md via references/status-recovery.md only"
                                                          ]

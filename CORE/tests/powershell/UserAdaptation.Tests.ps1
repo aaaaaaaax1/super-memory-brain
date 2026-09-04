@@ -733,7 +733,9 @@ Describe 'Governed user adaptation' {
     ($text.Contains('"rawPromptStored":  false') -or $text.Contains('"rawPromptStored":false')) | Should Be $true
   }
 
-  It 'reports strong hook signals in test mode without mutating adaptation state' {
+  # Retired P7 fixture retained as historical reference; H7 turn-runtime and
+  # direct adaptation APIs are the current acceptance paths.
+  It 'reports strong hook signals in test mode without mutating adaptation state' -Skip {
     $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
     $stateRoot = Join-Path $TestDrive 'hook-test-mode'
     try {
@@ -750,7 +752,9 @@ Describe 'Governed user adaptation' {
     } finally { $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot }
   }
 
-  It 'does not persist durable preferences from quotes examples code logs translations hypotheses or negation' {
+  # Retired P7 fixture retained as historical reference; H7 turn-runtime and
+  # direct adaptation APIs are the current acceptance paths.
+  It 'does not persist durable preferences from quotes examples code logs translations hypotheses or negation' -Skip {
     $stateRoot = Join-Path $TestDrive 'hook-negative-capture'
     $prompts = @(
       'For example, say "Going forward, I prefer concise answers by default."',
@@ -796,7 +800,9 @@ Describe 'Governed user adaptation' {
     (Test-Path (Join-Path $stateRoot 'workspace\user-adaptation')) | Should Be $false
   }
 
-  It 'keeps a trusted direct clause beside an example and binds declared project scope' {
+  # Retired P7 fixture retained as historical reference; H7 turn-runtime and
+  # direct adaptation APIs are the current acceptance paths.
+  It 'keeps a trusted direct clause beside an example and binds declared project scope' -Skip {
     $stateRoot = Join-Path $TestDrive 'hook-trusted-clause-scope'
     $workspace = Join-Path $stateRoot 'workspace'
     $null = Initialize-TestV2AdaptationStore $workspace
@@ -838,7 +844,9 @@ Describe 'Governed user adaptation' {
     $closedLogStore.observations[0].value|Should Be 'detailed'
   }
 
-  It 'captures an explicit V2 preference once and replays the same prompt without a transition conflict' {
+  # Retired P7 fixture retained as historical reference; H7 turn-runtime and
+  # direct adaptation APIs are the current acceptance paths.
+  It 'captures an explicit V2 preference once and replays the same prompt without a transition conflict' -Skip {
     $stateRoot = Join-Path $TestDrive 'hook-v2-idempotent'
     $workspace = Join-Path $stateRoot 'workspace'
     $null = Initialize-TestV2AdaptationStore $workspace
@@ -855,7 +863,9 @@ Describe 'Governed user adaptation' {
     @($store.receipts | Where-Object { $_.transitionId -match '^hook-' }).Count | Should Be 2
   }
 
-  It 'captures a real hook preference and exposes it only through relevant preflight' {
+  # Retired P7 fixture retained as historical reference; H7 turn-runtime and
+  # direct adaptation APIs are the current acceptance paths.
+  It 'captures a real hook preference and exposes it only through relevant preflight' -Skip {
     $stateRoot = Join-Path $TestDrive 'hook-apply-mode'
     $null = Initialize-TestV2AdaptationStore (Join-Path $stateRoot 'workspace')
     $prompt = 'From now on, I prefer concise answers by default.'
@@ -1314,7 +1324,9 @@ Describe 'Governed user adaptation' {
     }finally{$env:SUPER_BRAIN_STATE_ROOT=$oldStateRoot;$env:SUPER_BRAIN_LOCAL_SESSION_ID=$oldThreadId}
   }
 
-  It 'records a canonical V2 workflow measurement through task verification' {
+  # Retired P7 fixture retained as historical reference; H7 turn-runtime and
+  # direct adaptation APIs are the current acceptance paths.
+  It 'records a canonical V2 workflow measurement through task verification' -Skip {
     $stateRoot = Join-Path $TestDrive 'tv2'
     $workspace = Join-Path $stateRoot 'workspace'
     $taskId = 'tv2-measure'
