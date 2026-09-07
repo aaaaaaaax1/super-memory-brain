@@ -116,6 +116,20 @@ function Test-PathInRoot([string]$Path,[string]$Root) {
   return ($normalized -eq $Root -or $normalized.StartsWith($Root + '\'))
 }
 
+function Test-CommandLineMentionsRoot([string]$CommandLine,[string]$Root) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }
+  # Do not call Normalize-PathText on the whole command line: it is not a
+  # path, and substring matching would treat a sibling such as `CORE-old` as
+  # the current `CORE` package.  Match the normalized root only at a path
+  # token boundary, allowing a child path, quoting, whitespace, or end of
+  # argument after it.
+  $line = $CommandLine.Replace('/','\')
+  $candidate = Normalize-PathText $Root
+  if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }
+  $pattern = '(?i)(?<![A-Za-z0-9._-])' + [regex]::Escape($candidate) + '(?=\\|["''\s]|$)'
+  return [regex]::IsMatch($line,$pattern)
+}
+
 $normalizedRoot = Normalize-PathText $PackageRoot
 $entryName = 'brain_mcp.py'
 $fixtureText = $ProcessRecordsJson
@@ -144,7 +158,7 @@ foreach ($record in $allRecords) {
   $argumentRootRaw = Extract-PackageRoot $commandLine
   $argumentRoot = Normalize-PathText $argumentRootRaw
   $entryInCurrentRoot = (Test-PathInRoot $executable $normalizedRoot)
-  $commandMentionsCurrentRoot = (-not [string]::IsNullOrWhiteSpace($normalizedRoot) -and (Normalize-PathText $commandLine).Contains($normalizedRoot))
+  $commandMentionsCurrentRoot = Test-CommandLineMentionsRoot $commandLine $normalizedRoot
   $isCurrentPackage = ($argumentRoot -eq $normalizedRoot -or $entryInCurrentRoot -or $commandMentionsCurrentRoot)
   $scope = if ($isCurrentPackage) { 'current_package' } elseif ($argumentRoot) { 'foreign_package' } else { 'unknown_package' }
 

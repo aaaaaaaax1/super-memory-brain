@@ -123,5 +123,77 @@ Describe 'Core runtime independence from host adapters' {
     $startup.mcpBinding.state | Should Be 'configured_current'
     $startup.mcpBinding.launcherMatches | Should Be $true
     $startup.mcpBinding.legacyBrainMcpMatches | Should Be $false
+    $startup.mcpStaticBindingOk | Should Be $true
+    $startup.mcpCurrentBindingOk | Should Be $true
+    $startup.liveHandshakeRequired | Should Be $true
+    $startup.mcpExecutionReady | Should Be $false
+    $startup.mcpExecutionState | Should Be 'runtime_probe_required'
+  }
+
+  It 'marks a direct brain_mcp registration as migration-only without treating it as current' {
+    $base = Join-Path $TestDrive 'primary-legacy-migration'
+    $codexSkills = Join-Path $base 'codex\skills'
+    $codexHome = Split-Path -Parent $codexSkills
+    $memoryRoot = Join-Path $base 'state\shared'
+    $adapter = Join-Path $codexSkills 'super-memory-brain'
+    New-Item -ItemType Directory -Force -Path $codexHome,$codexSkills,$adapter,$memoryRoot | Out-Null
+    [IO.File]::WriteAllText((Join-Path $memoryRoot 'sandglass.txt'),'',$script:fixture.encoding)
+    [IO.File]::WriteAllText((Join-Path $codexHome 'AGENTS.md'),((Get-SuperBrainGlobalStartupBlock $script:fixture.root) + [Environment]::NewLine),$script:fixture.encoding)
+    Copy-Item -LiteralPath (Join-Path $script:fixture.root 'super-memory-brain\SKILL.md') -Destination (Join-Path $adapter 'SKILL.md') -Force
+    Write-SuperBrainPackageRootMarker $adapter $script:fixture.root
+    [IO.File]::WriteAllText((Join-Path $adapter 'memory-root.txt'),($memoryRoot + [Environment]::NewLine),$script:fixture.encoding)
+    $runtimeIdentity = Get-SuperBrainMcpRuntimeIdentity $script:fixture.root
+    $config = @(
+      '[mcp_servers.super-memory-brain]',
+      "command = 'python'",
+      "args = ['$($script:fixture.root)\runtime\brain_mcp.py', '--package-root', '$($script:fixture.root)', '--memory-root', '$memoryRoot']",
+      '',
+      '[mcp_servers.super-memory-brain.env]',
+      "SUPER_BRAIN_PACKAGE_ROOT = '$($script:fixture.root)'",
+      "NEXSANDBASE_HOME = '$memoryRoot'",
+      "SUPER_BRAIN_RUNTIME_IDENTITY = '$runtimeIdentity'",
+      "SUPER_BRAIN_MCP_TRANSPORT = 'codex_registered_v1'",
+      "SUPER_BRAIN_MCP_REGISTRATION_EPOCH = 'migration-epoch'"
+    ) -join [Environment]::NewLine
+    [IO.File]::WriteAllText((Join-Path $codexHome 'config.toml'),$config,$script:fixture.encoding)
+
+    $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
+    try {
+      $env:SUPER_BRAIN_STATE_ROOT = Join-Path $base 'state'
+      $raw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:fixture.root 'scripts\startup-check.ps1') -CodexSkills $codexSkills -MemoryRoot $memoryRoot -Isolated -Json 2>&1)
+    } finally {
+      if ($null -eq $oldStateRoot) { Remove-Item Env:\SUPER_BRAIN_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot }
+    }
+    $LASTEXITCODE | Should Be 0
+    $startup = (($raw -join [Environment]::NewLine) | ConvertFrom-Json)
+    $startup.ok | Should Be $true
+    $startup.mcpBinding.state | Should Be 'migration_required'
+    $startup.mcpBinding.migrationRequired | Should Be $true
+    $startup.mcpStaticBindingOk | Should Be $true
+    $startup.mcpCurrentBindingOk | Should Be $false
+    $startup.adapterAvailable | Should Be $false
+    $startup.adapterState | Should Be 'migration_required'
+    $startup.strictOk | Should Be $true
+    $startup.mcpExecutionReady | Should Be $false
+
+    $oldStateRoot = $env:SUPER_BRAIN_STATE_ROOT
+    try {
+      $env:SUPER_BRAIN_STATE_ROOT = Join-Path $base 'state'
+      $statusRaw = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:fixture.root 'scripts\status.ps1') -ZCodeSkills (Join-Path $base 'zcode\skills') -CodexSkills $codexSkills -MemoryRoot $memoryRoot -Isolated -Json 2>&1)
+    } finally {
+      if ($null -eq $oldStateRoot) { Remove-Item Env:\SUPER_BRAIN_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:SUPER_BRAIN_STATE_ROOT = $oldStateRoot }
+    }
+    $LASTEXITCODE | Should Be 0
+    $status = (($statusRaw -join [Environment]::NewLine) | ConvertFrom-Json)
+    $status.ok | Should Be $true
+    $status.coreAvailable | Should Be $true
+    $status.adapterAvailable | Should Be $false
+    $status.adapterState | Should Be 'migration_required'
+    $status.mcpBinding.state | Should Be 'migration_required'
+    $status.mcpStaticBindingOk | Should Be $true
+    $status.mcpCurrentBindingOk | Should Be $false
+    $status.mcpMigrationRequired | Should Be $true
+    $status.mcpExecutionReady | Should Be $false
+    $status.mcpExecutionState | Should Be 'runtime_probe_required'
   }
 }

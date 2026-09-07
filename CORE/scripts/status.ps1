@@ -127,12 +127,36 @@ $retiredTransportGuard = if ($startupCheck -and $startupCheck.PSObject.Propertie
   }
 }
 $turnRuntime = if ($startupCheck -and $startupCheck.PSObject.Properties['turnRuntime']) { $startupCheck.turnRuntime } else { [pscustomobject]@{ available=$false; state='unknown'; mode=''; requiredForCore=$true } }
+$mcpBinding = if ($startupCheck -and $startupCheck.PSObject.Properties['mcpBinding']) {
+  $startupCheck.mcpBinding
+} else {
+  [pscustomobject]@{
+    state='unknown'
+    code='H7_MCP_BINDING_UNAVAILABLE'
+    staticBindingOk=$false
+    currentBindingOk=$false
+    migrationRequired=$false
+  }
+}
+$mcpStaticBindingOk = if ($startupCheck -and $startupCheck.PSObject.Properties['mcpStaticBindingOk']) { [bool]$startupCheck.mcpStaticBindingOk } else { [bool]$mcpBinding.staticBindingOk }
+$mcpCurrentBindingOk = if ($startupCheck -and $startupCheck.PSObject.Properties['mcpCurrentBindingOk']) { [bool]$startupCheck.mcpCurrentBindingOk } else { [bool]$mcpBinding.currentBindingOk }
+$mcpMigrationRequired = if ($startupCheck -and $startupCheck.PSObject.Properties['mcpMigrationRequired']) { [bool]$startupCheck.mcpMigrationRequired } else { [bool]$mcpBinding.migrationRequired }
+$mcpLiveHandshakeRequired = if ($startupCheck -and $startupCheck.PSObject.Properties['liveHandshakeRequired']) { [bool]$startupCheck.liveHandshakeRequired } else { $true }
+$mcpExecutionReady = if ($startupCheck -and $startupCheck.PSObject.Properties['mcpExecutionReady']) { [bool]$startupCheck.mcpExecutionReady } else { $false }
+$mcpExecutionState = if ($startupCheck -and $startupCheck.PSObject.Properties['mcpExecutionState']) { [string]$startupCheck.mcpExecutionState } else { 'runtime_probe_required' }
 
 if ($Json -or $DetailedJson) {
   if ($DetailedJson) {
     [pscustomobject]@{
       ok = $ok
       coreAvailable = $coreAvailable
+      mcpBinding = $mcpBinding
+      mcpStaticBindingOk = $mcpStaticBindingOk
+      mcpCurrentBindingOk = $mcpCurrentBindingOk
+      mcpMigrationRequired = $mcpMigrationRequired
+      liveHandshakeRequired = $mcpLiveHandshakeRequired
+      mcpExecutionReady = $mcpExecutionReady
+      mcpExecutionState = $mcpExecutionState
       turnRuntime = $turnRuntime
       retiredTransportGuard = $retiredTransportGuard
       packageRoot = $Root
@@ -153,6 +177,13 @@ if ($Json -or $DetailedJson) {
     [pscustomobject]@{
       ok = $ok
       coreAvailable = $coreAvailable
+      mcpBinding = [pscustomobject]@{ state=[string]$mcpBinding.state; code=[string]$mcpBinding.code; staticBindingOk=$mcpStaticBindingOk; currentBindingOk=$mcpCurrentBindingOk; migrationRequired=$mcpMigrationRequired }
+      mcpStaticBindingOk = $mcpStaticBindingOk
+      mcpCurrentBindingOk = $mcpCurrentBindingOk
+      mcpMigrationRequired = $mcpMigrationRequired
+      liveHandshakeRequired = $mcpLiveHandshakeRequired
+      mcpExecutionReady = $mcpExecutionReady
+      mcpExecutionState = $mcpExecutionState
       turnRuntime = $turnRuntime
       retiredTransportGuard = $retiredTransportGuard
       packageRoot = $Root
@@ -162,6 +193,7 @@ if ($Json -or $DetailedJson) {
       failedChecks = @($failedChecks)
       adapterCheckCount = @($adapterChecks).Count
       adapterFailureCount = @($adapterFailures).Count
+      adapterAvailable = $adapterAvailable
       adapterState = $adapterState
       hookCheckCount = 0
       failedHookCheckCount = 0
@@ -189,6 +221,7 @@ if ($Json -or $DetailedJson) {
   }
   if ($startupStrictOk) { Write-Host 'Startup core check: OK' } else { Write-Host 'Startup core check: withheld' }
   Write-Host "Core available: $coreAvailable"
+  Write-Host "MCP binding: state=$($mcpBinding.state) static=$mcpStaticBindingOk current=$mcpCurrentBindingOk migrationRequired=$mcpMigrationRequired execution=$mcpExecutionState"
   Write-Host "Turn Runtime: $($turnRuntime.state)"
   Write-Host "H7 retired transport guard: state=$($retiredTransportGuard.state) code=$($retiredTransportGuard.code)"
   if ($sessionBinding.exists) { Write-Host "Session binding: status=$($sessionBinding.status) active=$($sessionBinding.active) expiresAt=$($sessionBinding.expiresAt) path=$($sessionBinding.path)" } else { Write-Host "Session binding: missing path=$($sessionBinding.path)" }

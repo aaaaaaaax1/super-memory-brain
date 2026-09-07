@@ -741,7 +741,7 @@ if (
   (Test-ContainsAll ${localScopeBootstrapText} @('bootstrap_local_scope','bootstrap_local_mcp_channel','local_session','_SESSION_RE','bootstrap_bound_channel','H7_SCOPE_BOOTSTRAP_BOUND')) -and
   (Test-ContainsAll ${localMcpLauncherText} @('local_scope_adapter','LOCAL_SESSION_ENV','--local-launcher','brain_mcp.main')) -and
   (Test-ContainsAll ${localScopeAdapterText} @('super-brain.local-mcp-adapter.v1','generate_session_id','validate_session_id','build_launch_spec','requires_fresh_process','H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED','WORKER_ENV_KEYS')) -and
-  (Test-ContainsAll ${startupCheckMcpText} @('local_mcp_launcher.py','launcherMatches','legacyBrainMcpMatches'))
+  (Test-ContainsAll ${startupCheckMcpText} @('local_mcp_launcher.py','launcherMatches','legacyBrainMcpMatches','staticBindingOk','currentBindingOk','migrationRequired','liveHandshakeRequired','mcpExecutionReady'))
 ) { Mark-Ok 'platform-neutral local MCP scope-broker transport guard' } else { Mark-Fail 'platform-neutral local MCP scope-broker transport guard missing' }
 if ($selfModelRuntimeText -like '*def _self_model_candidates*' -and $selfModelRuntimeText -like '*snapshotStatus*' -and $selfModelRuntimeText -like '*verificationStatus*' -and $selfModelRuntimeText -like '*rawPromptStored*' -and $selfModelRuntimeText -like '*KNOWN_LIMITATION*' -and $selfModelRuntimeText -like '*if verification_status == "verified"*') { Mark-Ok 'native runtime self-model evidence and degradation guard' } else { Mark-Fail 'native runtime self-model evidence and degradation guard missing' }
 if ($selfModelRuntimeText -like '*def _retrieval_output_policy*' -and $selfModelRuntimeText -like '*summary_confidence*' -and $selfModelRuntimeText -like '*inject_confidence*' -and $selfModelRuntimeText -like '*recallDisposition*' -and $selfModelRuntimeText -like '*injectReady*') { Mark-Ok 'native runtime retrieval policy parity guard' } else { Mark-Fail 'native runtime retrieval policy parity guard missing' }
@@ -1421,7 +1421,12 @@ $teamTaskArchiveText = Read-Utf8 'scripts\team-task-archive.ps1'
 if ($teamTaskArchiveText -like '*KeepRecent*' -and $teamTaskArchiveText -like '*-Apply*' -and $teamTaskArchiveText -like '*Dry run only*' -and $teamTaskArchiveText -like '*team-tasks-archive*') { Mark-Ok 'team task archival dry-run support' } else { Mark-Fail 'team task archival dry-run support missing' }
 
 $hostCacheCheckText = Read-Utf8 'scripts\host-cache-check.ps1'
-if ($hostCacheCheckText -like '*currentSessionCacheRisk*' -and $hostCacheCheckText -like '*loadedSkillLimitation*' -and $hostCacheCheckText -like '*liveMcpIdentityLimitation*' -and $hostCacheCheckText -like '*SUPER_BRAIN_RUNTIME_IDENTITY*' -and $hostCacheCheckText -like '*brain_status/runtimeIdentity=current*' -and $hostCacheCheckText -like '*newSessionPrompt*' -and $hostCacheCheckText -like '*hot-refresh-skills.ps1 -AllKnown*' -and $hostCacheCheckText -like '*Get-H7McpBinding*' -and $hostCacheCheckText -like '*Get-H7RetiredTransportGuard*' -and $hostCacheCheckText -like '*retiredTransportGuard*' -and $hostCacheCheckText -like '*H7_RETIRED_TRANSPORT_CONFLICT*' -and $hostCacheCheckText -like '*retire-codex-super-brain-hooks.ps1*' -and $hostCacheCheckText -notlike '*install-codex-user-prompt-hook.ps1*' -and $hostCacheCheckText -notlike '*Get-SuperBrainCodexHookHostState*') { Mark-Ok 'H7 MCP adapter cache and retired-transport guard support' } else { Mark-Fail 'H7 MCP adapter cache or retired-transport guard support missing' }
+if ($hostCacheCheckText -like '*currentSessionCacheRisk*' -and $hostCacheCheckText -like '*loadedSkillLimitation*' -and $hostCacheCheckText -like '*liveMcpIdentityLimitation*' -and $hostCacheCheckText -like '*SUPER_BRAIN_RUNTIME_IDENTITY*' -and $hostCacheCheckText -like '*brain_status/runtimeIdentity=current*' -and $hostCacheCheckText -like '*newSessionPrompt*' -and $hostCacheCheckText -like '*hot-refresh-skills.ps1 -AllKnown*' -and $hostCacheCheckText -like '*Get-H7McpBinding*' -and $hostCacheCheckText -like '*Get-H7RetiredTransportGuard*' -and $hostCacheCheckText -like '*Get-CodexMcpTableText*' -and $hostCacheCheckText -like '*local_mcp_launcher.py*' -and $hostCacheCheckText -like '*staticBindingOk*' -and $hostCacheCheckText -like '*currentBindingOk*' -and $hostCacheCheckText -like '*migrationRequired*' -and $hostCacheCheckText -like '*retiredTransportGuard*' -and $hostCacheCheckText -like '*H7_RETIRED_TRANSPORT_CONFLICT*' -and $hostCacheCheckText -like '*retire-codex-super-brain-hooks.ps1*' -and $hostCacheCheckText -notlike '*install-codex-user-prompt-hook.ps1*' -and $hostCacheCheckText -notlike '*Get-SuperBrainCodexHookHostState*') { Mark-Ok 'H7 MCP adapter cache and retired-transport guard support' } else { Mark-Fail 'H7 MCP adapter cache or retired-transport guard support missing' }
+
+$statusScriptText = Read-Utf8 'scripts\status.ps1'
+if (Test-ContainsAll $statusScriptText @('mcpBinding','mcpStaticBindingOk','mcpCurrentBindingOk','mcpMigrationRequired','mcpExecutionReady','mcpExecutionState')) { Mark-Ok 'H7 status MCP binding projection' } else { Mark-Fail 'H7 status MCP binding projection missing' }
+$doctorScriptText = Read-Utf8 'scripts\doctor.ps1'
+if (Test-ContainsAll $doctorScriptText @('h7_mcp_binding_stale','h7_mcp_binding_migration_required','mcpStaticBindingOk','mcpCurrentBindingOk','mcpExecutionState')) { Mark-Ok 'H7 doctor MCP binding diagnostics' } else { Mark-Fail 'H7 doctor MCP binding diagnostics missing' }
 
 $cleanupLegacyText = Read-Utf8 'scripts\cleanup-legacy-memory.ps1'
 if ($cleanupLegacyText -like '*memory-zcode*' -and $cleanupLegacyText -like '*memory-codex*' -and $cleanupLegacyText -like '*Get-FileHash*' -and $cleanupLegacyText -like '*-Apply*') { Mark-Ok 'legacy memory cleanup support' } else { Mark-Fail 'legacy memory cleanup support missing' }
@@ -1443,8 +1448,35 @@ foreach ($scriptFile in $psScripts) {
 }
 
 $global:LASTEXITCODE = 0
-& (Join-Path $PSScriptRoot 'startup-check.ps1') -Json | Out-Null
-if ($LASTEXITCODE -eq 0) { Mark-Ok 'startup hook/config check' } else { Mark-Ok 'startup optional MCP binding not configured; same H7 CLI remains available' }
+$startupCheckOutput = @(& (Join-Path $PSScriptRoot 'startup-check.ps1') -Json 2>&1)
+$startupCheckExitCode = $LASTEXITCODE
+$startupCheckReport = $null
+try {
+  $startupCheckText = ($startupCheckOutput | ForEach-Object { [string]$_ }) -join "`n"
+  $jsonStart = -1
+  for ($index = 0; $index -lt $startupCheckOutput.Count; $index++) {
+    if ([string]$startupCheckOutput[$index] -match '^\s*\{') { $jsonStart = $index; break }
+  }
+  if ($jsonStart -ge 0) {
+    ((@($startupCheckOutput[$jsonStart..($startupCheckOutput.Count - 1)]) -join "`n") | ConvertFrom-Json) | ForEach-Object { $startupCheckReport = $_ }
+  }
+} catch {}
+$startupMcpState = if ($startupCheckReport -and $startupCheckReport.mcpBinding) { [string]$startupCheckReport.mcpBinding.state } else { '' }
+if ($startupCheckExitCode -eq 0) {
+  if ($startupMcpState -eq 'not_configured') {
+    Mark-Ok 'startup H7 MCP binding not configured; same H7 CLI remains available'
+  } elseif ($startupMcpState -eq 'migration_required') {
+    Mark-Ok 'startup H7 MCP legacy binding recognized; explicit launcher migration remains required'
+  } else {
+    Mark-Ok 'startup hook/config check'
+  }
+} elseif ($startupCheckReport -and $startupMcpState -eq 'stale') {
+  Mark-Fail "startup H7 MCP binding stale ($([string]$startupCheckReport.mcpBinding.code)); repair is explicit and this verifier did not change configuration"
+} elseif ($startupCheckReport -and $startupCheckReport.retiredTransportGuard -and [string]$startupCheckReport.retiredTransportGuard.state -ne 'ready') {
+  Mark-Fail "startup H7 retired transport guard withheld ($([string]$startupCheckReport.retiredTransportGuard.code))"
+} else {
+  Mark-Fail 'startup H7 check failed or returned unreadable evidence'
+}
 
 $global:LASTEXITCODE = 0
 $hooklessRetirementJson = & (Join-Path $PSScriptRoot 'retire-codex-super-brain-hooks.ps1') -Json

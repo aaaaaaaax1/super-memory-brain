@@ -133,18 +133,18 @@ function Get-CodexMcpTableText([string]$Text,[string]$Name) {
 function Get-PrimaryCodexMcpStaticBinding([string]$CodexHomePath) {
   $configPath = Join-Path $CodexHomePath 'config.toml'
   if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-    return [pscustomobject]@{ state='not_configured'; ok=$true; configured=$false; configPath=$configPath; code='H7_MCP_NOT_CONFIGURED_CLI_EQUIVALENT_AVAILABLE'; runtimeIdentityMatches=$true }
+    return [pscustomobject]@{ state='not_configured'; ok=$true; staticBindingOk=$true; currentBindingOk=$false; migrationRequired=$false; configured=$false; configPath=$configPath; code='H7_MCP_NOT_CONFIGURED_CLI_EQUIVALENT_AVAILABLE'; runtimeIdentityMatches=$true }
   }
   try { $configText = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 } catch {
-    return [pscustomobject]@{ state='stale'; ok=$false; configured=$true; configPath=$configPath; code='H7_MCP_CONFIG_UNREADABLE'; runtimeIdentityMatches=$false }
+    return [pscustomobject]@{ state='stale'; ok=$false; staticBindingOk=$false; currentBindingOk=$false; migrationRequired=$false; configured=$true; configPath=$configPath; code='H7_MCP_CONFIG_UNREADABLE'; runtimeIdentityMatches=$false }
   }
   $declared = $configText -match '(?m)^\s*\[mcp_servers\.(?:"super-memory-brain"|super-memory-brain)\]\s*$'
   if (-not $declared) {
-    return [pscustomobject]@{ state='not_configured'; ok=$true; configured=$false; configPath=$configPath; code='H7_MCP_NOT_CONFIGURED_CLI_EQUIVALENT_AVAILABLE'; runtimeIdentityMatches=$true }
+    return [pscustomobject]@{ state='not_configured'; ok=$true; staticBindingOk=$true; currentBindingOk=$false; migrationRequired=$false; configured=$false; configPath=$configPath; code='H7_MCP_NOT_CONFIGURED_CLI_EQUIVALENT_AVAILABLE'; runtimeIdentityMatches=$true }
   }
   $tableText = Get-CodexMcpTableText $configText 'super-memory-brain'
   if ([string]::IsNullOrWhiteSpace($tableText)) {
-    return [pscustomobject]@{ state='stale'; ok=$false; configured=$true; configPath=$configPath; code='H7_MCP_TABLE_UNREADABLE'; runtimeIdentityMatches=$false }
+    return [pscustomobject]@{ state='stale'; ok=$false; staticBindingOk=$false; currentBindingOk=$false; migrationRequired=$false; configured=$true; configPath=$configPath; code='H7_MCP_TABLE_UNREADABLE'; runtimeIdentityMatches=$false }
   }
   $runtimeIdentityMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_RUNTIME_IDENTITY\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
   $registeredIdentity = if ($runtimeIdentityMatch.Success) { [string]$runtimeIdentityMatch.Groups['value'].Value } else { '' }
@@ -153,11 +153,10 @@ function Get-PrimaryCodexMcpStaticBinding([string]$CodexHomePath) {
   $epochMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_MCP_REGISTRATION_EPOCH\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
   $registeredEpoch = if ($epochMatch.Success) { [string]$epochMatch.Groups['value'].Value } else { '' }
   $expectedIdentity = Get-SuperBrainMcpRuntimeIdentity $Root
-  # The current registration launches the host-neutral local scope adapter;
-  # keep the direct brain_mcp path as a narrow migration-compatible signature
-  # because existing installed entries may still be awaiting one explicit
-  # refresh.  Both paths are package-owned and are checked against the same
-  # package/memory/identity contract below.
+  # The current registration launches the host-neutral local scope adapter.
+  # A direct brain_mcp entry is retained only as a migration-compatible
+  # signature: it is structurally owned by this package, but it is not the
+  # current registration and must never be reported as live execution proof.
   $launcherMatches = Test-ConfigHasPath $tableText (Join-Path $Root 'runtime\local_mcp_launcher.py')
   $legacyBrainMcpMatches = Test-ConfigHasPath $tableText (Join-Path $Root 'runtime\brain_mcp.py')
   $brainMcpMatches = $launcherMatches -or $legacyBrainMcpMatches
@@ -167,10 +166,14 @@ function Get-PrimaryCodexMcpStaticBinding([string]$CodexHomePath) {
   $identityMatches = ($registeredIdentity -eq $expectedIdentity)
   $transportMatches = ($registeredTransport -eq 'codex_registered_v1')
   $epochPresent = (-not [string]::IsNullOrWhiteSpace($registeredEpoch))
-  $bindingOk = ($brainMcpMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $identityMatches -and $transportMatches -and $epochPresent)
+  $staticBindingOk = ($brainMcpMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $identityMatches -and $transportMatches -and $epochPresent)
+  $currentBindingOk = ($launcherMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $identityMatches -and $transportMatches -and $epochPresent)
+  $migrationRequired = [bool]($staticBindingOk -and -not $currentBindingOk -and $legacyBrainMcpMatches)
   return [pscustomobject]@{
-    state=if($bindingOk){'configured_current'}else{'stale'}; ok=$bindingOk; configured=$true; configPath=$configPath
-    code=if($bindingOk){'H7_MCP_STATIC_CONFIG_CURRENT'}else{'H7_MCP_STATIC_BINDING_STALE'}
+    state=if($currentBindingOk){'configured_current'}elseif($migrationRequired){'migration_required'}else{'stale'}
+    ok=$staticBindingOk; staticBindingOk=$staticBindingOk; currentBindingOk=$currentBindingOk; migrationRequired=$migrationRequired
+    configured=$true; configPath=$configPath
+    code=if($currentBindingOk){'H7_MCP_STATIC_CONFIG_CURRENT'}elseif($migrationRequired){'H7_MCP_STATIC_CONFIG_MIGRATION_REQUIRED'}else{'H7_MCP_STATIC_BINDING_STALE'}
     brainMcpMatches=$brainMcpMatches; launcherMatches=$launcherMatches; legacyBrainMcpMatches=$legacyBrainMcpMatches; packageRootMatches=$packageRootMatches; memoryRootMatches=$memoryRootMatches; argumentContractPresent=$argumentContractPresent
     expectedRuntimeIdentity=$expectedIdentity; registeredRuntimeIdentity=$registeredIdentity; runtimeIdentityMatches=$identityMatches; transportMatches=$transportMatches; registrationEpochPresent=$epochPresent
   }
@@ -185,8 +188,8 @@ if ($codexHostPresent) {
 }
 $codexHome = Split-Path -Parent $CodexSkills
 $mcpBinding = Get-PrimaryCodexMcpStaticBinding $codexHome
-if ($mcpBinding.state -eq 'stale') { $script:ok = $false }
-$configChecks += [pscustomobject]@{ name='Codex H7 MCP static binding'; ok=[bool]$mcpBinding.ok; state=[string]$mcpBinding.state; code=[string]$mcpBinding.code; path=[string]$mcpBinding.configPath; runtimeIdentityMatches=[bool]$mcpBinding.runtimeIdentityMatches; transportMatches=[bool]$mcpBinding.transportMatches; registrationEpochPresent=[bool]$mcpBinding.registrationEpochPresent }
+if (-not $mcpBinding.staticBindingOk -and $mcpBinding.state -eq 'stale') { $script:ok = $false }
+$configChecks += [pscustomobject]@{ name='Codex H7 MCP static binding'; ok=[bool]$mcpBinding.staticBindingOk; state=[string]$mcpBinding.state; code=[string]$mcpBinding.code; path=[string]$mcpBinding.configPath; runtimeIdentityMatches=[bool]$mcpBinding.runtimeIdentityMatches; transportMatches=[bool]$mcpBinding.transportMatches; registrationEpochPresent=[bool]$mcpBinding.registrationEpochPresent; migrationRequired=[bool]$mcpBinding.migrationRequired }
 $turnRuntimePath = Join-Path $Root 'runtime\turn_runtime.py'
 $turnRuntimeEntryAvailable = Test-Path -LiteralPath $turnRuntimePath -PathType Leaf
 Add-Check 'H7 Turn Runtime entry' $turnRuntimePath
@@ -297,7 +300,11 @@ if ($Json) {
   $requiredAdapterFailures = @($adapterChecks | Where-Object { $_.optional -ne $true -and $_.ok -ne $true })
   $optionalAdapterFailures = @($adapterChecks | Where-Object { $_.optional -eq $true -and $_.ok -ne $true })
   $coreAvailable = ($coreFailures.Count -eq 0)
-  $adapterAvailable = ($codexHostPresent -and $requiredAdapterFailures.Count -eq 0 -and $mcpBinding.state -ne 'stale')
+  # ``staticBindingOk`` proves that a package-owned entry can still be
+  # understood by the CLI compatibility path.  Entry-adapter readiness is
+  # stricter: only the current local launcher is eligible; a direct
+  # brain_mcp entry is migration-only and must stay visibly non-current.
+  $adapterAvailable = ($codexHostPresent -and $requiredAdapterFailures.Count -eq 0 -and $mcpBinding.currentBindingOk)
   $axes = [pscustomobject]@{
     coreAvailable = $coreAvailable
     turnRuntime = [pscustomobject]@{
@@ -318,8 +325,8 @@ if ($Json) {
       rawPromptStored = $false
     }
   }
-  $adapterState = if (-not $codexHostPresent) { 'not_installed' } elseif ($adapterAvailable) { 'ready' } else { 'withheld' }
-  [pscustomobject]@{ ok=$ok; strictOk=$ok; coreAvailable=$axes.coreAvailable; adapterAvailable=$adapterAvailable; adapterState=$adapterState; entryAdapterRequired=$codexHostPresent; includeZCode=$IncludeZCode; adapterCheckCount=@($adapterChecks).Count; adapterFailureCount=@($requiredAdapterFailures).Count; adapterChecks=$adapterChecks; optionalAdapterFailures=@($optionalAdapterFailures | ForEach-Object { [string]$_.name }); fullBrainActive=$axes.activation.fullBrainActive; activation=$axes.activation; turnRuntime=$axes.turnRuntime; retiredTransportGuard=$axes.retiredTransportGuard; mcpBinding=$mcpBinding; mcpExecutionReady=$false; mcpExecutionState='runtime_probe_required'; mcpExecutionProbe='Call registered brain_status and require runtimeIdentity.state=current plus liveMcpHandshake.state=current.'; packageRoot=$Root; memoryRoot=$MemoryRoot; hookPath=''; isolationMode=$isolationMode; checks=$checks; hookChecks=$hookChecks; runtimeChecks=$runtimeChecks; configChecks=$configChecks } | ConvertTo-Json -Depth 8
+  $adapterState = if (-not $codexHostPresent) { 'not_installed' } elseif ($mcpBinding.migrationRequired) { 'migration_required' } elseif ($adapterAvailable) { 'ready' } else { 'withheld' }
+  [pscustomobject]@{ ok=$ok; strictOk=$ok; coreAvailable=$axes.coreAvailable; adapterAvailable=$adapterAvailable; adapterState=$adapterState; entryAdapterRequired=$codexHostPresent; includeZCode=$IncludeZCode; adapterCheckCount=@($adapterChecks).Count; adapterFailureCount=@($requiredAdapterFailures).Count; adapterChecks=$adapterChecks; optionalAdapterFailures=@($optionalAdapterFailures | ForEach-Object { [string]$_.name }); fullBrainActive=$axes.activation.fullBrainActive; activation=$axes.activation; turnRuntime=$axes.turnRuntime; retiredTransportGuard=$axes.retiredTransportGuard; mcpBinding=$mcpBinding; mcpStaticBindingOk=[bool]$mcpBinding.staticBindingOk; mcpCurrentBindingOk=[bool]$mcpBinding.currentBindingOk; mcpMigrationRequired=[bool]$mcpBinding.migrationRequired; liveHandshakeRequired=$true; mcpExecutionReady=$false; mcpExecutionState='runtime_probe_required'; mcpExecutionProbe='Call registered brain_status and require runtimeIdentity.state=current plus liveMcpHandshake.state=current.'; packageRoot=$Root; memoryRoot=$MemoryRoot; hookPath=''; isolationMode=$isolationMode; checks=$checks; hookChecks=$hookChecks; runtimeChecks=$runtimeChecks; configChecks=$configChecks } | ConvertTo-Json -Depth 8
 } else {
   foreach ($check in $checks) { if ($check.ok) { Write-Host "OK $($check.name) - $($check.path)" } else { Write-Host "MISSING $($check.name) - $($check.path) actual=$($check.actual) expected=$($check.expected)" } }
   foreach ($check in $adapterChecks) {
@@ -331,8 +338,10 @@ if ($Json) {
   $coreFailures = @($checks | Where-Object { $_.ok -ne $true }) + @($runtimeChecks | Where-Object { $_.ok -ne $true })
   if ($coreFailures.Count -eq 0) { Write-Host 'CORE_AVAILABLE' } else { Write-Host 'CORE_WITHHELD' }
   $requiredAdapterFailures = @($adapterChecks | Where-Object { $_.optional -ne $true -and $_.ok -ne $true })
-  if (-not $codexHostPresent) { Write-Host 'ENTRY_ADAPTER_NOT_INSTALLED' } elseif ($requiredAdapterFailures.Count -eq 0) { Write-Host 'ENTRY_ADAPTER_READY' } else { Write-Host 'ENTRY_ADAPTER_WITHHELD' }
+  if (-not $codexHostPresent) { Write-Host 'ENTRY_ADAPTER_NOT_INSTALLED' } elseif ($mcpBinding.migrationRequired) { Write-Host 'ENTRY_ADAPTER_MIGRATION_REQUIRED' } elseif ($requiredAdapterFailures.Count -eq 0 -and $mcpBinding.currentBindingOk) { Write-Host 'ENTRY_ADAPTER_READY' } else { Write-Host 'ENTRY_ADAPTER_WITHHELD' }
   Write-Host 'TURN_RUNTIME_HOOKLESS'
+  Write-Host "MCP_STATIC_BINDING state=$($mcpBinding.state) staticOk=$($mcpBinding.staticBindingOk) currentOk=$($mcpBinding.currentBindingOk) migrationRequired=$($mcpBinding.migrationRequired)"
+  Write-Host 'MCP_LIVE_HANDSHAKE_REQUIRED true'
   Write-Host "H7_RETIRED_TRANSPORT_GUARD state=$($retiredTransportGuard.state) code=$($retiredTransportGuard.code)"
   Write-Host "ACTIVATION_NOT_EVALUATED_BY_STARTUP state=$activationCode"
   if ($ok) { Write-Host 'STARTUP_CHECK_OK' } else { Write-Host 'STARTUP_CHECK_FAILED' }

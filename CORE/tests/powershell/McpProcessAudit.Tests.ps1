@@ -57,6 +57,31 @@ Describe 'read-only MCP process audit' {
     @($result.processes | Where-Object { $_.pid -eq 41003 -and $_.possibleOrphan -eq $true -and $_.action -eq 'report_only' }).Count | Should Be 1
   }
 
+  It 'does not classify a sibling root sharing the current-root prefix as current' {
+    $script = Join-Path $Root 'scripts\mcp-process-audit.ps1'
+    $packageRoot = [IO.Path]::GetFullPath($Root)
+    $foreignRoot = "$packageRoot-old"
+    $fixture = @(
+      [pscustomobject]@{
+        processId = 41005
+        parentProcessId = 1
+        name = 'python.exe'
+        commandLine = "python `"$foreignRoot\runtime\brain_mcp.py`" --package-root `"$foreignRoot`""
+        creationDate = '20200101000000.000000+000'
+      }
+    ) | ConvertTo-Json -Depth 8 -Compress
+
+    $fixturePath = Join-Path $TestDrive 'mcp-process-sibling-prefix-fixture.json'
+    [IO.File]::WriteAllText($fixturePath,$fixture,[Text.UTF8Encoding]::new($false))
+
+    $raw = @(& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -PackageRoot $packageRoot -ProcessRecordsPath $fixturePath -Json 2>&1)
+    $LASTEXITCODE | Should Be 0
+    $result = (($raw -join "`n") | ConvertFrom-Json)
+    $result.counts.currentPackage | Should Be 0
+    $result.counts.staleForeignPackage | Should Be 1
+    @($result.foreignProcesses | Where-Object { $_.pid -eq 41005 -and $_.scope -eq 'foreign_package' -and $_.state -eq 'stale_foreign_package' }).Count | Should Be 1
+  }
+
   It 'does not contain process termination or configuration mutation commands' {
     $text = Get-Content -LiteralPath (Join-Path $Root 'scripts\mcp-process-audit.ps1') -Raw -Encoding UTF8
     $text | Should Not Match '(?i)Stop-Process|taskkill|Remove-Item|Set-Content|Out-File|WriteAllText|Start-Process'

@@ -35,9 +35,42 @@ function Test-TextHasPath([string]$Text,[string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Path)) { return $false }
   $full = [IO.Path]::GetFullPath($Path).TrimEnd('\','/')
   foreach ($variant in @($full,$full.Replace('\','\\'),$full.Replace('\','/')) | Select-Object -Unique) {
-    if ($Text.IndexOf($variant,[StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    $offset = 0
+    while ($offset -lt $Text.Length) {
+      $index = $Text.IndexOf($variant,$offset,[StringComparison]::OrdinalIgnoreCase)
+      if ($index -lt 0) { break }
+      $beforeOk = ($index -eq 0 -or $Text[$index - 1] -notmatch '[A-Za-z0-9._-]')
+      $afterIndex = $index + $variant.Length
+      $afterOk = ($afterIndex -ge $Text.Length -or $Text[$afterIndex] -match '[\\/"''\s,\]]')
+      if ($beforeOk -and $afterOk) { return $true }
+      $offset = $index + 1
+    }
   }
   return $false
+}
+
+function Get-CodexMcpTableText([string]$Text,[string]$Name) {
+  if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Name)) { return '' }
+  $lines = @($Text -split "`r?`n")
+  $escaped = [regex]::Escape($Name)
+  $tablePattern = '^\s*\[mcp_servers\.(?:"' + $escaped + '"|' + $escaped + ')\]\s*$'
+  $start = -1
+  for ($index = 0; $index -lt $lines.Count; $index++) {
+    if ($lines[$index] -match $tablePattern) { $start = $index; break }
+  }
+  if ($start -lt 0) { return '' }
+  $end = $lines.Count
+  $sectionPrefix = 'mcp_servers.' + $Name
+  for ($index = $start + 1; $index -lt $lines.Count; $index++) {
+    if ($lines[$index] -match '^\s*\[(?<section>[^\]]+)\]\s*$') {
+      $section = [string]$Matches['section']
+      if ($section -ne $sectionPrefix -and -not $section.StartsWith($sectionPrefix + '.', [StringComparison]::OrdinalIgnoreCase)) {
+        $end = $index
+        break
+      }
+    }
+  }
+  return ($lines[$start..($end - 1)] -join "`n")
 }
 
 function Get-SkillVersion([string]$Path) {
@@ -86,28 +119,56 @@ function New-HostAdapterResult([string]$Name,[string]$SkillsRoot,[bool]$Required
 function Get-H7McpBinding([string]$CodexHomePath) {
   $configPath = Join-Path $CodexHomePath 'config.toml'
   $configText = Read-Text $configPath
-  $brainMcp = Join-Path $Root 'runtime\brain_mcp.py'
+  # The launcher is the only current MCP entry.  The direct brain_mcp entry
+  # remains a narrowly recognized migration signature so this read-only
+  # report can explain an old installation without calling it current.
+  $launcher = Join-Path $Root 'runtime\local_mcp_launcher.py'
+  $legacyBrainMcp = Join-Path $Root 'runtime\brain_mcp.py'
   $serverDeclared = $configText -match '(?m)^\s*\[mcp_servers\.(?:"super-memory-brain"|super-memory-brain)\]\s*$'
-  $brainMcpMatches = Test-TextHasPath $configText $brainMcp
-  $packageRootMatches = Test-TextHasPath $configText $Root
-  $memoryRootMatches = Test-TextHasPath $configText $MemoryRoot
-  $argumentContractPresent = ($configText -match '(?i)--package-root') -and ($configText -match '(?i)--memory-root')
+  $tableText = Get-CodexMcpTableText $configText 'super-memory-brain'
+  $argsMatch = [regex]::Match($tableText, '(?mi)^\s*args\s*=\s*\[\s*["''](?<entry>[^"'']+)["'']')
+  $entryPath = if ($argsMatch.Success) { [string]$argsMatch.Groups['entry'].Value } else { '' }
+  $argsLine = if ($argsMatch.Success) { [string]($tableText -split "`r?`n" | Where-Object { $_ -match '(?mi)^\s*args\s*=' } | Select-Object -First 1) } else { '' }
+  # Classify the executable from the actual args array, not from an arbitrary
+  # comment or environment value elsewhere in the TOML table.
+  $launcherMatches = Test-TextHasPath $entryPath $launcher
+  $legacyBrainMcpMatches = Test-TextHasPath $entryPath $legacyBrainMcp
+  $brainMcpMatches = $launcherMatches -or $legacyBrainMcpMatches
+  # Bind the roots to the launcher argument line itself.  Looking only at an
+  # env value or a comment can make a malformed args array appear healthy.
+  $packageRootMatches = Test-TextHasPath $argsLine $Root
+  $memoryRootMatches = Test-TextHasPath $argsLine $MemoryRoot
+  $argumentContractPresent = ($argsMatch.Success -and $argsLine -match '(?i)--package-root' -and $argsLine -match '(?i)--memory-root')
   $expectedRuntimeIdentity = Get-SuperBrainMcpRuntimeIdentity $Root
-  $runtimeIdentityMatch = [regex]::Match($configText, '(?mi)^\s*SUPER_BRAIN_RUNTIME_IDENTITY\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
+  $runtimeIdentityMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_RUNTIME_IDENTITY\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
   $registeredRuntimeIdentity = if ($runtimeIdentityMatch.Success) { [string]$runtimeIdentityMatch.Groups['value'].Value } else { '' }
-  $transportMatch = [regex]::Match($configText, '(?mi)^\s*SUPER_BRAIN_MCP_TRANSPORT\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
+  $transportMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_MCP_TRANSPORT\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
   $registeredTransport = if ($transportMatch.Success) { [string]$transportMatch.Groups['value'].Value } else { '' }
-  $epochMatch = [regex]::Match($configText, '(?mi)^\s*SUPER_BRAIN_MCP_REGISTRATION_EPOCH\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
+  $epochMatch = [regex]::Match($tableText, '(?mi)^\s*SUPER_BRAIN_MCP_REGISTRATION_EPOCH\s*=\s*["''](?<value>[^"'']+)["'']\s*$')
   $registeredEpoch = if ($epochMatch.Success) { [string]$epochMatch.Groups['value'].Value } else { '' }
   $runtimeIdentityMatches = (-not [string]::IsNullOrWhiteSpace($registeredRuntimeIdentity)) -and ($registeredRuntimeIdentity -eq $expectedRuntimeIdentity)
   $transportMatches = ($registeredTransport -eq 'codex_registered_v1')
   $registrationEpochPresent = (-not [string]::IsNullOrWhiteSpace($registeredEpoch))
+  $staticBindingOk = ((Test-Path -LiteralPath $configPath -PathType Leaf) -and $serverDeclared -and $brainMcpMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $runtimeIdentityMatches -and $transportMatches -and $registrationEpochPresent)
+  $currentBindingOk = ($staticBindingOk -and $launcherMatches)
+  $migrationRequired = [bool]($staticBindingOk -and $legacyBrainMcpMatches -and -not $launcherMatches)
+  $state = if ($currentBindingOk) { 'configured_current' } elseif ($migrationRequired) { 'migration_required' } else { 'stale' }
   return [pscustomobject]@{
-    ok = ((Test-Path -LiteralPath $configPath -PathType Leaf) -and $serverDeclared -and $brainMcpMatches -and $packageRootMatches -and $memoryRootMatches -and $argumentContractPresent -and $runtimeIdentityMatches -and $transportMatches -and $registrationEpochPresent)
+    ok = $staticBindingOk
+    staticBindingOk = $staticBindingOk
+    currentBindingOk = $currentBindingOk
+    migrationRequired = $migrationRequired
+    state = $state
     configPath = $configPath
     serverDeclared = [bool]$serverDeclared
-    brainMcpPath = $brainMcp
+    launcherPath = $launcher
+    legacyBrainMcpPath = $legacyBrainMcp
+    entryPath = $entryPath
+    argsLine = $argsLine
+    brainMcpPath = $legacyBrainMcp
     brainMcpMatches = $brainMcpMatches
+    launcherMatches = $launcherMatches
+    legacyBrainMcpMatches = $legacyBrainMcpMatches
     packageRootMatches = $packageRootMatches
     memoryRootMatches = $memoryRootMatches
     argumentContractPresent = [bool]$argumentContractPresent
@@ -153,20 +214,24 @@ $retiredTransportGuard = Get-H7RetiredTransportGuard $CodexHome
 $adapterOk = ($requiredAdapterFailures.Count -eq 0)
 $ok = ($adapterOk -and $mcpBinding.ok -and $retiredTransportGuard.ok)
 
-$currentSessionCacheRisk = if (-not $mcpBinding.ok) {
+$currentSessionCacheRisk = if (-not $mcpBinding.staticBindingOk) {
   'h7_mcp_binding_stale'
 } elseif (-not $retiredTransportGuard.ok) {
   'retired_transport_conflict'
+} elseif ($mcpBinding.migrationRequired) {
+  'h7_mcp_binding_migration_required'
 } elseif (-not $adapterOk) {
   'adapter_stale'
 } else {
   'live_mcp_identity_unobserved'
 }
 
-$recommendedAction = if (-not $mcpBinding.ok) {
+$recommendedAction = if (-not $mcpBinding.staticBindingOk) {
   'Run install-runtime.ps1 for the intended Codex home, then rerun this read-only H7 binding report.'
 } elseif (-not $retiredTransportGuard.ok) {
   'H7 is blocked by a stale Super Brain Hook registration or artifact. After H7 binding is verified, explicitly authorize retire-codex-super-brain-hooks.ps1 -Apply; this report does not change configuration.'
+} elseif ($mcpBinding.migrationRequired) {
+  'The static H7 binding is a legacy direct brain_mcp entry. Keep this report read-only; explicitly run the approved install-runtime.ps1 migration when you are ready to switch to local_mcp_launcher.py.'
 } elseif (-not $adapterOk) {
   'Run hot-refresh-skills.ps1 -AllKnown, then open a new Codex task only if this chat loaded older adapter text.'
 } else {
@@ -193,6 +258,9 @@ $result = [pscustomobject]@{
     retiredTransportGuard = $retiredTransportGuard
   }
   currentSessionCacheRisk = $currentSessionCacheRisk
+  mcpStaticBindingOk = [bool]$mcpBinding.staticBindingOk
+  mcpCurrentBindingOk = [bool]$mcpBinding.currentBindingOk
+  mcpMigrationRequired = [bool]$mcpBinding.migrationRequired
   mcpExecutionReady = $false
   mcpExecutionState = 'runtime_probe_required'
   mcpExecutionProbe = 'Call registered brain_status and require runtimeIdentity.state=current plus liveMcpHandshake.state=current.'

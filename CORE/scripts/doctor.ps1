@@ -62,6 +62,22 @@ $startupCoreAvailable = $false
 if ($startup.data) {
   $startupCoreAvailable = if ($startup.data.PSObject.Properties['coreAvailable']) { [bool]$startup.data.coreAvailable } else { [bool]$startup.data.ok }
 }
+$startupMcpBinding = if ($startup.data -and $startup.data.PSObject.Properties['mcpBinding']) {
+  $startup.data.mcpBinding
+} else {
+  [pscustomobject]@{
+    state='unknown'
+    code='H7_MCP_BINDING_UNAVAILABLE'
+    staticBindingOk=$false
+    currentBindingOk=$false
+    migrationRequired=$false
+  }
+}
+$startupMcpStaticBindingOk = if ($startup.data -and $startup.data.PSObject.Properties['mcpStaticBindingOk']) { [bool]$startup.data.mcpStaticBindingOk } else { [bool]$startupMcpBinding.staticBindingOk }
+$startupMcpCurrentBindingOk = if ($startup.data -and $startup.data.PSObject.Properties['mcpCurrentBindingOk']) { [bool]$startup.data.mcpCurrentBindingOk } else { [bool]$startupMcpBinding.currentBindingOk }
+$startupMcpMigrationRequired = if ($startup.data -and $startup.data.PSObject.Properties['mcpMigrationRequired']) { [bool]$startup.data.mcpMigrationRequired } else { [bool]$startupMcpBinding.migrationRequired }
+$startupMcpExecutionReady = if ($startup.data -and $startup.data.PSObject.Properties['mcpExecutionReady']) { [bool]$startup.data.mcpExecutionReady } else { $false }
+$startupMcpExecutionState = if ($startup.data -and $startup.data.PSObject.Properties['mcpExecutionState']) { [string]$startup.data.mcpExecutionState } else { 'runtime_probe_required' }
 if (-not $startupCoreAvailable) { $ok = $false }
 if ($summary.data -and -not $summary.data.ok) { $ok = $false }
 if ($startup.data -and -not $startupCoreAvailable) { $ok = $false }
@@ -105,6 +121,11 @@ if (-not $startupCoreAvailable) {
 } elseif (-not $startup.data.retiredTransportGuard -or [string]$startup.data.retiredTransportGuard.state -ne 'ready') {
   $guardCode = if ($startup.data.retiredTransportGuard) { [string]$startup.data.retiredTransportGuard.code } else { 'H7_RETIRED_TRANSPORT_GUARD_UNAVAILABLE' }
   Add-DoctorRisk 'high' 'h7_retired_transport_guard_withheld' "H7 retired transport guard is not ready (code=$guardCode); governed execution remains withheld until the H7 transport boundary is repaired." 'startup-check.ps1'
+}
+if ($startup.data -and $startupMcpBinding.state -eq 'stale') {
+  Add-DoctorRisk 'medium' 'h7_mcp_binding_stale' "H7 MCP static binding is stale (code=$($startupMcpBinding.code)); the same H7 CLI remains available, but MCP entry execution is withheld." 'startup-check.ps1'
+} elseif ($startup.data -and $startupMcpMigrationRequired) {
+  Add-DoctorRisk 'medium' 'h7_mcp_binding_migration_required' 'H7 MCP uses the legacy direct brain_mcp entry; it is structurally recognized for migration only and is not the current launcher.' 'startup-check.ps1'
 }
 if ($summary.data -and -not $summary.data.ok) { Add-DoctorRisk 'high' 'summary_not_ok' 'Package summary reports an unhealthy state.' 'summary.ps1' }
 if ($startup.data -and -not $startupCoreAvailable) { Add-DoctorRisk 'high' 'startup_not_ok' 'Core startup routing or configuration is unhealthy.' 'startup-check.ps1' }
@@ -226,6 +247,12 @@ $result = [pscustomobject]@{
   summary = $summary.data
   startupOk = if ($startup.data) { [bool]$startup.data.ok } else { $false }
   coreAvailable = $startupCoreAvailable
+  mcpBinding = $startupMcpBinding
+  mcpStaticBindingOk = $startupMcpStaticBindingOk
+  mcpCurrentBindingOk = $startupMcpCurrentBindingOk
+  mcpMigrationRequired = $startupMcpMigrationRequired
+  mcpExecutionReady = $startupMcpExecutionReady
+  mcpExecutionState = $startupMcpExecutionState
   retiredTransportGuard = if ($startup.data -and $startup.data.PSObject.Properties['retiredTransportGuard']) {
     $startup.data.retiredTransportGuard
   } else {
@@ -280,6 +307,7 @@ if ($Json) {
 } else {
   Write-Host "DOCTOR version=$($result.version) ok=$($result.ok) startupOk=$($result.startupOk) transportGuard=$($result.retiredTransportGuard.state) skillSyncOk=$($result.skillSyncOk) maintenance=$($result.maintenanceState) risks=$($result.riskSummary.total) high=$($result.riskSummary.high) medium=$($result.riskSummary.medium) duplicates=$($result.memoryHealth.duplicateCount) memoryLines=$($result.summary.memoryLines) experiences=$($result.experienceIndex.count)"
   Write-Host "package=$Root"
+  Write-Host "MCP binding: state=$($result.mcpBinding.state) static=$($result.mcpStaticBindingOk) current=$($result.mcpCurrentBindingOk) migrationRequired=$($result.mcpMigrationRequired) execution=$($result.mcpExecutionState)"
   if ($result.lastVerify) { Write-Host "lastVerify ok=$($result.lastVerify.ok) version=$($result.lastVerify.version) checkedAt=$($result.lastVerify.checkedAt)" }
   if ($result.lastHotRefresh) { Write-Host "lastHotRefresh ok=$($result.lastHotRefresh.ok) checkedAt=$($result.lastHotRefresh.checkedAt)" }
   if ($result.lastMemoryEval) { Write-Host "lastMemoryEval ok=$($result.lastMemoryEval.ok) passed=$($result.lastMemoryEval.passed)/$($result.lastMemoryEval.total) skipped=$($result.lastMemoryEval.skipped)" }
