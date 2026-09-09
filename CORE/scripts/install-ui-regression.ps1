@@ -28,6 +28,7 @@ function Get-InstallUiRegressionInputHashes {
     'scripts\install-ui.ps1',
     'scripts\install-menu.ps1',
     'scripts\bootstrap.ps1',
+    'scripts\upgrade.ps1',
     'scripts\install.ps1',
     'scripts\first-load-bootstrap.ps1',
     'scripts\install-runtime.ps1',

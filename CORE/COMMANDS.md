@@ -11,6 +11,10 @@ scripts\runtime-status.ps1 -Json
 scripts\brain.ps1 status -Json
 ```
 
+Installation and upgrade are separate: use `scripts\bootstrap.ps1 -Json` only
+for first install, `scripts\upgrade.ps1 -Json` for an explicit upgrade, and
+`scripts\doctor.ps1 -Json` for maintenance.
+
 ## Memory and continuity
 
 ```powershell

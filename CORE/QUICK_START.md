@@ -10,6 +10,10 @@ scripts\bootstrap.ps1
 scripts\first-load-bootstrap.ps1 -Json
 ```
 
+`bootstrap.ps1` is install-only after the first committed installation. Run
+`scripts\upgrade.ps1 -Json` for an explicit upgrade and `scripts\doctor.ps1 -Json`
+for maintenance.
+
 After installation, the single static `super-memory-brain` MCP entry can be
 discovered for health checks, but it intentionally has no user scope. A host
 that needs governed local work must launch one process per project scope with

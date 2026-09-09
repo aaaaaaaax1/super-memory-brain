@@ -9,6 +9,7 @@ param(
   [switch]$SkipVerify,
   [switch]$NoBackup,
   [switch]$PreflightOnly,
+  [switch]$Upgrade,
   [string]$TransactionRoot = '',
   [string]$HookPath = '',
   [ValidateSet('','after-install-skills-and-startup','after-hookless-audit','after-runtime','after-first-load')]
@@ -42,6 +43,15 @@ $statusPath = Join-Path $workspace 'last-bootstrap.json'
 $stages = @()
 $transaction = $null
 $runtimeInstall = $null
+
+function Read-BootstrapStatus([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  try {
+    $value = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($value -and $value.ok -eq $true -and [string]$value.packageRoot -eq [string]$Root -and $value.transaction.status -eq 'committed') { return $value }
+  } catch {}
+  return $null
+}
 
 function Invoke-BytecodeSafePowerShell([string]$ScriptPath,[string[]]$Arguments=@(),[switch]$CaptureOutput) {
   $previousDontWriteBytecode = [Environment]::GetEnvironmentVariable('PYTHONDONTWRITEBYTECODE','Process')
@@ -222,6 +232,37 @@ try {
   if (-not $preflight.ok) { throw "BOOTSTRAP_PREFLIGHT_FAILED missing=$($preflight.missingFiles -join ',') python=$($preflight.pythonFound) codex=$($preflight.codexCliFound)" }
   if ($NoBackup) { throw 'BOOTSTRAP_NO_BACKUP_UNSUPPORTED: one-click install requires a rollback transaction.' }
 
+  # Installation is intentionally separate from upgrade.  A completed
+  # install is immutable unless the caller explicitly selects -Upgrade.
+  $priorInstall = Read-BootstrapStatus $statusPath
+  $priorTargetsMatch = $priorInstall -and
+    [string]$priorInstall.codexSkills -eq [string]$CodexSkills -and
+    [string]$priorInstall.memoryRoot -eq [string]$Neurobase
+  if ($Upgrade -and (-not $priorInstall -or -not $priorTargetsMatch)) {
+    throw 'BOOTSTRAP_UPGRADE_REQUIRES_MATCHING_INSTALL'
+  }
+  if ($priorInstall -and $priorTargetsMatch -and -not $Upgrade) {
+    $currentVersion = [string](Get-SuperBrainManifest $Root).version
+    $action = if ([string]$priorInstall.version -eq $currentVersion) { 'already-installed' } else { 'upgrade-required' }
+    $result = [pscustomobject]@{
+      ok = ($action -eq 'already-installed')
+      schema = 'super-brain.bootstrap.v3'
+      action = $action
+      checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+      version = $currentVersion
+      installedVersion = [string]$priorInstall.version
+      packageRoot = $Root
+      codexSkills = $CodexSkills
+      memoryRoot = $Neurobase
+      transaction = $priorInstall.transaction
+      rollbackOk = $true
+      nextAction = if ($action -eq 'already-installed') { 'Use doctor.ps1 for maintenance or upgrade.ps1 for an explicit version upgrade.' } else { 'Run upgrade.ps1 for an explicit version upgrade.' }
+    }
+    Write-JsonUtf8NoBom $statusPath $result 10
+    if ($Json) { $result | ConvertTo-Json -Depth 10 } else { Write-Host "BOOTSTRAP_$($action.ToUpperInvariant()) version=$currentVersion" }
+    exit 0
+  }
+
   $transaction = New-SuperBrainInstallTransaction -PackageRoot $Root -TargetPaths (Get-BootstrapSnapshotTargets) -TransactionRoot $TransactionRoot
   $transactionStarted = Get-Date
   $startupTargets = @(Get-SuperBrainGlobalStartupTargets $CodexSkills)
@@ -260,10 +301,11 @@ try {
   $result = [pscustomobject]@{
     ok = $true
     schema = 'super-brain.bootstrap.v3'
-    action = 'one-click-install'
+    action = if ($Upgrade) { 'explicit-upgrade' } else { 'one-click-install' }
     checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     version = (Get-SuperBrainManifest $Root).version
     packageRoot = $Root
+    codexSkills = $CodexSkills
     memoryMode = $MemoryMode
     requestedMemoryMode = $requestedMemoryMode
     memoryRoot = $Neurobase
@@ -297,7 +339,7 @@ try {
   $failure = [pscustomobject]@{
     ok = $false
     schema = 'super-brain.bootstrap.v3'
-    action = 'one-click-install'
+    action = if ($Upgrade) { 'explicit-upgrade' } else { 'one-click-install' }
     checkedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     version = (Get-SuperBrainManifest $Root).version
     packageRoot = $Root

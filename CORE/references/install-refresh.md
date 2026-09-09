@@ -15,6 +15,7 @@ Do not treat ordinary task status as install/refresh.
 
 Lifecycle ownership:
 - `install.bat`, the UI global-install button, and the console global-install action delegate to `bootstrap.ps1`; this is the only complete one-click install orchestrator.
+- `bootstrap.ps1` is install-only after a committed install; `upgrade.ps1` is the explicit upgrade entry and delegates the same transaction engine with upgrade authorization.
 - `install.ps1` is an internal installation stage and an advanced test/custom-target entry, not the user-facing complete install path.
 - `first-load-bootstrap.ps1` verifies the narrow runtime/MCP binding and a bounded stdio protocol probe on an explicit Super Brain load. A successful probe is cached for a short local interval; a failed binding or probe reuses the transactional MCP repair path.
 - `hot-refresh-skills.ps1` synchronizes already installed package-owned skill copies; it does not replace installation.

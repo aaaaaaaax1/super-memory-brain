@@ -420,6 +420,11 @@ def _run_local_scope_repair(core: BrainCore) -> dict[str, object]:
         return _local_scope_repair_failure("H7_SCOPE_LOCAL_CONTRACT_INVALID")
     control = ScopeBrokerControlClient(
         core.memory_base,
+        # Repair is observational unless a broker is already serving the
+        # exact local workline.  Never spawn a new broker merely to discover
+        # that a rebind is required; this keeps the fail-closed path side
+        # effect free and avoids orphaned Windows child processes.
+        auto_start=False,
         runtime_path=Path(__file__).with_name("scope_broker_ipc.py"),
     )
     try:
@@ -436,7 +441,13 @@ def _run_local_scope_repair(core: BrainCore) -> dict[str, object]:
         except Exception:
             pass
     if repaired.get("ok") is not True:
-        return _local_scope_repair_failure(str(repaired.get("code", "H7_SCOPE_LOCAL_REPAIR_FAILED")))
+        code = str(repaired.get("code", "H7_SCOPE_LOCAL_REPAIR_FAILED"))
+        # With no resident broker there is no exact workline to repair.  Keep
+        # the public result at the same fail-closed rebind boundary as an
+        # existing broker that cannot resolve the current contract.
+        if code == "H7_SCOPE_BROKER_UNAVAILABLE":
+            code = "H7_SCOPE_REPAIR_REBIND_REQUIRED"
+        return _local_scope_repair_failure(code)
     return {
         "ok": True,
         "schema": "super-brain.local-scope-repair.v1",

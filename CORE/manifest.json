@@ -295,6 +295,7 @@
                     "decision-search.ps1",
                     "decision-audit.ps1",
                     "bootstrap.ps1",
+                    "upgrade.ps1",
                     "graph-add.ps1",
                     "graph-search.ps1",
                     "extract-facts.ps1",
@@ -1226,6 +1227,15 @@
                                                          "NoBackup"
                                                      ],
                                "notes":  "High-impact transactional one-click install: read-only preflight, scoped snapshot, skill/startup install, hook/MCP registration, self-test, and reverse-order rollback on failure."
+                           },
+                           {
+                               "path":  "upgrade.ps1",
+                               "tier":  "T3",
+                               "manualOnly":  true,
+                               "dangerousSwitches":  [
+                                                         "SkipVerify"
+                                                     ],
+                               "notes":  "Explicit transactional upgrade entry; delegates to bootstrap with upgrade authorization and preserves rollback."
                            },
                            {
                                "path":  "graph-add.ps1",

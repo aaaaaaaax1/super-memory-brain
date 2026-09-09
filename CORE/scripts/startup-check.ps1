@@ -304,7 +304,10 @@ if ($Json) {
   # understood by the CLI compatibility path.  Entry-adapter readiness is
   # stricter: only the current local launcher is eligible; a direct
   # brain_mcp entry is migration-only and must stay visibly non-current.
-  $adapterAvailable = ($codexHostPresent -and $requiredAdapterFailures.Count -eq 0 -and $mcpBinding.currentBindingOk)
+  # An isolated install deliberately has no global Codex MCP registration;
+  # its adapter readiness is proved by the target skill and runtime files.
+  # Require the current static MCP binding only for the normal global route.
+  $adapterAvailable = ($codexHostPresent -and $requiredAdapterFailures.Count -eq 0 -and ($isolationMode -or $mcpBinding.currentBindingOk))
   $axes = [pscustomobject]@{
     coreAvailable = $coreAvailable
     turnRuntime = [pscustomobject]@{
