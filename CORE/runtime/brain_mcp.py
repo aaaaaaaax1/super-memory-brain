@@ -298,6 +298,19 @@ TOOLS = [
                     "required": ["last_confirmed_sentence", "source", "current_phase", "current_step", "next_action"],
                     "additionalProperties": False,
                 },
+                "assistant_visible_progress": {
+                    "type": "object",
+                    "description": "Bounded progress packet produced by the adapter after rendering the assistant reply; accepted as the checkpoint source without reading raw chat.",
+                    "properties": {
+                        "last_confirmed_sentence": {"type": "string", "minLength": 1, "maxLength": 320},
+                        "source": {"type": "string", "enum": ["assistant_visible_reply", "user_attested_visible_reply"]},
+                        "current_phase": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "current_step": {"type": "string", "minLength": 1, "maxLength": 220},
+                        "next_action": {"type": "string", "minLength": 1, "maxLength": 360},
+                    },
+                    "required": ["last_confirmed_sentence", "source", "current_phase", "current_step", "next_action"],
+                    "additionalProperties": False,
+                },
                 "project_progress_proof": {
                     "type": "object",
                     "description": "Structured project-progress evidence for the same checkpoint; contains no prompt or transcript.",
@@ -1110,6 +1123,22 @@ def handle_tool(
             True,
         )
     broker_bound_adapter = getattr(getattr(core, "_scope_provider", None), "provider_kind", "") == "scope_broker_channel"
+    if (
+        name == "brain_turn"
+        and getattr(getattr(core, "_scope_provider", None), "provider_kind", "") == "local_scope_injection"
+    ):
+        return tool_result(
+            {
+                "ok": False,
+                "schema": "super-brain.turn-runtime.v1",
+                "available": False,
+                "code": "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED",
+                "state": "withheld",
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            },
+            True,
+        )
     if broker_bound_adapter and "task_scope" in arguments:
         # A production channel is already bound to one broker-owned scope;
         # accepting a second selector would make the API appear to support a
@@ -1217,7 +1246,13 @@ def handle_tool(
                 turn_outcome=str(arguments.get("turn_outcome", "unknown")),
                 user_control=str(arguments.get("user_control", "unknown")),
                 completion_evidence_ref=str(arguments.get("completion_evidence_ref", "")),
-                progress_checkpoint=arguments.get("progress_checkpoint") if isinstance(arguments.get("progress_checkpoint"), dict) else None,
+                progress_checkpoint=(
+                    arguments.get("assistant_visible_progress")
+                    if isinstance(arguments.get("assistant_visible_progress"), dict)
+                    else arguments.get("progress_checkpoint")
+                    if isinstance(arguments.get("progress_checkpoint"), dict)
+                    else None
+                ),
                 visible_progress_assertion=None,
                 project_progress_proof=arguments.get("project_progress_proof") if isinstance(arguments.get("project_progress_proof"), dict) else None,
                 execution_assist_request=arguments.get("execution_assist_request"),

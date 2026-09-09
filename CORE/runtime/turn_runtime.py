@@ -4364,13 +4364,16 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
             timeout=float(kwargs.get("timeout", 8.0)),
         )
     if phase == "close":
+        progress_packet = kwargs.get("assistant_visible_progress")
+        if not isinstance(progress_packet, dict):
+            progress_packet = kwargs.get("progress_checkpoint")
         return close_turn(
             core,
             memory_mode=str(kwargs.get("memory_mode", "auto")),
             turn_outcome=str(kwargs.get("turn_outcome", "unknown")),
             user_control=str(kwargs.get("user_control", "unknown")),
             completion_evidence_ref=str(kwargs.get("completion_evidence_ref", "")),
-            progress_checkpoint=kwargs.get("progress_checkpoint") if isinstance(kwargs.get("progress_checkpoint"), dict) else None,
+            progress_checkpoint=progress_packet if isinstance(progress_packet, dict) else None,
             project_progress_proof=kwargs.get("project_progress_proof") if isinstance(kwargs.get("project_progress_proof"), dict) else None,
             transition_id=str(kwargs.get("transition_id", "")),
             timeout=float(kwargs.get("timeout", 8.0)),
@@ -4384,10 +4387,13 @@ def run_turn(core: BrainCore, *, phase: str = "open", **kwargs: Any) -> dict[str
             ),
         )
     if phase == "checkpoint":
+        progress_packet = kwargs.get("assistant_visible_progress")
+        if not isinstance(progress_packet, dict):
+            progress_packet = kwargs.get("progress_checkpoint")
         return checkpoint_turn(
             core,
             memory_mode=str(kwargs.get("memory_mode", "auto")),
-            progress_checkpoint=kwargs.get("progress_checkpoint") if isinstance(kwargs.get("progress_checkpoint"), dict) else None,
+            progress_checkpoint=progress_packet if isinstance(progress_packet, dict) else None,
             project_progress_proof=kwargs.get("project_progress_proof") if isinstance(kwargs.get("project_progress_proof"), dict) else None,
             transition_id=str(kwargs.get("transition_id", "")),
             timeout=float(kwargs.get("timeout", 8.0)),

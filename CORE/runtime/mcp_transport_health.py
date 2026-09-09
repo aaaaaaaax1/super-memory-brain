@@ -177,6 +177,15 @@ class LocalBrokerStdioTransportHealth:
         channel = self._channel_status() if not closed else {"ok": False, "code": "H7_SCOPE_CHANNEL_CLOSED", "state": "withheld"}
         channel_code = str(channel.get("code", "H7_SCOPE_BROKER_UNAVAILABLE"))
         channel_state = str(channel.get("state", "withheld"))
+        if (
+            not closed
+            and not self._channel_handle
+            and not self._channel_id
+            and self._scope_injection.get("requested")
+        ):
+            # An unscoped launcher never opened a broker channel. Expose the
+            # injection diagnosis consistently at every handshake projection.
+            channel_code = str(self._scope_injection.get("code") or channel_code)
         restart_requires_launcher = bool(
             channel_code == "H7_SCOPE_CHANNEL_UNKNOWN_OR_RESTARTED"
             and self._scope_injection.get("code") == "H7_SCOPE_BOOTSTRAP_BOUND"

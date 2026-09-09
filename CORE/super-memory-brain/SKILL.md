@@ -215,6 +215,11 @@ update, not a raw prompt/transcript channel. Changing any of those scope fields
 requires a fresh project proof in the same update; if either write cannot be
 made, do not claim a durable recovery point or progress update.
 
+Adapters may send the same five-field packet as `assistant_visible_progress` on
+the close/checkpoint call. This is a transport alias for the bounded visible
+progress packet, not a second store; it still requires the exact rendered
+sentence and never parses or stores raw conversation text.
+
 If the current user instruction newly authorizes, redirects, or resolves an
 active workline, supply its compact protected form as
 `latest_user_instruction` to that same checkpoint. H7 binds it to the scoped
