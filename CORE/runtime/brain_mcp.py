@@ -21,7 +21,7 @@ from activation_receipt import ensure_current
 from turn_runtime import run_turn
 from turn_intent import TURN_INTENTS
 from mcp_transport_health import LocalBrokerStdioTransportHealth, OfflineReplayMcpTransportHealth
-from scope_provider import BrokerChannelHandle, BrokerScopeProvider, OfflineReplayScopeProvider
+from scope_provider import BrokerChannelHandle, BrokerScopeProvider, OfflineReplayScopeProvider, WithheldScopeProvider
 from scope_broker_ipc import ScopeBrokerClient
 from local_scope_bootstrap import bootstrap_local_mcp_channel
 
@@ -1485,43 +1485,65 @@ def main() -> int:
         # This process-local marker enables the bounded warm authority worker
         # without making performance depend on a host's registration format.
         os.environ[_LOCAL_MCP_RUNTIME_ENV] = "1"
-        broker_client = ScopeBrokerClient(
-            core.memory_base,
-            runtime_path=Path(__file__).with_name("scope_broker_ipc.py"),
-        )
-        scope_injection, bootstrapped_channel_id = _startup_scope_injection(
-            package_root=args.package_root,
-            memory_root=memory_root,
-            injected_local_session=injected_local_session,
-            injected_workspace_root=injected_workspace_root,
-            injection_required=args.local_launcher,
-            broker_client=broker_client,
-            core=core,
-        )
+        # A static launcher without the explicit local SID is only a discovery
+        # probe.  Keep it entirely broker-free: opening an IPC client here can
+        # leave pairing capabilities/locks behind and makes a withheld probe
+        # depend on a live broker.  The real injected path below remains
+        # unchanged and still requires the strict cwd+SID contract.
+        if args.local_launcher and not injected_local_session:
+            scope_injection = {
+                "state": "withheld",
+                "code": "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED",
+                "scopeAuthorized": False,
+            }
+            transport_health = LocalBrokerStdioTransportHealth(
+                None,
+                "",
+                scope_injection=scope_injection,
+            )
+            core.inject_runtime_transport(
+                runtime_mode="local_stdio_scope_broker",
+                scope_provider=WithheldScopeProvider(scope_injection["code"]),
+                transport_health=transport_health,
+            )
+        else:
+            broker_client = ScopeBrokerClient(
+                core.memory_base,
+                runtime_path=Path(__file__).with_name("scope_broker_ipc.py"),
+            )
+            scope_injection, bootstrapped_channel_id = _startup_scope_injection(
+                package_root=args.package_root,
+                memory_root=memory_root,
+                injected_local_session=injected_local_session,
+                injected_workspace_root=injected_workspace_root,
+                injection_required=args.local_launcher,
+                broker_client=broker_client,
+                core=core,
+            )
         # A package-owned local launcher has one chance to prove its private
         # cwd/session/contract scope at startup.  If that proof fails, do not
         # create an intermediate unbound Broker channel: such a channel has a
         # one-shot pairing capability even though this process is not allowed
         # to select or repair a scope.  Static diagnostic workers (the direct
         # entry point) retain their explicitly unbound discovery channel.
-        launcher_bootstrap_failed = bool(args.local_launcher and not bootstrapped_channel_id)
-        channel_handle = BrokerChannelHandle(
-            broker_client,
-            bootstrapped_channel_id if args.local_launcher else broker_client.open_channel(),
-            allow_reopen_after_restart=not args.local_launcher,
-            allow_initial_open=not launcher_bootstrap_failed,
-            unavailable_code=str(scope_injection.get("code", "H7_SCOPE_INJECTION_FAILED")),
-        )
-        transport_health = LocalBrokerStdioTransportHealth(
-            broker_client,
-            channel_handle,
-            scope_injection=scope_injection,
-        )
-        core.inject_runtime_transport(
-            runtime_mode="local_stdio_scope_broker",
-            scope_provider=BrokerScopeProvider(broker_client, channel_handle),
-            transport_health=transport_health,
-        )
+            launcher_bootstrap_failed = bool(args.local_launcher and not bootstrapped_channel_id)
+            channel_handle = BrokerChannelHandle(
+                broker_client,
+                bootstrapped_channel_id if args.local_launcher else broker_client.open_channel(),
+                allow_reopen_after_restart=not args.local_launcher,
+                allow_initial_open=not launcher_bootstrap_failed,
+                unavailable_code=str(scope_injection.get("code", "H7_SCOPE_INJECTION_FAILED")),
+            )
+            transport_health = LocalBrokerStdioTransportHealth(
+                broker_client,
+                channel_handle,
+                scope_injection=scope_injection,
+            )
+            core.inject_runtime_transport(
+                runtime_mode="local_stdio_scope_broker",
+                scope_provider=BrokerScopeProvider(broker_client, channel_handle),
+                transport_health=transport_health,
+            )
     snapshot_path = core.workspace / "mcp-snapshot.json" if memory_root is not None else None
     try:
         return serve(core, snapshot_path)

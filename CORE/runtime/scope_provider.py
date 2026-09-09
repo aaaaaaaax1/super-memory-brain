@@ -280,6 +280,40 @@ class OfflineReplayScopeProvider:
         )
 
 
+class WithheldScopeProvider:
+    """Non-authorizing provider for an unscoped static launcher probe."""
+
+    provider_kind = "local_scope_injection"
+
+    def __init__(self, code: str = "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED") -> None:
+        self.code = str(code or "H7_SCOPE_INJECTION_FAILED")
+
+    def _withheld(self) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "state": "withheld",
+            "code": self.code,
+            "provider": self.provider_kind,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        }
+
+    def snapshot(self, *, force: bool = False) -> Mapping[str, Any]:
+        return self._withheld()
+
+    def authorize(self, *, write: bool = False) -> Mapping[str, Any]:
+        return self._withheld()
+
+    def project_root(self) -> Path | None:
+        return None
+
+    def status(self) -> Mapping[str, Any]:
+        return self._withheld()
+
+    def resolve(self, *, write: bool = False) -> ScopeResolution:
+        return ScopeResolution(state="withheld", code=self.code, source=self.provider_kind)
+
+
 class BrokerChannelHandle:
     """One MCP process's replaceable private Broker channel.
 
@@ -700,6 +734,7 @@ __all__ = [
     "LegacyCwdEnvScopeProvider",
     "LegacyEnvironmentScopeProvider",
     "OfflineReplayScopeProvider",
+    "WithheldScopeProvider",
     "ScopeResolution",
     "ScopeProvider",
     "StaticScopeProvider",

@@ -140,6 +140,8 @@ class LocalBrokerStdioTransportHealth:
                 if self._channel_handle is not None
                 else "H7_SCOPE_CHANNEL_OPEN_FAILED"
             )
+            if not self._channel_handle and self._scope_injection.get("requested"):
+                unavailable_code = str(self._scope_injection.get("code") or unavailable_code)
             # A failed launcher bootstrap deliberately has no channel to
             # inspect.  Preserve its exact scope-injection diagnosis rather
             # than performing a second open/status request that could create
