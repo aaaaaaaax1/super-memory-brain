@@ -58,6 +58,16 @@ _BROKER_SHUTDOWN_POLL_SECONDS = 0.02
 # bounded pairing grace window.  Explicit close_channel still releases it
 # immediately, so this does not pin a healthy client after normal teardown.
 _UNBOUND_CHANNEL_GRACE_SECONDS = 120.0
+
+
+def _broker_creation_flags() -> int:
+    """Keep a resident broker out of the caller's Windows console group."""
+
+    if os.name != "nt":
+        return 0
+    # Prevent Ctrl+C delivered to a test/host console from terminating the
+    # broker with 0xC000013A while its endpoint/lock cleanup is in flight.
+    return int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
 # A bootstrap response can be lost after the Broker commits its channel and
 # lease.  Keep a private operation record long enough for the client to issue
 # an idempotent cancel; the maintenance loop is the last-resort cleanup when
@@ -1808,6 +1818,7 @@ class ScopeBrokerClient:
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        creationflags=_broker_creation_flags(),
                         # Never pin either the package checkout or the private
                         # state directory as the child cwd; Windows cleanup of
                         # a temporary install must remain possible.

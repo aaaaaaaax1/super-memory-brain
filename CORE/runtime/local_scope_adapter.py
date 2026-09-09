@@ -237,6 +237,10 @@ def launch(
     options.setdefault("stderr", subprocess.PIPE)
     options.setdefault("text", True)
     options.setdefault("encoding", "utf-8")
+    if os.name == "nt":
+        # Keep the adapter outside the caller's console process group so a
+        # host/test Ctrl+C cannot tear down MCP mid-handshake.
+        options.setdefault("creationflags", int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)))
     options["cwd"] = str(spec.cwd)
     options["env"] = dict(spec.environment)
     return subprocess.Popen(list(spec.argv), **options)
