@@ -1,9 +1,9 @@
 {
   "schema": "super-brain.core-rule-registry.v1",
-  "registryVersion": 67,
+  "registryVersion": 68,
   "packageVersion": "0.6.0",
   "hashAlgorithm": "sha256(canonical-json-without-payloadHash)",
-  "payloadHash": "1adf9977a806be4ca24659a49591ea675c2ef8e364863f80c8093bb9f2bd3e86",
+  "payloadHash": "39273a817a5f0d59d2eb15fbfc66e2c13186f901ca3ce80c51aaa01dfc953355",
   "rules": [
     {
       "ruleId": "SB-PROJECT-GROUNDED-DESIGN-001",
@@ -977,6 +977,36 @@
         "project_knowledge_no_full_tree_scan_replay",
         "project_knowledge_receipt_telemetry_evidence_consistency_replay",
         "ordinary_continuation_no_project_scan_replay"
+      ],
+      "status": "active",
+      "supersedes": []
+    },
+    {
+      "ruleId": "SB-NON-SPIRAL-EXECUTION-001",
+      "revision": 1,
+      "priority": 121,
+      "scope": "runtime",
+      "trigger": [
+        "ordinary_continuation",
+        "resume",
+        "continue",
+        "recovery",
+        "status",
+        "verification",
+        "maintenance",
+        "super_brain_defect",
+        "optimization"
+      ],
+      "effect": "keep_ordinary_execution_direct_and_nonblocking_do_not_start_self_audit_or_recursive_proof_loops_without_a_new_user_request_or_new_failure_evidence_stop_verification_after_the_declared_acceptance_checks_pass_do_not_infer_hidden_defects_from_internal_diagnostics_or_missing_optional_context_and_keep_user_visible_output_free_of_internal_control_plane_codes_or_speculation",
+      "enforcement": "runtime",
+      "entrypoint": "runtime/turn_runtime.py",
+      "acceptanceTests": [
+        "ordinary_continuation_no_recursive_audit_replay",
+        "verification_pass_stops_without_extra_proof_loop_replay",
+        "no_new_evidence_no_new_diagnosis_replay",
+        "internal_diagnostics_not_user_visible_replay",
+        "background_validation_nonblocking_ordinary_replay",
+        "silent_routine_control_plane_validation_replay"
       ],
       "status": "active",
       "supersedes": []

@@ -141,6 +141,7 @@ def main() -> int:
         "SB-PROGRESS-TRUTH-001",
         "SB-AUTO-RESUME-001",
         "SB-H7-ACTIVATION-001",
+        "SB-NON-SPIRAL-EXECUTION-001",
     ], continuation
     stage = public_projection(current, signals=("stage_complete",))
     assert stage["applicableRuleIds"] == [

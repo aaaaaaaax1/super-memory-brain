@@ -165,7 +165,8 @@
                                                      "SB-BOOTSTRAP-SINGLE-SOURCE-001",
                                                      "SB-CONTROL-PLANE-MAINTAINABILITY-001",
                                                      "SB-DIRECT-GIT-SOURCE-001",
-                                                     "SB-ON-DEMAND-PROJECT-KNOWLEDGE-001"
+                                                     "SB-ON-DEMAND-PROJECT-KNOWLEDGE-001",
+                                                     "SB-NON-SPIRAL-EXECUTION-001"
                                                  ]
                          },
     "capabilitySourceRegistry":  {
