@@ -2273,10 +2273,51 @@ class BrainCore:
     def _context_memory_effect(entry: dict[str, Any]) -> dict[str, Any]:
         kind = str(entry["kind"])
         item = entry["item"]
+        scope_kind = str(entry.get("scopeKind", "global"))
+        scope_weight = {
+            "global": 0.25,
+            "workspace": 0.35,
+            "task": 0.50,
+            "task_instance": 0.60,
+            "session": 0.65,
+        }.get(scope_kind, 0.0)
+        kind_weight = {
+            "preference": 1.0,
+            "experience": 0.85,
+            "procedure": 0.75,
+            "note": 0.60,
+            "reflection": 0.35,
+        }.get(kind, 0.0)
+        updated_at = str(entry.get("updatedAt", ""))
+        freshness_weight = 0.5
+        age_days: float | None = None
+        if updated_at:
+            try:
+                parsed_updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                parsed_updated = None
+            if parsed_updated is not None and parsed_updated.tzinfo is not None:
+                age_days = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - parsed_updated.astimezone(timezone.utc)).total_seconds() / 86400.0,
+                )
+                freshness_weight = math.exp(-math.log(2.0) * age_days / 180.0)
+        confidence_weight = 1.0
+        if kind == "preference":
+            try:
+                confidence_weight = max(0.5, min(1.0, float(item.get("confidence", 0)) / 100.0))
+            except (TypeError, ValueError):
+                confidence_weight = 0.5
         result: dict[str, Any] = {
             "kind": kind,
             "effect": str(item["effect"]),
             "title": _compact(str(item["title"]), 180),
+            "scopeKind": scope_kind,
+            "updatedAt": updated_at,
+            "ageDays": round(age_days, 1) if age_days is not None else None,
+            "freshnessWeight": round(freshness_weight, 3),
+            "advisoryWeight": round(scope_weight * kind_weight * freshness_weight * confidence_weight, 3),
+            "nonAuthorizing": True,
         }
         if kind == "preference":
             result["guidance"] = _compact(str(item["statement"]), 360)

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -56,6 +57,10 @@ def _seed_h7_scope(state_root: Path, project_root: Path, session_key: str) -> di
     current_step = "Open the current H7 turn."
     next_action = "Read current H7 evidence."
     sentence = "The hookless H7 fixture is ready."
+    # Keep the fixture inside H7's bounded freshness window.  A calendar
+    # date baked into a long-lived regression turns into a false stale-index
+    # failure as the test suite ages.
+    updated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     evidence_path = project_root / "h7-progress-evidence.txt"
     evidence_path.write_text("hookless H7 progress evidence\n", encoding="utf-8")
     evidence = {
@@ -130,7 +135,7 @@ def _seed_h7_scope(state_root: Path, project_root: Path, session_key: str) -> di
         "recoveryCheckpoint": {"checkpointId": "hookless-h7-checkpoint", "stateHash": "b" * 64},
         "projectProgressProof": proof,
         "visibleProgressReceipt": receipt,
-        "updatedAt": "2026-09-01T00:00:00Z",
+        "updatedAt": updated_at,
     }
     _write_json(
         state_root / "workspace" / "runtime-state" / "execution-contracts" / contract_name,
@@ -152,7 +157,7 @@ def _seed_h7_scope(state_root: Path, project_root: Path, session_key: str) -> di
                     "packageVersion": _package_version(),
                     "revision": 7,
                     "status": "active",
-                    "updatedAt": "2026-09-01T00:00:00Z",
+                    "updatedAt": updated_at,
                     "contractFileName": contract_name,
                 }
             ],

@@ -84,6 +84,7 @@ Describe 'Super Memory Brain package manifest' {
     @($manifest.legacyCompatibilityFiles) -contains 'runtime\codex_prompt_hook.py' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\codex_stop_hook.py' | Should Be $false
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\turn_close_dispatcher.py' | Should Be $true
+    @($manifest.intelligenceBehaviorFiles) -contains 'runtime\continuity_evidence_policy.py' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\work_dag.py' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'runtime\run_observability.py' | Should Be $true
     @($manifest.intelligenceBehaviorFiles) -contains 'scripts\work-dag.ps1' | Should Be $true

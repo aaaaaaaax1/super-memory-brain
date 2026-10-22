@@ -120,7 +120,7 @@ After a verified interruption, compaction, disconnect, model switch,
 cross-session rebind, explicit resume of a suspended workline, or verified
 child return, emit one compact user-visible continuity receipt before mutation.
 Its first line is H7's exact local recovery presentation:
-`本地执行契约：进度：<verified phase>｜当前：<verified step>｜下一步：<verified action>`.
+`本地执行契约：进度：<verified phase>｜当前：<verified step>｜候选下一步：<verified action>`.
 The presentation is non-authorizing and contains no external text, identity,
 thread, metadata, or hash. If phase, step, or next action cannot be verified
 together, H7 withholds recovery and repairs the evidence boundary.

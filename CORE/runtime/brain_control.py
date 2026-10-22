@@ -6722,7 +6722,7 @@ class BrainControl:
         parameters: list[Any] = [value for pair in selectors for value in pair]
         rows = connection.execute(
             """
-            SELECT c.card_id,c.kind,c.scope_kind,c.scope_key,c.lifecycle,c.authority,c.privacy_class,c.head_revision,
+            SELECT c.card_id,c.kind,c.scope_kind,c.scope_key,c.lifecycle,c.authority,c.privacy_class,c.head_revision,c.updated_at AS card_updated_at,
               r.revision,r.predecessor_hash,r.content_hash,r.title,r.structured_payload,r.evidence_refs,r.actor_receipt,
               r.state_json,r.created_at
             FROM cards c JOIN card_revisions r ON r.card_id=c.card_id AND r.revision=c.head_revision
@@ -7121,7 +7121,7 @@ class BrainControl:
 
         rows = connection.execute(
             """
-            SELECT c.card_id,c.kind,c.scope_kind,c.scope_key,c.lifecycle,c.authority,c.privacy_class,c.head_revision,
+            SELECT c.card_id,c.kind,c.scope_kind,c.scope_key,c.lifecycle,c.authority,c.privacy_class,c.head_revision,c.updated_at AS card_updated_at,
               r.revision,r.predecessor_hash,r.content_hash,r.title,r.structured_payload,r.evidence_refs,r.actor_receipt,
               r.state_json,r.created_at
             FROM cards c JOIN card_revisions r ON r.card_id=c.card_id AND r.revision=c.head_revision
@@ -7178,6 +7178,7 @@ class BrainControl:
                         "bucket": bucket,
                         "scopeKind": str(scope["kind"]),
                         "scopeRef": _sha256({"scopeKey": str(scope["key"])}),
+                        "updatedAt": str(row["card_updated_at"]),
                         "item": item,
                     }
                 )

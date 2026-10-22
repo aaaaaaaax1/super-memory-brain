@@ -801,6 +801,31 @@ def _bound_scope_failure_code(core: BrainCore, scope: Mapping[str, Any]) -> str:
     return code
 
 
+def _persistent_context_unavailable(phase: str) -> dict[str, Any]:
+    """Return a non-blocking, non-fabricating result for a durable operation.
+
+    The current conversation and live project remain usable when no local
+    task scope is bound.  Durable checkpoint/close/evidence operations cannot
+    be represented as saved state, so they return a stable user-facing result
+    without exposing an internal session, scope, or H7 transport code.
+    """
+
+    return {
+        "ok": True,
+        "schema": "super-brain.turn-runtime.v1",
+        "phase": str(phase or "checkpoint"),
+        "available": False,
+        "state": "context_only",
+        "code": "PERSISTENT_CONTEXT_UNAVAILABLE",
+        "message": "Persistent context is unavailable for this session; continue with the current conversation and live project evidence. No user-side repair is needed.",
+        "terminalReplyAllowed": True,
+        "mustContinue": False,
+        "persistedStateAvailable": False,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+
+
 def _public_mcp_status(status: Mapping[str, Any]) -> dict[str, Any]:
     """Remove local filesystem locators from the public stdio status view.
 
@@ -1123,22 +1148,15 @@ def handle_tool(
             True,
         )
     broker_bound_adapter = getattr(getattr(core, "_scope_provider", None), "provider_kind", "") == "scope_broker_channel"
+    turn_phase = str(arguments.get("phase", "open")).strip().lower() or "open"
     if (
         name == "brain_turn"
         and getattr(getattr(core, "_scope_provider", None), "provider_kind", "") == "local_scope_injection"
+        and turn_phase != "open"
     ):
-        return tool_result(
-            {
-                "ok": False,
-                "schema": "super-brain.turn-runtime.v1",
-                "available": False,
-                "code": "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED",
-                "state": "withheld",
-                "rawPromptStored": False,
-                "rawTranscriptStored": False,
-            },
-            True,
-        )
+        # Ordinary open/read work can continue from visible context.  A
+        # checkpoint, close, or evidence write cannot claim durable state.
+        return tool_result(_persistent_context_unavailable(turn_phase), False)
     if broker_bound_adapter and "task_scope" in arguments:
         # A production channel is already bound to one broker-owned scope;
         # accepting a second selector would make the API appear to support a
@@ -1223,20 +1241,16 @@ def handle_tool(
             )
         scope = core.authorize_scope(write=False)
         if broker_bound_adapter and scope.get("ok") is not True:
-            failure_code = _bound_scope_failure_code(core, scope)
-            return tool_result(
-                {
-                    "ok": False,
-                    "schema": "super-brain.scope-binding.v1",
-                    "available": False,
-                    "code": failure_code,
-                    "state": "withheld" if failure_code == "H7_SCOPE_LAUNCH_RESTART_REQUIRED" else str(scope.get("state", "unbound")),
-                    "scopeBinding": core.scope_status(),
-                    "rawPromptStored": False,
-                    "rawTranscriptStored": False,
-                },
-                True,
-            )
+            if turn_phase == "open":
+                # Let the runtime emit its bounded context-only packet.  A
+                # lost Broker channel is not a reason to stop ordinary work
+                # or to expose a launcher-restart instruction to the user.
+                pass
+            else:
+                # A durable operation must not pretend that a lost channel
+                # saved progress.  Keep the result non-blocking for the
+                # conversation while making the persistence state explicit.
+                return tool_result(_persistent_context_unavailable(turn_phase), False)
         return tool_result(
             run_turn(
                 core,

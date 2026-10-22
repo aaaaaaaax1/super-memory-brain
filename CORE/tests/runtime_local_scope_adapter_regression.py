@@ -179,7 +179,7 @@ def test_injected_user_path_verifies_and_closes_cleanly() -> None:
             assert exit_code == 0, exit_code
 
 
-def test_static_launcher_without_sid_is_withheld() -> None:
+def test_static_launcher_creates_private_scope_without_user_sid() -> None:
     send, _status_payload, _write_live_contract = _integration_helpers()
     with tempfile.TemporaryDirectory(prefix="super-brain-local-adapter-static-") as directory:
         root = Path(directory)
@@ -214,7 +214,7 @@ def test_static_launcher_without_sid_is_withheld() -> None:
             initialized = send(process, {"jsonrpc": "2.0", "id": 3, "method": "initialize", "params": {}})
             assert not verify_startup(initialized)
             handshake = ((initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {})
-            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", initialized
+            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_BOOTSTRAP_CURRENT_CONTRACT_REQUIRED", initialized
             assert handshake.get("scope", {}).get("scopeReady") is False, initialized
             listed = control.list_channels()
             assert listed.get("ok") is True and listed.get("channels") == [], listed
@@ -229,7 +229,7 @@ def main() -> None:
     test_launch_spec_keeps_scope_in_env_and_cwd_only()
     test_invalid_inputs_fail_before_process_start()
     test_injected_user_path_verifies_and_closes_cleanly()
-    test_static_launcher_without_sid_is_withheld()
+    test_static_launcher_creates_private_scope_without_user_sid()
     print("runtime_local_scope_adapter_regression: PASS")
 
 

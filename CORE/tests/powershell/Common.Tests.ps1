@@ -205,11 +205,12 @@ Describe 'Super Memory Brain common helpers' {
     $skill.Contains('local cwd/session scope') | Should Be $true
     $skill | Should Match 'scope-bound\s+runtime/checkpoint evidence'
     $skill.Contains('bare `continue`') | Should Be $true
-    $skill.Contains('Ordinary continuous work') | Should Be $true
+    $skill | Should Match 'Ordinary\s+continuous work'
     $skill.Contains('actual continuation result') | Should Be $true
-    $skill | Should Match 'verified mapped phase,\s+current\s+step,\s+and next action'
+    $skill | Should Match 'verified mapped phase,\s+current\s+step,\s+and candidate next action'
     $skill.Contains('Do not emit raw commentary as a standalone substitute') | Should Be $true
-    $skill.Contains('then actually continues it.') | Should Be $true
+    $skill.Contains('low-weight candidate, not an instruction') | Should Be $true
+    $skill | Should Match 'continue, reframe, answer directly, or\s+stop as appropriate'
     $skill.Contains('do not turn every intermediate update') | Should Be $true
     $skill.Contains('Reserve phase/status presentation') | Should Be $true
     $skill.Contains('The local projection does not mutate the contract') | Should Be $true

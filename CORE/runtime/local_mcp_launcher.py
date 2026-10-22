@@ -26,6 +26,7 @@ from local_scope_adapter import (
     LOCAL_SESSION_ENV,
     SESSION_RE,
     WORKER_ENV_KEYS,
+    generate_session_id,
     validate_session_id,
 )
 
@@ -100,11 +101,14 @@ def main() -> int:
         sys.stderr.write("H7_LOCAL_MCP_LAUNCHER_WORKSPACE_INVALID\n")
         return 64
 
-    # Preserve one valid process-local sid only for the immediate worker
-    # bootstrap. It never appears in argv; brain_mcp consumes and removes it
-    # before it serves MCP. The worker derives workspace only from this
-    # inherited process's real cwd.
+    # A registered MCP may be launched without a host-supplied conversation
+    # token.  The package still needs a private local scope for the worker, so
+    # create one here instead of making the user repair an environment value.
+    # This is intentionally process-local: it is never derived from a host
+    # thread id and never reused as a permanent workspace identity.
     session = str(os.environ.pop(LOCAL_SESSION_ENV, "")).strip()
+    if not validate_session_id(session):
+        session = generate_session_id()
     child_environment = _worker_environment(session)
     # Run the worker in this same process. This preserves the caller's stdio,
     # avoids a child that could outlive a terminated launcher on Windows, and

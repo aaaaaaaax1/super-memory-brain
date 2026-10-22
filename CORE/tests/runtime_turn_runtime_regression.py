@@ -33,7 +33,7 @@ def recovery_progress_line(task: dict[str, object]) -> str:
     phase = str(task.get("currentPhase", ""))
     step = str(task.get("currentStep", ""))
     action = str(task.get("nextAction", ""))
-    return f"本地执行契约：进度：{phase}｜当前：{step}｜下一步：{action}"
+    return f"本地执行契约：进度：{phase}｜当前：{step}｜候选下一步：{action}"
 
 
 def write_json(path: Path, value: object) -> None:
@@ -328,6 +328,60 @@ def invoke_contract(arguments: list[str]) -> dict[str, object]:
     return value
 
 
+def invoke_cli_turn(
+    state_root: Path,
+    project_root: Path,
+    session_key: str,
+    *arguments: str,
+) -> dict[str, object]:
+    """Invoke one H7 CLI turn in a fresh process and return its JSON packet."""
+
+    environment = os.environ.copy()
+    environment["SUPER_BRAIN_STATE_ROOT"] = str(state_root)
+    environment["SUPER_BRAIN_LOCAL_SESSION_ID"] = session_key
+    # The CLI fallback is intentionally host-neutral.  Do not let an ambient
+    # desktop/legacy variable become an alternate scope or transport input in
+    # this user-path regression.
+    environment.pop("CODEX_THREAD_ID", None)
+    environment.pop("SUPER_BRAIN_HOST_THREAD_ID", None)
+    environment.pop("SUPER_BRAIN_HOST_VISIBLE_CONTEXT", None)
+    environment.pop("SUPER_BRAIN_WORKSPACE_KEY", None)
+    environment.pop("SUPER_BRAIN_RUNTIME_IDENTITY", None)
+    environment.pop("SUPER_BRAIN_MCP_TRANSPORT", None)
+    environment.pop("SUPER_BRAIN_MCP_REGISTRATION_EPOCH", None)
+    environment.pop("SUPER_BRAIN_MCP_OFFLINE_REPLAY", None)
+    environment.pop("SUPER_BRAIN_ARCHIVE_ROOT", None)
+    environment.pop("NEXSANDBASE_HOME", None)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "runtime" / "brain_cli.py"),
+            "--package-root",
+            str(ROOT),
+            "--memory-root",
+            str(state_root / "shared"),
+            "turn-runtime",
+            *arguments,
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+        env=environment,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(completed.stderr or completed.stdout)
+    try:
+        value = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise AssertionError(completed.stdout) from error
+    assert isinstance(value, dict), value
+    return value
+
+
 def local_scope(project_root: Path, session_key: str):
     class Scope:
         def __enter__(self):
@@ -344,6 +398,31 @@ def local_scope(project_root: Path, session_key: str):
                 os.environ["SUPER_BRAIN_LOCAL_SESSION_ID"] = self.previous_thread
 
     return Scope()
+
+
+def test_unbound_direct_and_continuity_are_context_only() -> None:
+    """Missing persistence identity must not prevent ordinary model work."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-context-only-turn-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        project_root = Path(directory) / "project"
+        memory_root.mkdir(parents=True)
+        project_root.mkdir()
+        core = BrainCore(ROOT, memory_root)
+        core._current_session_key = lambda: ""  # type: ignore[method-assign]
+        direct = run_turn(core, phase="open", turn_intent="direct")
+        continued = run_turn(core, phase="open", turn_intent="continuity", recovery_event="restart")
+
+    assert direct["available"] is True, direct
+    assert direct["code"] == "TURN_INTENT_DIRECT_PATH", direct
+    assert direct["terminalReplyAllowed"] is True and direct["mustContinue"] is False, direct
+    assert continued["available"] is True, continued
+    assert continued["state"] == "context_only", continued
+    assert continued["persistedStateAvailable"] is False, continued
+    assert continued["continuityMapping"]["state"] == "context_only", continued
+    assert continued["recoveryPresentation"]["openingLine"] == "", continued
+    assert not (state_root / "workspace" / "runtime-state" / "turn-runtime").exists()
 
 
 def test_taskless_continuation_short_circuits_execution_assist() -> None:
@@ -1273,6 +1352,7 @@ def test_continuity_withholds_stale_proof_and_checkpoint_repairs_the_same_scope(
                 transition_id="continuity-proof-gate-repair",
             )
             recovered = run_turn(core, phase="open", turn_intent="continuity", recovery_event="restart")
+            recovered_again = run_turn(core, phase="open", turn_intent="continuity", recovery_event="restart")
 
         assert stale["available"] is False, stale
         assert stale["mustContinue"] is False, stale
@@ -1281,6 +1361,146 @@ def test_continuity_withholds_stale_proof_and_checkpoint_repairs_the_same_scope(
         assert repaired["available"] is True and repaired["code"] == "H7_PROJECT_PROGRESS_REFRESH_READY", repaired
         assert recovered["available"] is True and recovered["code"] == "TURN_RUNTIME_OPEN_READY", recovered
         assert recovered["recoveryPresentation"]["state"] == "current", recovered
+        assert recovered_again["receiptReused"] is True, recovered_again
+        assert recovered_again["recoveryPresentation"]["state"] == "suppressed", recovered_again
+        assert recovered_again["recoveryPresentation"]["required"] is False, recovered_again
+        assert recovered_again["recoveryPresentation"]["openingLine"] == "", recovered_again
+
+
+def test_cli_restart_recovers_latest_checkpoint_across_processes() -> None:
+    """A fresh CLI process must recover the exact persisted latest progress."""
+
+    with tempfile.TemporaryDirectory(prefix="super-brain-cli-restart-continuity-") as directory:
+        state_root = Path(directory) / "state"
+        memory_root = state_root / "shared"
+        project_root = Path(directory) / "project"
+        memory_root.mkdir(parents=True)
+        project_root.mkdir(parents=True)
+        (memory_root / "sandglass.txt").write_text("", encoding="utf-8")
+        session_key = "sid-" + "f" * 24
+        task_id = "task-cli-restart-continuity"
+        write_native_memory_snapshot(state_root / "workspace")
+        write_context_contract(state_root, project_root, session_key, task_id=task_id)
+
+        opened = invoke_cli_turn(
+            state_root,
+            project_root,
+            session_key,
+            "--phase",
+            "open",
+            "--turn-intent",
+            "continuity",
+        )
+        assert opened["available"] is True and opened["code"] == "TURN_RUNTIME_OPEN_READY", opened
+
+        evidence_path = project_root / "project-progress-evidence.txt"
+        progress = {
+            "last_confirmed_sentence": "The latest checkpoint is durable across a process restart.",
+            "source": "assistant_visible_reply",
+            "current_phase": "Verification",
+            "current_step": "Compare the restarted process with the persisted checkpoint.",
+            "next_action": "Report the exact recovered progress.",
+        }
+        proof = {
+            "schema": "super-brain.project-progress-input.v1",
+            "phase": progress["current_phase"],
+            "currentStep": progress["current_step"],
+            "completedItems": [],
+            "projectEvidence": [{"kind": "project_file", "relativePath": evidence_path.name, "sha256": file_sha256(evidence_path)}],
+            "verificationResults": [{"id": "cli-restart-seed", "status": "passed"}],
+            "nextAction": progress["next_action"],
+        }
+        encode = lambda value: base64.b64encode(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        checkpointed = invoke_cli_turn(
+            state_root,
+            project_root,
+            session_key,
+            "--phase",
+            "checkpoint",
+            "--turn-intent",
+            "continuity",
+            "--progress-checkpoint-base64",
+            encode(progress),
+            "--project-progress-proof-base64",
+            encode(proof),
+            "--transition-id",
+            "cli-restart-checkpoint",
+        )
+        assert checkpointed["available"] is True, checkpointed
+        assert checkpointed["context"]["task"]["currentPhase"] == progress["current_phase"], checkpointed
+        assert checkpointed["context"]["task"]["currentStep"] == progress["current_step"], checkpointed
+        assert checkpointed["context"]["task"]["nextAction"] == progress["next_action"], checkpointed
+
+        closed = invoke_cli_turn(
+            state_root,
+            project_root,
+            session_key,
+            "--phase",
+            "close",
+            "--turn-intent",
+            "continuity",
+            "--turn-outcome",
+            "active_work_progressed",
+            "--user-control",
+            "none",
+            "--transition-id",
+            "cli-restart-close",
+        )
+        assert closed["ok"] is True, closed
+        assert closed["context"]["task"]["currentPhase"] == progress["current_phase"], closed
+        assert closed["context"]["task"]["currentStep"] == progress["current_step"], closed
+        assert closed["context"]["task"]["nextAction"] == progress["next_action"], closed
+
+        # This call is a new Python process.  Only the local cwd, SID, and
+        # state root are carried forward; no Host/thread payload is supplied.
+        recovered = invoke_cli_turn(
+            state_root,
+            project_root,
+            session_key,
+            "--phase",
+            "open",
+            "--turn-intent",
+            "continuity",
+            "--recovery-event",
+            "restart",
+        )
+        assert recovered["available"] is True and recovered["code"] == "TURN_RUNTIME_OPEN_READY", recovered
+        recovered_task = recovered["context"]["task"]
+        assert recovered_task["currentPhase"] == progress["current_phase"], recovered
+        assert recovered_task["currentStep"] == progress["current_step"], recovered
+        assert recovered_task["nextAction"] == progress["next_action"], recovered
+        assert recovered_task["taskId"] == task_id, recovered
+        assert recovered_task["projectProgress"]["state"] == "current", recovered
+        assert recovered["recoveryPresentation"]["state"] == "current", recovered
+        assert recovered["recoveryPresentation"]["openingLine"] == recovery_progress_line(recovered_task), recovered
+
+        checkpoint_visible = checkpointed["context"]["task"]["visibleProgress"]
+        recovered_visible = recovered_task["visibleProgress"]
+        for key in ("payloadHash", "sentenceHash", "projectProgressPayloadHash", "scopeBindingHash"):
+            assert recovered_visible[key] == checkpoint_visible[key], (key, checkpointed, recovered)
+            assert recovered_visible[key], (key, recovered)
+        assert recovered_task["contractRevision"] == checkpointed["context"]["task"]["contractRevision"], recovered
+
+        workspace_key = workspace_key_for(project_root)
+        contract_path = (
+            state_root
+            / "workspace"
+            / "runtime-state"
+            / "execution-contracts"
+            / contract_file_name(task_id, workspace_key)
+        )
+        persisted = json.loads(contract_path.read_text(encoding="utf-8"))
+        assert persisted["currentStep"] == progress["current_step"], persisted
+        assert persisted["nextAction"] == progress["next_action"], persisted
+        assert persisted["taskId"] == recovered_task["taskId"], persisted
+        assert persisted["taskInstanceId"] == "ti-" + "1" * 32, persisted
+        assert persisted["projectProgressProof"]["currentStep"] == progress["current_step"], persisted
+        assert persisted["currentPhase"] == recovered_task["currentPhase"], persisted
+        assert persisted["revision"] == recovered_task["contractRevision"], persisted
+        for key in ("payloadHash", "sentenceHash", "projectProgressPayloadHash", "scopeBindingHash"):
+            assert persisted["visibleProgressReceipt"][key] == recovered_visible[key], (key, persisted, recovered)
 
 
 def test_checkpoint_reports_committed_contract_when_scope_projection_sync_fails() -> None:
@@ -1563,7 +1783,10 @@ def test_close_resumes_parent_and_hashes_completion_reference() -> None:
         turn_runtime._resolve_project_knowledge_for_turn = counted_project_knowledge
         try:
             with local_scope(project_root, session_key):
-                opened = run_turn(core, phase="open")
+                # This fixture already has an active governed workline.  Open
+                # it as continuity rather than as an ordinary direct request;
+                # direct work intentionally creates no H7 receipt or telemetry.
+                opened = run_turn(core, phase="open", turn_intent="continuity")
                 assist_calls = 0
                 project_knowledge_calls = 0
                 closed = run_turn(
@@ -1614,7 +1837,7 @@ def test_close_resumes_parent_and_hashes_completion_reference() -> None:
         assert marker not in receipt_text
         assert marker not in telemetry_path.read_text(encoding="utf-8")
         assert marker not in (state_root / "workspace" / "last-execution-contract.json").read_text(encoding="utf-8")
-        assert [event["phase"] for event in telemetry["events"]] == ["open", "open", "close", "open"]
+        assert [event["phase"] for event in telemetry["events"]] == ["open", "open", "close", "open"], telemetry["events"]
 
 
 def test_broker_close_resume_parent_refreshes_projection_before_parent_return_open() -> None:
@@ -1937,7 +2160,7 @@ def test_registry_change_stales_h7_evidence_until_reopened() -> None:
         core = BrainCore(package_root, memory_root)
 
         with local_scope(project_root, session_key):
-            opened = run_turn(core, phase="open")
+            opened = run_turn(core, phase="open", turn_intent="continuity")
             before = run_turn(core, phase="evidence")
         assert opened["available"] is True, opened
         assert before["code"] == "H7_EVIDENCE_CURRENT", before
@@ -1953,7 +2176,7 @@ def test_registry_change_stales_h7_evidence_until_reopened() -> None:
         # silently keep serving the startup registry after an in-place package
         # update; only a fresh worker may adopt the new source.
         with local_scope(project_root, session_key):
-            stale_worker = run_turn(core, phase="open")
+            stale_worker = run_turn(core, phase="open", turn_intent="continuity")
         assert stale_worker["available"] is False, stale_worker
         assert stale_worker["code"] == "BRAIN_CONTEXT_RUNTIME_IDENTITY_WITHHELD", stale_worker
         assert stale_worker["context"]["runtimeIdentity"]["code"] == "H7_MCP_RUNTIME_RULE_REGISTRY_STALE", stale_worker
@@ -1961,7 +2184,7 @@ def test_registry_change_stales_h7_evidence_until_reopened() -> None:
         refreshed_core = BrainCore(package_root, memory_root)
         with local_scope(project_root, session_key):
             stale = run_turn(refreshed_core, phase="evidence")
-            reopened = run_turn(refreshed_core, phase="open")
+            reopened = run_turn(refreshed_core, phase="open", turn_intent="continuity")
             recovered = run_turn(refreshed_core, phase="evidence")
         assert stale["code"] == "H7_EVIDENCE_INCOMPLETE", stale
         assert stale["entry"]["current"] is False, stale
@@ -1973,7 +2196,7 @@ def test_registry_change_stales_h7_evidence_until_reopened() -> None:
         registry_path.write_bytes(b"\xef\xbb\xbf" + registry_path.read_bytes())
         invalid_core = BrainCore(package_root, memory_root)
         with local_scope(project_root, session_key):
-            withheld = run_turn(invalid_core, phase="open")
+            withheld = run_turn(invalid_core, phase="open", turn_intent="continuity")
         assert withheld["available"] is False, withheld
         assert withheld["code"] == "BRAIN_CONTEXT_CORE_RULES_WITHHELD", withheld
         assert withheld["context"]["coreRules"]["code"] == "CORE_RULE_REGISTRY_BOM_FORBIDDEN", withheld
@@ -2780,6 +3003,7 @@ def test_checkpoint_set_replay_is_never_misreported_as_a_parent_return() -> None
 
 
 def main() -> int:
+    test_unbound_direct_and_continuity_are_context_only()
     test_taskless_continuation_short_circuits_execution_assist()
     test_taskless_probe_fails_closed_for_missing_or_foreign_hot_index()
     test_active_pointer_avoids_duplicate_authority_probe()
@@ -2799,6 +3023,7 @@ def main() -> int:
     test_h7_accepts_the_actual_compact_router_receipt()
     test_project_progress_proof_fails_closed_on_missing_or_drift()
     test_continuity_withholds_stale_proof_and_checkpoint_repairs_the_same_scope()
+    test_cli_restart_recovers_latest_checkpoint_across_processes()
     test_checkpoint_reports_committed_contract_when_scope_projection_sync_fails()
     test_checkpoint_refreshes_only_a_stale_project_progress_proof_through_h7()
     test_close_resumes_parent_and_hashes_completion_reference()
@@ -2816,7 +3041,7 @@ def main() -> int:
     test_checkpoint_instruction_mapping_uses_real_powershell_authority_and_replays_idempotently()
     test_checkpoint_is_the_only_h7_path_that_clears_a_pending_same_scope_contract()
     test_checkpoint_set_replay_is_never_misreported_as_a_parent_return()
-    print("runtime turn-runtime regression: passed (33/33)")
+    print("runtime turn-runtime regression: passed (34/34)")
     return 0
 
 

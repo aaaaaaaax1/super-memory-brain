@@ -993,10 +993,12 @@ def read_native_memory_snapshot(
         "preference": "behaviorGuidance", "experience": "reusableAdvice", "procedure": "procedureSteps",
         "note": "references", "reflection": "learningCandidates",
     }
-    priority = {"preference": 0, "experience": 1, "procedure": 2, "note": 3, "reflection": 4}
     valid: list[dict[str, Any]] = []
-    for entry in sorted(entries, key=lambda value: (priority.get(str(value.get("kind", "")), 99), str(value.get("item", {}).get("cardId", "")))):
-        if not isinstance(entry, dict) or set(entry) != {"kind", "bucket", "scopeKind", "scopeRef", "item"}:
+    for entry in entries:
+        expected_entry_fields = {"kind", "bucket", "scopeKind", "scopeRef", "item"}
+        if not isinstance(entry, dict) or (
+            set(entry) != expected_entry_fields and set(entry) != expected_entry_fields | {"updatedAt"}
+        ):
             return None, "invalid", ""
         kind = str(entry.get("kind", ""))
         if kind not in expected_buckets or entry.get("bucket") != expected_buckets[kind]:
@@ -1007,6 +1009,16 @@ def read_native_memory_snapshot(
             return None, "invalid", ""
         if not _valid_native_memory_item(kind, entry.get("item")):
             return None, "unsafe", ""
+        if "updatedAt" in entry:
+            try:
+                parsed_updated = datetime.fromisoformat(str(entry.get("updatedAt")).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                return None, "invalid", ""
+            if parsed_updated.tzinfo is None:
+                return None, "invalid", ""
+            if parsed_updated.astimezone(timezone.utc) > reference_now.astimezone(timezone.utc):
+                return None, "future", ""
+            entry = {**entry, "_parsedUpdatedAt": parsed_updated.astimezone(timezone.utc).timestamp()}
         valid.append(entry)
     return valid, "ready", payload_hash
 
@@ -1060,22 +1072,36 @@ def select_native_memory_entries(
     }
     if entries is None:
         return result
-    seen: set[str] = set()
-    for entry in entries:
+    priority = {"preference": 0, "experience": 1, "procedure": 2, "note": 3, "reflection": 4}
+    scope_priority = {"global": 0, "workspace": 1, "task": 2, "task_instance": 3, "session": 4}
+    best_by_kind: dict[str, tuple[int, dict[str, Any]]] = {}
+    for index, entry in enumerate(entries):
         kind = str(entry["kind"])
-        if kind in seen:
-            continue
-        scope_value = str(scope_values.get(str(entry["scopeKind"]), ""))
+        scope_kind = str(entry["scopeKind"])
+        scope_value = str(scope_values.get(scope_kind, ""))
         if not scope_value or entry["scopeRef"] != scope_ref(scope_value):
             continue
         item = entry["item"]
         if kind != "preference" and not matcher(item, focus):
             continue
-        seen.add(kind)
-        result["entries"].append(entry)
+        current = best_by_kind.get(kind)
+        entry_recency = float(entry.get("_parsedUpdatedAt", 0.0))
+        current_entry = current[1] if current is not None else {}
+        current_recency = float(current_entry.get("_parsedUpdatedAt", 0.0))
+        # Scope specificity bounds relevance; within a scope, newer cards win.
+        if current is None or (scope_priority[scope_kind], entry_recency) > (
+            scope_priority[str(current_entry["scopeKind"])], current_recency
+        ):
+            best_by_kind[kind] = (index, entry)
+    chosen = sorted(
+        best_by_kind.values(),
+        key=lambda item: (priority.get(str(item[1]["kind"]), 99), item[0]),
+    )[:max(0, min(5, max_items))]
+    for _, entry in chosen:
+        kind = str(entry["kind"])
+        item = entry["item"]
+        result["entries"].append({key: value for key, value in entry.items() if key != "_parsedUpdatedAt"})
         result["refs"].append({"cardId": str(item["cardId"]), "cardRevision": int(item["cardRevision"]), "kind": kind})
-        if len(result["entries"]) >= max_items:
-            break
     if result["entries"]:
         result["state"] = "selected"
     return result

@@ -166,10 +166,12 @@ Describe 'H7 runtime wake control plane' {
 
     $created.ok | Should Be $true
     $greeting.exitCode | Should Be 0
-    $greeting.value.available | Should Be $false
+    $greeting.value.available | Should Be $true
     $greeting.value.code | Should Be 'TURN_INTENT_DIRECT_PATH'
     $greeting.value.turnIntent.kind | Should Be 'greeting'
     $greeting.value.turnIntent.memoryMode | Should Be 'off'
+    $greeting.value.terminalReplyAllowed | Should Be $true
+    $greeting.value.mustContinue | Should Be $false
     $greeting.value.rawPromptStored | Should Be $false
   }
 

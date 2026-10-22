@@ -90,13 +90,18 @@ def assert_current_rule_contract(current: dict[str, object], source: dict[str, o
 
     local_effect_markers = {
         "SB-DEFECT-ROOT-REPAIR-001": (7, "current_local_cwd_session_contract", "never_use_host_tail"),
-        "SB-LATEST-STATE-001": (34, "current_local_cwd_super_brain_local_session", "host_transport_retired"),
+        "SB-LATEST-STATE-001": (
+            35,
+            "current_local_cwd_super_brain_local_session",
+            "current_contract_identifies_workline_but_its_next_action_is_advisory",
+            "weights_never_grant_execution_permission",
+        ),
         "SB-VISIBLE-PROGRESS-ANCHOR-001": (30, "retire_host_visible_context_tail", "h7_host_transport_retired"),
         "SB-CONTROL-PLANE-MAINTAINABILITY-001": (13, "local_only_continuation_control_plane", "permanently_remove_host"),
         "SB-PROGRESS-TRUTH-001": (18, "current_local_cwd_super_brain_local_session", "reject_every_host_locator"),
         "SB-STAGE-VERIFY-001": (6, "local_progress_hash", "host_readback"),
         "SB-EFFICIENT-DELIVERY-001": (7, "local_only_hot_path", "reject_legacy_host_inputs_before_decode"),
-        "SB-H7-ACTIVATION-001": (10, "verified_local_cwd", "host_transport_retired"),
+        "SB-H7-ACTIVATION-001": (11, "verified_local_cwd", "host_transport_retired", "allow_ordinary_direct_and_read_only_model_work"),
         "SB-INDEPENDENT-CONTROL-PLANE-AGENT-001": (4, "independent_local_control_plane", "never_consume_or_persist_host"),
         "SB-RUNTIME-ADAPTER-INDEPENDENCE-001": (4, "valid_local_cwd", "host_continuation_binding"),
         "SB-PRIMARY-HOST-ENTRY-001": (5, "local_cwd_super_brain_local_session", "host_transport_retired"),
@@ -113,6 +118,9 @@ def assert_current_rule_contract(current: dict[str, object], source: dict[str, o
     assert rules["SB-PROGRESS-TRUTH-001"]["entrypoint"] == "runtime/turn_runtime.py"
     assert rules["SB-H7-ACTIVATION-001"]["entrypoint"] == "runtime/turn_runtime.py"
     assert rules["SB-STAGE-VERIFY-001"]["entrypoint"] == "scripts/execution-contract.ps1"
+    assert "continuity_weights_are_advisory_and_domain_specific" in rules["SB-LATEST-STATE-001"]["acceptanceTests"]
+    assert "model_discretion_close_does_not_authorize_action" in rules["SB-LATEST-STATE-001"]["acceptanceTests"]
+    assert "reused_recovery_presentation_is_suppressed" in rules["SB-LATEST-STATE-001"]["acceptanceTests"]
     for rule in current["rules"]:
         assert rule["status"] == "active", rule
         encoded = json.dumps(rule, ensure_ascii=False)

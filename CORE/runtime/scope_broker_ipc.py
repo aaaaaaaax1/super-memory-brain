@@ -45,6 +45,11 @@ _ENDPOINT_MAX_BYTES = 16 * 1024
 _MIN_NONCE_LENGTH = 16
 _MAX_NONCE_LENGTH = 128
 _BROKER_IDLE_SECONDS = 10.0
+_WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WINDOWS_ERROR_ACCESS_DENIED = 5
+_WINDOWS_STILL_ACTIVE = 259
+_WINDOWS_PROCESS_API_LOCK = threading.Lock()
+_WINDOWS_PROCESS_API: tuple[Any, ...] | bool | None = None
 # A shutdown request is deliberately asynchronous so the broker can flush
 # the authenticated response before closing its socket.  Clients wait for
 # the endpoint owner to finish before releasing a temporary state root; this
@@ -356,6 +361,33 @@ def _pid_alive(pid: Any) -> bool:
 
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
+    if os.name == "nt":
+        # ``os.kill(pid, 0)`` is not a reliable non-signalling probe on
+        # Windows: depending on the console/job, it can deliver
+        # ``CTRL_C_EVENT`` to the caller (including when probing a parent
+        # process that owns an embedded Broker).  Query the process handle
+        # instead, so endpoint discovery can never interrupt the host.
+        api = _windows_process_api()
+        if api is None:
+            # A Windows API failure is fail-closed.  Do not fall back to
+            # ``os.kill`` because the fallback itself can signal a console.
+            return False
+        ctypes, dword_type, open_process, get_exit_code, close_handle = api
+        try:
+            handle = open_process(_WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                # Access denial still proves that a process exists; only an
+                # invalid/no-longer-present PID should be treated as dead.
+                return ctypes.get_last_error() == _WINDOWS_ERROR_ACCESS_DENIED
+            try:
+                exit_code = dword_type()
+                if not get_exit_code(handle, ctypes.byref(exit_code)):
+                    return ctypes.get_last_error() == _WINDOWS_ERROR_ACCESS_DENIED
+                return int(exit_code.value) == _WINDOWS_STILL_ACTIVE
+            finally:
+                close_handle(handle)
+        except (AttributeError, OSError, OverflowError, TypeError, ValueError):
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -367,6 +399,39 @@ def _pid_alive(pid: Any) -> bool:
     except (OSError, OverflowError):
         return False
     return True
+
+
+def _windows_process_api() -> tuple[Any, ...] | None:
+    """Return cached non-signalling Win32 process-query functions."""
+
+    global _WINDOWS_PROCESS_API
+    if _WINDOWS_PROCESS_API is False:
+        return None
+    if isinstance(_WINDOWS_PROCESS_API, tuple):
+        return _WINDOWS_PROCESS_API
+    with _WINDOWS_PROCESS_API_LOCK:
+        if _WINDOWS_PROCESS_API is False:
+            return None
+        if isinstance(_WINDOWS_PROCESS_API, tuple):
+            return _WINDOWS_PROCESS_API
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            open_process = kernel32.OpenProcess
+            open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            open_process.restype = wintypes.HANDLE
+            get_exit_code = kernel32.GetExitCodeProcess
+            get_exit_code.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            get_exit_code.restype = wintypes.BOOL
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
+            _WINDOWS_PROCESS_API = (ctypes, wintypes.DWORD, open_process, get_exit_code, close_handle)
+        except (AttributeError, ImportError, OSError, TypeError, ValueError):
+            _WINDOWS_PROCESS_API = False
+        return _WINDOWS_PROCESS_API if isinstance(_WINDOWS_PROCESS_API, tuple) else None
 
 
 def _read_endpoint_bundle(endpoint_path: Path, secret_path: Path) -> tuple[dict[str, Any], bytes] | None:
@@ -435,10 +500,15 @@ def _probe_endpoint(endpoint: Mapping[str, Any], secret: bytes) -> bool:
     request = {"method": method, "params": values, "nonce": nonce, "mac": mac}
     try:
         with socket.create_connection((str(endpoint["host"]), int(endpoint["port"])), timeout=_CONNECT_TIMEOUT) as connection:
+            read_deadline = time.monotonic() + _READ_TIMEOUT
             connection.settimeout(_READ_TIMEOUT)
             connection.sendall(_canonical(request) + b"\n")
             raw = b""
             while b"\n" not in raw and len(raw) <= _MAX_LINE:
+                remaining = read_deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                connection.settimeout(remaining)
                 chunk = connection.recv(8192)
                 if not chunk:
                     break

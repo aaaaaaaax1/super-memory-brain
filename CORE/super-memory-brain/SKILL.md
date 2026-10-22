@@ -174,7 +174,7 @@ For a verified recovery event—compaction, restart, model switch, cross-session
 rebind, user correction, explicit resume of a suspended workline, or child
 return—call `brain_turn(open)` with the matching `recovery_event`. H7 returns a
 transient `recoveryPresentation.openingLine`; show that exact local-contract
-line first: `本地执行契约：进度：…｜当前：…｜下一步：…`. The line is
+line first: `本地执行契约：进度：…｜当前：…｜候选下一步：…`. The line is
 non-authorizing and contains no external text, identity, thread, readback,
 metadata, or locator. Do not emit raw commentary as a standalone substitute or
 explain H7's validation before the actual continuation result.
@@ -185,7 +185,8 @@ bare `continue` or another user wording.
 
 The first recovery receipt must use H7's exact
 `recoveryPresentation.openingLine`. It shows the verified mapped phase, current
-step, and next action without any external sentence, identity, thread, or hash.
+step, and candidate next action without any external sentence, identity,
+thread, or hash.
 The local projection does not mutate the contract or make a durable progress claim. For
 `recovery_event=none`, H7 returns `H7_RECOVERY_PRESENTATION_SUPPRESSED`; do not
 emit this acknowledgement. Caller-attested replies and external continuation
@@ -194,14 +195,17 @@ continuation. If the local scope or required H7 runtime transport is unavailable
 withhold governed work and repair the evidence path instead of emitting a
 generic continuation.
 
-For such a genuine recovery, the first visible update states the verified
-continuation progress and active action, then actually continues it. Only a
-current v4 receipt may state durable completion. Ordinary continuous work, a bare `continue`, status
-replies, and progress updates are not recovery events and must not use this
-presentation. Do not use it for greetings or independent direct requests.
+For a genuine recovery, present the verified local progress once. Its recorded
+`nextAction` is a low-weight candidate, not an instruction: read the current
+user request and live evidence, then continue, reframe, answer directly, or
+stop as appropriate. Reuse of the same recovery receipt must not replay the
+opening line. Only a current v4 receipt may state durable completion. Ordinary
+continuous work, a bare `continue`, status replies, and progress updates are
+not recovery events and must not use this presentation. Do not use it for
+greetings or independent direct requests.
 
 During ordinary continuous execution, do not turn every intermediate update
-into a `进度：…｜当前：…｜下一步：…` card. State only the concrete result or
+into a `进度：…｜当前：…｜候选下一步：…` card. State only the concrete result or
 immediate next action in plain language. Reserve phase/status presentation for
 the first line of a verified recovery and H7-bound stage passed, failed,
 blocked, or completion receipts.

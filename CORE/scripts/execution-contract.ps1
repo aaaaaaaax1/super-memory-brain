@@ -5676,7 +5676,7 @@ function Invoke-ContractTurnClosePolicy([object]$Resolution,[string]$Outcome,[st
     try { $value = $stdout | ConvertFrom-Json } catch {
       return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CONTINUATION_POLICY_PROTOCOL_INVALID'; error=(Limit-ContractText $_.Exception.Message 180) }
     }
-    $validDecisions = @('continue_current_turn','resume_parent_required','pause_with_blocker','withhold_reconcile')
+    $validDecisions = @('continue_current_turn','model_decides','resume_parent_required','pause_with_blocker','withhold_reconcile')
     if (-not $value -or $value.ok -ne $true -or [string]$value.schema -ne 'super-brain.continuation-policy.v1' -or $validDecisions -notcontains [string]$value.decision) {
       return [pscustomobject]@{ ok=$false; code='EXECUTION_CONTRACT_CONTINUATION_POLICY_PROTOCOL_INVALID'; error='policy returned an invalid decision packet' }
     }
@@ -5754,7 +5754,8 @@ function Close-TurnContract {
     return Complete-ContractTurnCloseResume $resumed $decision ([string]$policy.value.code) $TurnOutcome
   }
 
-  $authorized = ($decision -eq 'continue_current_turn')
+  $authorized = ($decision -eq 'continue_current_turn' -and $resolution.actionAuthorization -eq 'allowed')
+  $actionHintAvailable = ($decision -eq 'model_decides' -and $resolution.actionAuthorization -eq 'allowed')
   return [pscustomobject]@{
     ok = $true
     schema = 'super-brain.turn-close-continuation.v1'
@@ -5764,11 +5765,17 @@ function Close-TurnContract {
     policyDecision = $decision
     policyCode = [string]$policy.value.code
     terminalReplyAllowed = [bool]$policy.value.terminalReplyAllowed
+    mustContinue = [bool]$policy.value.mustContinue
     transitionAction = ''
     turnOutcome = $TurnOutcome
     actionAuthorization = if($authorized){'allowed'}else{'withheld'}
+    contractActionAuthorization = [string]$resolution.actionAuthorization
     nextAction = if($authorized){[string]$resolution.nextAction}else{''}
-    guard = if($authorized){'The handled insertion must return to the current authorized work line in this turn.'}elseif($decision -eq 'pause_with_blocker'){'A concrete blocker or explicit user terminal control permits a pause; no parent transition was attempted.'}else{'The current turn was not sufficiently attested for automatic continuation; reconcile before mutation.'}
+    actionHint = if($actionHintAvailable){[string]$resolution.nextAction}else{''}
+    actionHintDisposition = if($actionHintAvailable){'advisory'}else{'none'}
+    modelDiscretion = ($decision -eq 'model_decides')
+    automaticExecutionAllowed = $authorized
+    guard = if($decision -eq 'model_decides'){'The current contract action is an authorized candidate, not a command. The model follows the current user request; ending a reply does not complete the task.'}elseif($authorized){'Continue only within the current authorized work line.'}elseif($decision -eq 'pause_with_blocker'){'A concrete blocker or explicit user terminal control permits a pause; no parent transition was attempted.'}else{'The current turn was not sufficiently attested for automatic continuation; reconcile before mutation.'}
     rawPromptStored = $false
     rawTranscriptStored = $false
     source = 'execution-contract.ps1:CloseTurn'

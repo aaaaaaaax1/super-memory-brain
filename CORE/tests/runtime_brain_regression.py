@@ -21,6 +21,7 @@ import brain_core as brain_core_module
 from brain_core import BrainCore, Candidate, GraphEdge
 from brain_mcp import TOOLS as MCP_TOOLS, handle_tool
 from continuation_policy import decide_turn_close
+from continuity_evidence_policy import build_continuity_evidence
 from layout_paths import resolve_layout_path, state_root
 from mcp_runtime_identity import runtime_dependency_paths
 from turn_close_dispatcher import _normalize_progress_checkpoint
@@ -1924,8 +1925,11 @@ def test_local_context_uses_cwd_scope_and_stays_read_only() -> None:
             continuation_packet = core.context("auto", "ephemeral_insertion", "none")
             continuation_after = file_hashes(state_root)
             assert continuation_packet["task"]["actionAuthorization"] == "withheld"
-            assert continuation_packet["continuation"]["decision"] == "continue_current_turn"
-            assert continuation_packet["continuation"]["terminalReplyAllowed"] is False
+            assert continuation_packet["continuation"]["decision"] == "model_decides"
+            assert continuation_packet["continuation"]["terminalReplyAllowed"] is True
+            assert continuation_packet["continuation"]["mustContinue"] is False
+            assert continuation_packet["continuation"]["automaticExecutionAllowed"] is False
+            assert continuation_packet["task"]["actionAuthorization"] == "withheld"
             assert continuation_before == continuation_after
 
             cli_environment = os.environ.copy()
@@ -2330,10 +2334,49 @@ def test_turn_close_policy_requires_current_turn_attestation_and_never_echoes_in
         user_control="none",
         completion_evidence_present=True,
     )
-    assert incomplete["decision"] == "continue_current_turn"
+    assert incomplete["decision"] == "model_decides"
+    assert incomplete["modelDiscretion"] is True
+    assert incomplete["mustContinue"] is False
+    assert incomplete["automaticExecutionAllowed"] is False
+    assert incomplete["taskCompletionClaimed"] is False
 
     serialized = json.dumps([unknown, completed, missing_evidence, partial, paused, blocked, terminal, incomplete], ensure_ascii=False)
     assert "CONTINUATION_SECRET_SENTINEL" not in serialized
+
+
+def test_continuity_weights_are_advisory_and_domain_specific() -> None:
+    packet = build_continuity_evidence(
+        turn_intent={"kind": "continuity", "payloadHash": "a" * 64},
+        task={
+            "contractHash": "b" * 64,
+            "contractRevision": 8,
+            "nextAction": "repeat an old action",
+            "projectProgress": {"state": "current", "payloadHash": "c" * 64},
+            "visibleProgress": {"state": "current", "payloadHash": "d" * 64},
+        },
+        project_knowledge={"state": "ready", "payloadHash": "e" * 64},
+        typed_memory={
+            "state": "selected",
+            "payloadHash": "f" * 64,
+            "effects": [{"advisoryWeight": 0.98}],
+        },
+        action_authorization="withheld",
+    )
+    candidates = {item["source"]: item for item in packet["candidates"]}
+
+    assert candidates["latest_user_request"]["weight"] == 1.0
+    assert candidates["latest_user_request"]["evidenceHash"] == ""
+    assert candidates["live_project_evidence"]["weight"] == 1.0
+    assert candidates["current_project_progress_proof"]["weight"] == 0.9
+    assert candidates["current_scoped_execution_contract"]["weight"] == 0.75
+    assert candidates["contract_next_action"]["weight"] == 0.35
+    assert candidates["eligible_typed_memory"]["weight"] == 0.65
+    assert packet["modelDiscretion"]["contractNextActionIsNotACommand"] is True
+    assert packet["modelDiscretion"]["continuationIsNotMandatory"] is True
+    assert packet["actionAuthorization"]["state"] == "withheld"
+    assert packet["actionAuthorization"]["weightingCanGrantPermission"] is False
+    assert packet["nonAuthorizing"] is True
+    assert "repeat an old action" not in json.dumps(packet, ensure_ascii=False)
 
 
 def test_personal_unknown_fact_does_not_use_unrelated_memory() -> None:
@@ -3806,6 +3849,7 @@ if __name__ == "__main__":
     test_local_context_uses_cwd_scope_and_stays_read_only()
     test_context_recovers_from_a_lagging_hot_index_after_a_committed_transition()
     test_turn_close_policy_requires_current_turn_attestation_and_never_echoes_input()
+    test_continuity_weights_are_advisory_and_domain_specific()
     test_mcp_does_not_expose_untrusted_host_context()
     test_stale_mcp_recent_bridge_preserves_local_workspace_scope()
     test_unbound_task_pointer_without_current_session_fails_closed()

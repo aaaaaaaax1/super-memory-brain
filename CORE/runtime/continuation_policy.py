@@ -59,7 +59,7 @@ def _result(
     requires_parent_resume: bool = False,
     branch_status: str = "",
 ) -> dict[str, Any]:
-    terminal_reply_allowed = decision in {"pause_with_blocker", "withhold_reconcile"}
+    terminal_reply_allowed = decision in {"pause_with_blocker", "withhold_reconcile", "model_decides"}
     return {
         "ok": True,
         "schema": SCHEMA,
@@ -67,6 +67,10 @@ def _result(
         "code": code,
         "terminalReplyAllowed": terminal_reply_allowed,
         "requiresParentResume": requires_parent_resume,
+        "mustContinue": requires_parent_resume,
+        "modelDiscretion": decision == "model_decides",
+        "automaticExecutionAllowed": decision == "continue_current_turn",
+        "taskCompletionClaimed": False,
         "branchStatus": branch_status,
         "rawPromptStored": False,
         "rawTranscriptStored": False,
@@ -183,7 +187,10 @@ def decide_turn_close(
             return _withhold("CONTINUATION_POLICY_COMPLETION_EVIDENCE_REQUIRED")
         return _result("pause_with_blocker", "CONTINUATION_POLICY_VERIFIED_TASK_COMPLETE")
     if turn_outcome in {"ephemeral_insertion", "active_work_progressed"}:
-        return _result("continue_current_turn", "CONTINUATION_POLICY_CONTINUE_CURRENT_TURN")
+        # A recorded next action and a caller's outcome label are not proof
+        # that more work must happen. Let the model follow the current user
+        # request without requiring a checkpoint/close loop to earn a reply.
+        return _result("model_decides", "CONTINUATION_POLICY_MODEL_DISCRETION")
     if not completion_evidence_present:
         return _withhold("CONTINUATION_POLICY_COMPLETION_EVIDENCE_REQUIRED")
     if resolution.get("canResumeParent") is not True:

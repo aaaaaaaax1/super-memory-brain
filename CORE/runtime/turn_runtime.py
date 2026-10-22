@@ -33,6 +33,7 @@ from brain_core import (
 )
 from capability_shadow_eval import shadow_gate_is_valid
 from continuation_policy import decide_turn_close
+from continuity_evidence_policy import build_continuity_evidence
 from execution_assist import capability_route_receipt as execution_assist_capability_route_receipt
 from execution_assist import public_projection as public_execution_assist
 from execution_assist import project_knowledge_route_is_valid
@@ -313,7 +314,7 @@ def _recovery_presentation(
     action = str(mapped.get("nextAction") or action)
     if not phase or not step or not action:
         return None, "H7_RECOVERY_MAPPED_PROGRESS_REQUIRED"
-    presentation_line = "\u672c\u5730\u6267\u884c\u5951\u7ea6\uff1a\u8fdb\u5ea6\uff1a{}\uff5c\u5f53\u524d\uff1a{}\uff5c\u4e0b\u4e00\u6b65\uff1a{}".format(
+    presentation_line = "\u672c\u5730\u6267\u884c\u5951\u7ea6\uff1a\u8fdb\u5ea6\uff1a{}\uff5c\u5f53\u524d\uff1a{}\uff5c\u5019\u9009\u4e0b\u4e00\u6b65\uff1a{}".format(
         phase,
         step,
         action,
@@ -355,6 +356,27 @@ def _public_recovery_presentation(value: dict[str, Any] | None) -> dict[str, Any
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
+
+
+def _suppress_reused_recovery_presentation(value: dict[str, Any]) -> dict[str, Any]:
+    """Avoid repeating the exact same recovery preamble for an idempotent open."""
+
+    body = {
+        "schema": RECOVERY_PRESENTATION_SCHEMA,
+        "state": "suppressed",
+        "code": "H7_RECOVERY_PRESENTATION_ALREADY_ISSUED",
+        "event": str(value.get("event", "")),
+        "required": False,
+        "openingLine": "",
+        "presentationKind": "duplicate_suppressed",
+        "source": str(value.get("source", "")),
+        "priorPayloadHash": str(value.get("payloadHash", "")),
+        "nonAuthorizing": True,
+        "localOnly": True,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    return {**body, "payloadHash": canonical_hash(body)}
 
 
 def _progress_checkpoint_intent_guard(progress_checkpoint: Any, intent: dict[str, Any]) -> str:
@@ -1662,6 +1684,7 @@ def _receipt_body(
     capability_route_receipt: dict[str, Any] | None = None,
     capability_route_compatibility: dict[str, Any] | None = None,
     recovery_presentation: dict[str, Any] | None = None,
+    continuity_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scope = context["scope"]
     task = context.get("task") if isinstance(context.get("task"), dict) else {}
@@ -1741,6 +1764,8 @@ def _receipt_body(
     }
     if isinstance(recovery_presentation, dict):
         body["recoveryPresentation"] = _public_recovery_presentation(recovery_presentation)
+    if isinstance(continuity_evidence, dict):
+        body["continuityEvidence"] = continuity_evidence
     if isinstance(execution_assist, dict):
         body["executionAssist"] = execution_assist
     if isinstance(project_knowledge, dict):
@@ -1956,6 +1981,7 @@ def _public_receipt(value: dict[str, Any]) -> dict[str, Any]:
         "progressTruth": value.get("progressTruth") if isinstance(value.get("progressTruth"), dict) else {},
         "visibleProgress": value.get("visibleProgress") if isinstance(value.get("visibleProgress"), dict) else {},
         "recoveryPresentation": value.get("recoveryPresentation") if isinstance(value.get("recoveryPresentation"), dict) else {},
+        "continuityEvidence": value.get("continuityEvidence") if isinstance(value.get("continuityEvidence"), dict) else {},
         "continuation": value.get("continuation") if isinstance(value.get("continuation"), dict) else {},
     }
     if _capability_route_receipt_valid(value.get("capabilityRouteReceipt")):
@@ -2560,7 +2586,10 @@ def _direct_local_path(phase: str, intent: dict[str, Any]) -> dict[str, Any]:
         "schema": SCHEMA,
         "mode": MODE,
         "phase": phase,
-        "available": False,
+        "available": True,
+        # Keep the historical code as a stable internal route label; the
+        # meaningful contract change is ``available=true`` and a terminal
+        # reply without H7 state.
         "code": "TURN_INTENT_DIRECT_PATH",
         "turnIntent": public_turn_intent(intent),
         "continuityMapping": _public_continuity_mapping(
@@ -2582,12 +2611,68 @@ def _direct_local_path(phase: str, intent: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _context_only_open(
+    intent: dict[str, Any],
+    *,
+    recovery_event: str,
+) -> dict[str, Any]:
+    """Let the model continue without claiming durable H7 continuity.
+
+    The visible conversation and live project remain available to the caller;
+    this bounded result only says that no persistent task state was used. It
+    performs no activation, memory lookup, contract read, or state write.
+    """
+
+    mapping = {
+        "state": "context_only",
+        "code": "CONTEXT_ONLY_NO_SAVED_PROGRESS",
+        "source": "current_conversation_and_live_project",
+        "visibleContextAvailable": True,
+        "stateCardUsed": False,
+        "projectProgressState": "not_checked",
+        "visibleProgressState": "not_checked",
+        "stageAdvanceAllowed": False,
+        "duplicateActionBlocked": True,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+    mapping["payloadHash"] = canonical_hash(mapping)
+    return {
+        "ok": True,
+        "schema": SCHEMA,
+        "mode": MODE,
+        "phase": "open",
+        "available": True,
+        "code": "TURN_RUNTIME_CONTEXT_ONLY_READY",
+        "state": "context_only",
+        "turnIntent": public_turn_intent(intent),
+        "persistedStateAvailable": False,
+        "continuityMapping": _public_continuity_mapping(mapping),
+        "recoveryPresentation": {
+            "schema": RECOVERY_PRESENTATION_SCHEMA,
+            "state": "not_applicable",
+            "code": "NOT_APPLICABLE",
+            "event": recovery_event,
+            "required": False,
+            "openingLine": "",
+            "nonAuthorizing": True,
+            "rawPromptStored": False,
+            "rawTranscriptStored": False,
+        },
+        "actionAuthorization": "not_applicable",
+        "terminalReplyAllowed": True,
+        "mustContinue": False,
+        "rawPromptStored": False,
+        "rawTranscriptStored": False,
+    }
+
+
 def _current_contract_policy_resolution(contract: dict[str, Any]) -> dict[str, Any]:
     """Build the same bounded no-mutation policy input as ``BrainCore``.
 
     This never grants a mutation.  It exists solely for the strict
-    ``continue_current_turn`` fast close below, where the authority would
-    otherwise launch PowerShell just to return a pure policy result.
+    ``model_decides`` fast close below, where the authority would otherwise
+    launch PowerShell just to return a pure policy result.
     """
 
     canonical_plan = contract.get("canonicalPlan") if isinstance(contract.get("canonicalPlan"), dict) else {}
@@ -2656,7 +2741,7 @@ def _policy_only_fast_close(
         user_control=user_control,
         completion_evidence_present=False,
     )
-    return policy if policy.get("decision") == "continue_current_turn" else None
+    return policy if policy.get("decision") == "model_decides" else None
 
 
 def open_turn(
@@ -2703,6 +2788,9 @@ def open_turn(
         return _withheld("open", {"turnIntent": public_turn_intent(intent)}, str(intent.get("code", "TURN_INTENT_INVALID")))
     if intent.get("governed") is not True:
         return _direct_local_path("open", intent)
+    normalized_recovery_event = str(recovery_event or "none")
+    if normalized_recovery_event not in RECOVERY_EVENTS:
+        return _withheld("open", {"turnIntent": public_turn_intent(intent)}, "H7_RECOVERY_EVENT_INVALID")
     # A telemetry event is evidence for a durable H7 entry.  Writing one for
     # an ephemeral preflight receipt would recreate the exact split-brain
     # state this runtime is designed to reject: telemetry points at an entry
@@ -2713,10 +2801,38 @@ def open_turn(
             {"turnIntent": public_turn_intent(intent)},
             "H7_OPEN_TELEMETRY_WITHOUT_PERSISTED_ENTRY_FORBIDDEN",
         )
-    normalized_recovery_event = str(recovery_event or "none")
-    if normalized_recovery_event not in RECOVERY_EVENTS:
-        return _withheld("open", {"turnIntent": public_turn_intent(intent)}, "H7_RECOVERY_EVENT_INVALID")
-
+    # Ordinary direct work is model-owned, not a task-continuation command.
+    # Do not let an unrelated active workline capture it.
+    if (
+        str(intent.get("kind", "")) == "direct"
+        and str(intent.get("memoryMode", memory_mode)) in {"auto", "off"}
+        and execution_assist_request is None
+        and capability_route_receipt is None
+        and _execution_assist_bundle is None
+        and not return_private_bundle
+    ):
+        return _direct_local_path("open", intent)
+    try:
+        local_session_key = str(core._current_session_key() or "").strip()
+    except (AttributeError, OSError, RuntimeError):
+        local_session_key = ""
+    if not local_session_key:
+        if str(intent.get("kind", "")) == "memory_write":
+            return {
+                "ok": True,
+                "schema": SCHEMA,
+                "mode": MODE,
+                "phase": "open",
+                "available": False,
+                "code": "MEMORY_NOT_SAVED",
+                "persistedStateAvailable": False,
+                "turnIntent": public_turn_intent(intent),
+                "terminalReplyAllowed": True,
+                "mustContinue": False,
+                "rawPromptStored": False,
+                "rawTranscriptStored": False,
+            }
+        return _context_only_open(intent, recovery_event=normalized_recovery_event)
     # Continuation/status is allowed to stop at the current task pointer.  A
     # taskless scope must not pay for capability routing or a full context
     # open just to discover that there is nothing to resume.
@@ -2738,16 +2854,6 @@ def open_turn(
                 },
                 normalized_recovery_event=normalized_recovery_event,
             )
-    if (
-        str(intent.get("kind", "")) == "direct"
-        and str(intent.get("memoryMode", memory_mode)) in {"auto", "off"}
-        and execution_assist_request is None
-        and capability_route_receipt is None
-        and _execution_assist_bundle is None
-    ):
-        pointer = _lightweight_task_pointer_probe(core)
-        if pointer.get("state") == "none":
-            return _direct_local_path("open", intent)
     reused_execution_assist = _validated_execution_assist_bundle(_execution_assist_bundle)
     if reused_execution_assist is not None:
         execution_assist, normalized_capability_route_receipt, capability_route_compatibility, execution_assist_code = (
@@ -3035,6 +3141,14 @@ def open_turn(
     if project_knowledge is None:
         return _withheld("open", context, project_knowledge_code or "H7_PROJECT_KNOWLEDGE_WITHHELD")
     context["projectKnowledge"] = public_project_knowledge(project_knowledge)
+    continuity_evidence = build_continuity_evidence(
+        turn_intent=intent,
+        task=context.get("task") if isinstance(context.get("task"), dict) else {},
+        project_knowledge=project_knowledge,
+        typed_memory=context.get("typedMemory") if isinstance(context.get("typedMemory"), dict) else {},
+        action_authorization=str(contract_authorization.get("state", "withheld")),
+    )
+    context["continuityEvidence"] = continuity_evidence
     # ``_activation`` writes/refreshes the scope-bound activation receipt even
     # when this open is an internal preflight.  Require a provider-backed write
     # lease here rather than trusting the MCP adapter's earlier read check.
@@ -3075,6 +3189,7 @@ def open_turn(
         "parentReturnStateCardHash": str((parent_return_state_card or {}).get("payloadHash", "")),
         "recoveryEvent": normalized_recovery_event,
         "recoveryPresentationHash": str(recovery_presentation.get("payloadHash", "")),
+        "continuityEvidenceHash": str(continuity_evidence.get("payloadHash", "")),
         "capabilityRouteHash": str((normalized_capability_route_receipt or {}).get("routeHash", "")),
         "capabilitySelectionHash": str((normalized_capability_route_receipt or {}).get("selectionHash", "")),
         "capabilityRouteCompatibilityHash": str((capability_route_compatibility or {}).get("payloadHash", "")),
@@ -3096,6 +3211,7 @@ def open_turn(
         capability_route_receipt=normalized_capability_route_receipt,
         capability_route_compatibility=capability_route_compatibility,
         recovery_presentation=recovery_presentation,
+        continuity_evidence=continuity_evidence,
     )
     scope_ref = str(context["scope"].get("scopeRef", ""))
     if persist_receipt:
@@ -3119,6 +3235,23 @@ def open_turn(
         )
         if str((telemetry or {}).get("code", "")) in {"H7_RUNTIME_SCOPE_LOCK_TIMEOUT", "H7_RUNTIME_TELEMETRY_CORRUPT", "H7_RUNTIME_STATE_WRITE_FAILED"}:
             return _withheld("open", context, str((telemetry or {}).get("code")))
+    reported_recovery_presentation = recovery_presentation
+    persisted_recovery = receipt.get("recoveryPresentation") if reused and isinstance(receipt, dict) else {}
+    persisted_contract = receipt.get("contract") if reused and isinstance(receipt, dict) else {}
+    same_recovery_state = (
+        normalized_recovery_event != "none"
+        and isinstance(persisted_recovery, dict)
+        and str(persisted_recovery.get("event", "")) == normalized_recovery_event
+        and str(persisted_recovery.get("state", "")) == "current"
+        and str(persisted_contract.get("stateHash", "")) == str(context["task"].get("contractHash", ""))
+        and str(persisted_recovery.get("payloadHash", "")) == str(_public_recovery_presentation(recovery_presentation).get("payloadHash", ""))
+    )
+    if same_recovery_state:
+        reported_recovery_presentation = _suppress_reused_recovery_presentation(recovery_presentation)
+        context["recoveryPresentation"] = reported_recovery_presentation
+    public_runtime_receipt = _public_receipt(receipt)
+    if same_recovery_state:
+        public_runtime_receipt["recoveryPresentation"] = _public_recovery_presentation(reported_recovery_presentation)
     result = {
         "ok": True,
         "schema": SCHEMA,
@@ -3128,9 +3261,10 @@ def open_turn(
         "code": "TURN_RUNTIME_OPEN_READY",
         "context": context,
         "activation": _public_receipt(receipt)["activation"],
-        "runtimeReceipt": _public_receipt(receipt),
+        "runtimeReceipt": public_runtime_receipt,
         "continuityMapping": _public_continuity_mapping(continuity_mapping),
-        "recoveryPresentation": recovery_presentation,
+        "recoveryPresentation": reported_recovery_presentation,
+        "continuityEvidence": continuity_evidence,
         "projectKnowledge": public_project_knowledge(project_knowledge),
         "receiptReused": reused,
         "telemetry": {
@@ -3139,8 +3273,8 @@ def open_turn(
             "reused": telemetry_reused,
         },
         "runObservability": (telemetry or {}).get("runObservability", {}),
-        "terminalReplyAllowed": False,
-        "mustContinue": True,
+        "terminalReplyAllowed": True,
+        "mustContinue": False,
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }
@@ -3457,8 +3591,8 @@ def checkpoint_turn(
                 "runtimeReceipt": refreshed.get("runtimeReceipt"),
                 "receiptReused": bool(refreshed.get("receiptReused")),
                 "telemetry": refreshed.get("telemetry") if isinstance(refreshed.get("telemetry"), dict) else {},
-                "terminalReplyAllowed": False,
-                "mustContinue": True,
+                "terminalReplyAllowed": True,
+                "mustContinue": False,
                 "rawPromptStored": False,
                 "rawTranscriptStored": False,
             }
@@ -3479,8 +3613,8 @@ def checkpoint_turn(
         "runtimeReceipt": refreshed.get("runtimeReceipt"),
         "receiptReused": bool(refreshed.get("receiptReused")),
         "telemetry": refreshed.get("telemetry") if isinstance(refreshed.get("telemetry"), dict) else {},
-        "terminalReplyAllowed": False,
-        "mustContinue": True,
+        "terminalReplyAllowed": True,
+        "mustContinue": False,
         "rawPromptStored": False,
         "rawTranscriptStored": False,
     }

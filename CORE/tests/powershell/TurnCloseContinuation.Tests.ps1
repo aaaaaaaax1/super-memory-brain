@@ -117,6 +117,27 @@ Describe 'Turn-close continuation dispatcher' {
     $before.Hash | Should Be $afterStopped.Hash
   }
 
+  It 'keeps the current contract action advisory when the model may end this turn' {
+    $fixture = New-TurnCloseFixture (Join-Path $TestDrive 'model-discretion') 'task-turn-close-model-discretion'
+    $closed = Invoke-TurnCloseContract @(
+      '-Action','CloseTurn','-TaskId',$fixture.taskId,'-WorkspaceKey',$fixture.workspaceKey,'-SessionKey',$fixture.sessionKey,
+      '-TurnOutcome','active_work_progressed','-UserControl','none',
+      '-ExpectedRevision',[string]$fixture.side.revision,'-ExpectedPlanFingerprint',[string]$fixture.side.planReceipt.planFingerprint,
+      '-TransitionId','close-model-discretion','-StateRoot',$fixture.stateRoot,'-Json'
+    )
+
+    $closed.exitCode | Should Be 0
+    $closed.value.decision | Should Be 'model_decides'
+    $closed.value.terminalReplyAllowed | Should Be $true
+    $closed.value.mustContinue | Should Be $false
+    $closed.value.actionAuthorization | Should Be 'withheld'
+    $closed.value.contractActionAuthorization | Should Be 'allowed'
+    $closed.value.nextAction | Should BeNullOrEmpty
+    $closed.value.actionHint | Should Be 'finish the bounded status insertion'
+    $closed.value.actionHintDisposition | Should Be 'advisory'
+    $closed.value.automaticExecutionAllowed | Should Be $false
+  }
+
   It 'fails closed for a foreign session and never exposes either saved action' {
     $fixture = New-TurnCloseFixture (Join-Path $TestDrive 'foreign') 'task-turn-close-foreign'
     $before = Get-FileHash -LiteralPath $fixture.side.path -Algorithm SHA256

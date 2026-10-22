@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from unittest import mock
@@ -390,11 +392,28 @@ def _send(process: subprocess.Popen[str], value: dict[str, object]) -> dict[str,
     process.stdin.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
     process.stdin.flush()
     deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
-        line = process.stdout.readline()
-        if line:
-            return json.loads(line)
-    raise AssertionError("MCP response timeout")
+    # ``readline`` on a pipe is uninterruptibly blocking on Windows, so a
+    # monotonic loop around it does not provide a real deadline.  Read on a
+    # daemon thread and bound the caller's wait; teardown closes the pipe if a
+    # worker failed to answer so the thread cannot keep the test process alive.
+    response: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+    def read_one() -> None:
+        try:
+            response.put(("line", process.stdout.readline()))
+        except BaseException as error:  # pragma: no cover - diagnostic path
+            response.put(("error", error))
+
+    threading.Thread(target=read_one, name="mcp-test-reader", daemon=True).start()
+    try:
+        kind, value = response.get(timeout=max(0.1, deadline - time.monotonic()))
+    except queue.Empty as error:
+        raise AssertionError("MCP response timeout") from error
+    if kind == "error":
+        raise AssertionError(f"MCP response read failed: {value!r}")
+    if not value:
+        raise AssertionError(f"MCP worker closed stdout (returncode={process.poll()!r})")
+    return json.loads(str(value))
 
 
 def _status_payload(response: dict[str, object]) -> dict[str, object]:
@@ -1063,8 +1082,13 @@ def test_injected_launcher_requires_process_restart_after_broker_restart() -> No
                     },
                 )
             )
-            assert turn.get("code") == "H7_SCOPE_LAUNCH_RESTART_REQUIRED", turn
-            assert turn.get("available") is False, turn
+            # Losing the private Broker channel disables durable persistence,
+            # not ordinary model work.  Do not send the user into a restart
+            # loop merely because the previous channel was retired.
+            assert turn.get("code") == "TURN_RUNTIME_CONTEXT_ONLY_READY", turn
+            assert turn.get("state") == "context_only", turn
+            assert turn.get("available") is True, turn
+            assert turn.get("persistedStateAvailable") is False, turn
             serialized = json.dumps({"status": status, "turn": turn}, ensure_ascii=False)
             for private_marker in ("sbpr-", "sid-", "sbs-", "sbw-", str(project.resolve())):
                 assert private_marker not in serialized, serialized
@@ -1076,13 +1100,13 @@ def test_injected_launcher_requires_process_restart_after_broker_restart() -> No
                 server.stop()
 
 
-def test_registered_launcher_without_local_injection_is_inert_discovery_only() -> None:
-    """The installed static launcher never leaves an unbound pairing channel.
+def test_registered_launcher_creates_an_internal_scope_without_user_setup() -> None:
+    """A static MCP launch creates its private scope without user configuration.
 
-    A generic MCP registration cannot invent per-user scope facts.  It may
-    start the package launcher for discovery/status, but without the local
-    embedding adapter's actual cwd plus random session id it must remain
-    explicitly withheld and create no Broker channel at all.
+    The installed launcher must not require the user to manufacture or repair a
+    session value.  A fresh process gets a private, non-host identity and a
+    current-but-taskless scope; ordinary work remains available while durable
+    state correctly stays unavailable until a real task exists.
     """
 
     with tempfile.TemporaryDirectory(prefix="super-brain-mcp-static-launcher-") as directory:
@@ -1098,16 +1122,15 @@ def test_registered_launcher_without_local_injection_is_inert_discovery_only() -
         control = ScopeBrokerControlClient(state, auto_start=False, runtime_path=ROOT / "runtime" / "scope_broker_ipc.py")
         try:
             # This is the exact installed launcher command, without an
-            # embedding adapter injecting the current session id.
+            # embedding adapter or user-supplied session id.
             process = _start_local_launcher(memory, project)
             initialized = _send(process, {"jsonrpc": "2.0", "id": 401, "method": "initialize", "params": {}})
             handshake = ((initialized.get("result", {}) or {}).get("liveMcpHandshake", {}) or {})
             assert handshake.get("state") == "withheld", initialized
-            assert handshake.get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", initialized
             assert handshake.get("scope", {}).get("state") == "withheld", initialized
             assert handshake.get("scope", {}).get("scopeReady") is False, initialized
             assert handshake.get("scopeInjection", {}).get("requested") is True, initialized
-            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", initialized
+            assert handshake.get("scopeInjection", {}).get("code") == "H7_SCOPE_BOOTSTRAP_CURRENT_CONTRACT_REQUIRED", initialized
 
             status = _status_payload(
                 _send(
@@ -1116,7 +1139,7 @@ def test_registered_launcher_without_local_injection_is_inert_discovery_only() -
                 )
             )
             assert status.get("scopeBinding", {}).get("state") == "withheld", status
-            assert status.get("scopeBinding", {}).get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", status
+            assert status.get("scopeBinding", {}).get("scopeAuthorized") is False, status
             turn = _status_payload(
                 _send(
                     process,
@@ -1128,10 +1151,12 @@ def test_registered_launcher_without_local_injection_is_inert_discovery_only() -
                     },
                 )
             )
-            assert turn.get("available") is False, turn
-            assert turn.get("code") == "H7_SCOPE_INJECTION_LOCAL_SESSION_REQUIRED", turn
-            # The static discovery worker must not have opened a channel or
-            # caused the Broker to issue a private pairing reference.
+            assert turn.get("available") is True, turn
+            assert turn.get("code") == "TURN_RUNTIME_CONTEXT_ONLY_READY", turn
+            assert turn.get("state") == "context_only", turn
+            assert turn.get("persistedStateAvailable") is False, turn
+            assert turn.get("recoveryPresentation", {}).get("openingLine") == "", turn
+            # An unscoped worker must not leave a pairing capability behind.
             listed = control.list_channels()
             assert listed.get("ok") is True and listed.get("channels") == [], listed
             serialized = json.dumps({"initialize": initialized, "status": status, "turn": turn, "listed": listed}, ensure_ascii=False)
@@ -1154,7 +1179,7 @@ def main() -> None:
     test_bootstrap_rejects_injected_core_from_a_different_memory_root()
     test_bootstrap_withholds_malformed_broker_result()
     test_injected_launcher_requires_process_restart_after_broker_restart()
-    test_registered_launcher_without_local_injection_is_inert_discovery_only()
+    test_registered_launcher_creates_an_internal_scope_without_user_setup()
     test_static_mcp_remains_unbound_and_pairing_controls_are_retired()
     print("runtime_mcp_scope_broker_integration_regression: PASS")
 
@@ -1194,7 +1219,9 @@ def test_static_mcp_remains_unbound_and_pairing_controls_are_retired() -> None:
             assert status["scopeBinding"]["scopeAuthorized"] is False, status
             assert "scope" not in status["scopeBinding"], status
             turn = _status_payload(_send(process, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "brain_turn", "arguments": {"phase": "checkpoint"}}}))
-            assert turn["code"] == "H7_SCOPE_CHANNEL_UNBOUND", turn
+            assert turn["code"] == "PERSISTENT_CONTEXT_UNAVAILABLE", turn
+            assert turn["available"] is False, turn
+            assert turn["message"].endswith("No user-side repair is needed."), turn
             retired = control.pair_channel("sbc-" + "a" * 32, "sbw-" + "b" * 32)
             assert retired.get("code") == "H7_SCOPE_PAIRING_CONTROL_RETIRED", retired
         finally:

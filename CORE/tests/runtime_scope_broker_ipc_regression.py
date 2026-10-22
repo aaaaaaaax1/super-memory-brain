@@ -6,6 +6,7 @@ import gc
 import hashlib
 import hmac
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,7 @@ from scope_broker_ipc import (  # noqa: E402
     _FileLease,
     _canonical,
     _canonical_hash,
+    _pid_alive,
     _read_endpoint_bundle,
 )
 import scope_broker_ipc as scope_broker_ipc_module  # noqa: E402
@@ -132,6 +134,28 @@ def test_endpoint_bundle_rejects_oversized_metadata() -> None:
         (runtime_root / "secret.bin").write_bytes(b"x" * 32)
         (runtime_root / "endpoint.json").write_text("{" + "\"padding\":\"" + ("x" * 20000) + "\"}", encoding="utf-8")
         assert _read_endpoint_bundle(runtime_root / "endpoint.json", runtime_root / "secret.bin") is None
+
+
+def test_same_process_pid_probe_is_non_signalling() -> None:
+    """Embedded Broker probes must not send CTRL+C to the test process."""
+
+    assert _pid_alive(os.getpid()) is True
+
+
+def test_child_pid_probe_does_not_terminate_process() -> None:
+    """Windows PID discovery must not use a signalling kill probe."""
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3)"])
+    try:
+        assert _pid_alive(child.pid) is True
+        assert child.poll() is None
+    finally:
+        child.terminate()
+        try:
+            child.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=3)
 
 
 def test_pairing_tokens_cannot_cross_ipc() -> None:
@@ -1732,6 +1756,8 @@ def main() -> None:
     test_server_singleton_and_secret_fingerprint()
     test_authenticated_nonce_is_one_shot()
     test_endpoint_bundle_rejects_oversized_metadata()
+    test_same_process_pid_probe_is_non_signalling()
+    test_child_pid_probe_does_not_terminate_process()
     test_pairing_tokens_cannot_cross_ipc()
     test_concurrent_clients_spawn_one_child()
     test_startup_lock_competition_polls_until_endpoint_is_ready()

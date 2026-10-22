@@ -1,9 +1,9 @@
 {
   "schema": "super-brain.core-rule-registry.v1",
-  "registryVersion": 68,
+  "registryVersion": 70,
   "packageVersion": "0.6.0",
   "hashAlgorithm": "sha256(canonical-json-without-payloadHash)",
-  "payloadHash": "39273a817a5f0d59d2eb15fbfc66e2c13186f901ca3ce80c51aaa01dfc953355",
+  "payloadHash": "488b99e44911044876d6184d355f2876d377cb93d040dc99ce88f2ccc76d8f93",
   "rules": [
     {
       "ruleId": "SB-PROJECT-GROUNDED-DESIGN-001",
@@ -250,7 +250,7 @@
     },
     {
       "ruleId": "SB-LATEST-STATE-001",
-      "revision": 34,
+      "revision": 35,
       "priority": 118,
       "scope": "runtime",
       "trigger": [
@@ -264,11 +264,14 @@
         "pause_resume",
         "parent_return"
       ],
-      "effect": "for_same_workline_continuation_compaction_pause_resume_restart_and_model_switch_use_only_one_unique_current_local_cwd_super_brain_local_session_execution_contract_with_current_local_progress_receipt_and_live_project_proof_map_it_to_one_same_scope_task_workline_and_actual_project_state_never_backscan_summaries_memory_old_receipts_or_state_cards_never_read_bind_wait_retry_start_bridge_or_persist_host_tail_context_thread_readback_or_metadata_reject_every_legacy_host_transport_input_immediately_with_h7_host_transport_retired_allow_ordinary_no_task_continuity_without_creating_state_and_emit_stage_receipts_without_host_readback",
+      "effect": "for_same_workline_continuation_compaction_pause_resume_restart_and_model_switch_use_only_one_unique_current_local_cwd_super_brain_local_session_execution_contract_with_current_local_progress_receipt_and_live_project_proof_map_it_to_one_same_scope_task_workline_and_actual_project_state_never_backscan_summaries_old_receipts_or_state_cards_never_read_bind_wait_retry_start_bridge_or_persist_host_tail_context_thread_readback_or_metadata_reject_every_legacy_host_transport_input_immediately_with_h7_host_transport_retired_weight_evidence_only_within_its_domain_current_user_request_owns_objective_live_project_evidence_owns_facts_current_progress_proof_owns_completion_claims_current_contract_identifies_workline_but_its_next_action_is_advisory_typed_memory_is_supplemental_advisory_context_allow_the_model_to_continue_reframe_answer_directly_or_stop_without_repeating_the_same_recovery_presentation_weights_never_grant_execution_permission_or_force_continuation_allow_ordinary_no_task_continuity_without_creating_state_and_emit_stage_receipts_without_host_readback",
       "enforcement": "runtime",
       "entrypoint": "runtime/turn_runtime.py",
       "acceptanceTests": [
         "latest_state_conflict_replay",
+        "continuity_weights_are_advisory_and_domain_specific",
+        "model_discretion_close_does_not_authorize_action",
+        "reused_recovery_presentation_is_suppressed",
         "compression_recovery_replay",
         "resume_ack_event_replay",
         "continuous_turn_ack_suppression_replay",
@@ -686,7 +689,7 @@
     },
     {
       "ruleId": "SB-H7-ACTIVATION-001",
-      "revision": 10,
+      "revision": 11,
       "priority": 110,
       "scope": "runtime",
       "trigger": [
@@ -718,7 +721,7 @@
         "hook_repair",
         "legacy_transport"
       ],
-      "effect": "run_h7_mcp_or_same_h7_cli_identity_and_proof_validation_before_any_governed_tool_call_or_project_mutation_after_compaction_restart_pause_resume_model_switch_or_user_correction_bind_only_a_verified_local_cwd_and_super_brain_local_session_id_scope_never_continue_from_summary_or_uncheckpointed_state_reject_host_tail_visible_context_thread_readback_metadata_assertion_and_bridge_inputs_before_decode_with_h7_host_transport_retired_use_the_same_h7_cli_with_the_same_local_scope_immediately_when_mcp_is_stale_or_withhold_without_degraded_continuation_keep_routine_no_task_observation_bounded_and_card_free_require_current_h7_identity_scope_proof_and_derived_index_rebuild_before_formal_stage_high_impact_action_durable_learning_or_runtime_identity_repair_use_one_package_local_writable_activation_receipt_root_and_never_reactivate_p7_hook_or_legacy_host_receipt_junctions",
+      "effect": "run_h7_mcp_or_same_h7_cli_identity_and_proof_validation_before_any_governed_tool_call_or_project_mutation_after_compaction_restart_pause_resume_model_switch_or_user_correction_bind_only_a_verified_local_cwd_and_super_brain_local_session_id_scope_never_continue_from_summary_or_uncheckpointed_state_reject_host_tail_visible_context_thread_readback_metadata_assertion_and_bridge_inputs_before_decode_with_h7_host_transport_retired_use_the_same_h7_cli_with_the_same_local_scope_immediately_when_mcp_is_stale_or_withhold_without_degraded_continuation_allow_ordinary_direct_and_read_only_model_work_to_continue_from_current_conversation_and_live_project_without_persistent_scope_never_claim_saved_progress_when_scope_is_missing_report_durable_write_unavailable_without_blocking_safe_read_only_work_require_current_h7_identity_scope_proof_and_derived_index_rebuild_before_formal_stage_high_impact_action_durable_learning_or_runtime_identity_repair_use_one_package_local_writable_activation_receipt_root_and_never_reactivate_p7_hook_or_legacy_host_receipt_junctions",
       "enforcement": "runtime",
       "entrypoint": "runtime/turn_runtime.py",
       "acceptanceTests": [
@@ -744,6 +747,7 @@
         "hot_update_identity_scope_proof_rebind_replay",
         "hot_update_activation_rebuild_replay",
         "background_h7_validation_nonblocking_ordinary_no_task_replay",
+        "ordinary_context_only_without_scope_replay",
         "h7_validation_required_for_stage_high_impact_and_durable_learning_replay",
         "post_boundary_h7_receipt_required_before_work_replay",
         "stale_mcp_cli_fallback_before_project_action_replay",
